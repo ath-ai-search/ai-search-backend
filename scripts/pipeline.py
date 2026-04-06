@@ -1,10 +1,10 @@
 """
-scripts/sync.py
+scripts/pipeline.py
 ================
 MANUAL pipeline — run once to bulk sync all products
 from BigCommerce into OpenSearch.
 
-    pip install httpx openai opensearch-py boto3 requests
+    pip install httpx python-dotenv opensearch-py boto3 requests openai
     python scripts/pipeline.py
 """
 
@@ -32,13 +32,10 @@ CONFIG = {
     "BIGCOMMERCE_ACCESS_TOKEN": os.getenv("BIGCOMMERCE_ACCESS_TOKEN"),
     "OPENAI_API_KEY":           os.getenv("OPENAI_API_KEY", ""), 
     "OPENSEARCH_HOST":          os.getenv("OPENSEARCH_HOST"),
-    "OPENSEARCH_REGION":        os.getenv("OPENSEARCH_REGION", "us-west-2"), # Added for Serverless
+    "OPENSEARCH_REGION":        os.getenv("OPENSEARCH_REGION", "us-west-2"),
     "OPENSEARCH_INDEX":         os.getenv("OPENSEARCH_INDEX", "products"),
     "DELETE_EXISTING_INDEX":    False, 
 }
-
-# ============================================================
-
 
 # ============================================================
 # BIGCOMMERCE EXTRACTOR
@@ -242,7 +239,7 @@ def transform_batch(raw_products: list[dict]) -> list[dict]:
 
 async def generate_embeddings(products: list[dict], api_key: str) -> list[dict]:
     if not api_key:
-        logger.warning("No OPENAI_API_KEY — storing zero embeddings")
+        logger.warning("No OPENAI_API_KEY — filling with dummy zero embeddings (1536 dims)")
         for p in products:
             p["embedding"] = [0.0] * 1536
         return products
@@ -293,9 +290,6 @@ async def generate_embeddings(products: list[dict], api_key: str) -> list[dict]:
 
 PRODUCT_MAPPING = {
     "settings": {
-        "number_of_shards":   5,
-        "number_of_replicas": 1,
-        # "index.knn":          True,
         "analysis": {
             "analyzer": {
                 "autocomplete": {
@@ -332,6 +326,8 @@ PRODUCT_MAPPING = {
             "sort_order":    {"type": "integer"},
             "total_sold":    {"type": "integer"},
             "date_modified": {"type": "date", "ignore_malformed": True},
+            
+            # --- KNN MAPPING COMMENTED OUT AS REQUESTED ---
             # "embedding": {
             #     "type":      "knn_vector",
             #     "dimension": 1536,
@@ -426,8 +422,10 @@ async def run():
         products = transform_batch(raw_page)
         if not products:
             continue
-        # embeddings removed for serverless search collection
-        # products = await generate_embeddings(products, CONFIG["OPENAI_API_KEY"])
+        
+        # This will automatically use zeros if OPENAI_API_KEY is empty
+        products = await generate_embeddings(products, CONFIG["OPENAI_API_KEY"])
+        
         result   = indexer.bulk_index(products)
         total_indexed += result["indexed"]
         total_errors  += result["errors"]
