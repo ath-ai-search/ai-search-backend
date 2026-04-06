@@ -4,7 +4,7 @@ scripts/sync.py
 MANUAL pipeline — run once to bulk sync all products
 from BigCommerce into OpenSearch.
 
-    pip install httpx openai opensearch-py
+    pip install httpx openai opensearch-py boto3 requests
     python scripts/pipeline.py
 """
 
@@ -15,6 +15,7 @@ from typing import AsyncGenerator
 import os
 from dotenv import load_dotenv
 import httpx
+import boto3
 
 logging.basicConfig(
     level="INFO",
@@ -31,8 +32,7 @@ CONFIG = {
     "BIGCOMMERCE_ACCESS_TOKEN": os.getenv("BIGCOMMERCE_ACCESS_TOKEN"),
     "OPENAI_API_KEY":           os.getenv("OPENAI_API_KEY", ""), 
     "OPENSEARCH_HOST":          os.getenv("OPENSEARCH_HOST"),
-    "OPENSEARCH_USERNAME":      os.getenv("OPENSEARCH_USERNAME", "admin"),
-    "OPENSEARCH_PASSWORD":      os.getenv("OPENSEARCH_PASSWORD"),
+    "OPENSEARCH_REGION":        os.getenv("OPENSEARCH_REGION", "us-west-2"), # Added for Serverless
     "OPENSEARCH_INDEX":         os.getenv("OPENSEARCH_INDEX", "products"),
     "DELETE_EXISTING_INDEX":    False, 
 }
@@ -295,7 +295,7 @@ PRODUCT_MAPPING = {
     "settings": {
         "number_of_shards":   5,
         "number_of_replicas": 1,
-        "index.knn":          True,
+        # "index.knn":          True,
         "analysis": {
             "analyzer": {
                 "autocomplete": {
@@ -332,28 +332,41 @@ PRODUCT_MAPPING = {
             "sort_order":    {"type": "integer"},
             "total_sold":    {"type": "integer"},
             "date_modified": {"type": "date", "ignore_malformed": True},
-            "embedding": {
-                "type":      "knn_vector",
-                "dimension": 1536,
-                "method":    {"name": "hnsw", "space_type": "l2", "engine": "nmslib"},
-            },
+            # "embedding": {
+            #     "type":      "knn_vector",
+            #     "dimension": 1536,
+            #     "method":    {"name": "hnsw", "space_type": "l2", "engine": "nmslib"},
+            # },
         }
     },
 }
 
 
 class OpenSearchIndexer:
-    def __init__(self, host: str, username: str, password: str, index_name: str = "products"):
-        from opensearchpy import OpenSearch, helpers
+    def __init__(self, host: str, region: str, index_name: str = "products"):
+        from opensearchpy import OpenSearch, helpers, RequestsHttpConnection, AWSV4SignerAuth
+        import boto3
+        
         self.helpers    = helpers
         self.index_name = index_name
+        
+        # Clean the host URL just in case 'https://' was included in the .env file
+        clean_host = host.replace("https://", "").rstrip("/")
+        
+        # Get IAM credentials securely from the EC2 instance profile
+        credentials = boto3.Session().get_credentials()
+        
+        # Use 'aoss' as the service name for OpenSearch Serverless
+        auth = AWSV4SignerAuth(credentials, region, 'aoss')
+
         self.client     = OpenSearch(
-            hosts=[host],
-            http_auth=(username, password),
+            hosts=[{'host': clean_host, 'port': 443}],
+            http_auth=auth,
             use_ssl=True,
-            verify_certs=False,
-            ssl_show_warn=False,
-            timeout=30,
+            verify_certs=True,
+            connection_class=RequestsHttpConnection,
+            pool_maxsize=20,
+            timeout=60,
         )
 
     def create_index(self, delete_existing: bool = False):
@@ -398,8 +411,7 @@ async def run():
     )
     indexer = OpenSearchIndexer(
         host=CONFIG["OPENSEARCH_HOST"],
-        username=CONFIG["OPENSEARCH_USERNAME"],
-        password=CONFIG["OPENSEARCH_PASSWORD"],
+        region=CONFIG["OPENSEARCH_REGION"],
         index_name=CONFIG["OPENSEARCH_INDEX"],
     )
 
@@ -414,7 +426,8 @@ async def run():
         products = transform_batch(raw_page)
         if not products:
             continue
-        products = await generate_embeddings(products, CONFIG["OPENAI_API_KEY"])
+        # embeddings removed for serverless search collection
+        # products = await generate_embeddings(products, CONFIG["OPENAI_API_KEY"])
         result   = indexer.bulk_index(products)
         total_indexed += result["indexed"]
         total_errors  += result["errors"]
