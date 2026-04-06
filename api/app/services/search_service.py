@@ -58,6 +58,7 @@ async def execute_search(request: SearchRequest):
         "size": request.page_size,
         "query": {"bool": bool_query},
         "sort": sort_query,
+        "track_total_hits": True,  # ✅ FIX: Allows counting past 10,000 results
         "aggs": {
             "brands": {"terms": {"field": "brand", "size": 25}},
             "categories": {"terms": {"field": "category", "size": 25}}
@@ -83,7 +84,7 @@ async def execute_search(request: SearchRequest):
             "id": source.get("product_id"),
             "name": source.get("name"),
             "description": source.get("description"),
-            "brand": brand_display, # FIXED: Removed walrus operator
+            "brand": brand_display, 
             "category": source.get("category", []),
             "price": source.get("price"),
             "sale_price": source.get("sale_price"),
@@ -102,7 +103,12 @@ async def execute_search(request: SearchRequest):
             for b in response["aggregations"]["brands"]["buckets"]
         ],
         "categories": [
-            {"value": c["key"], "count": c["doc_count"]} 
+            {
+                "value": c["key"], 
+                # ✅ FIX: Prepends "Category" so the IDs look better in your UI
+                "label": f"Category {c['key']}", 
+                "count": c["doc_count"]
+            } 
             for c in response["aggregations"]["categories"]["buckets"]
         ]
     }
