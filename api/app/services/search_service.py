@@ -5,24 +5,26 @@ def execute_search(request: SearchRequest):
     # 1. Calculate starting point for pagination
     from_val = (request.page - 1) * request.page_size
 
-    # 2. Build the base query (UPGRADED FOR SMART RELEVANCE)
+    # 2. Build the base query (ULTRA-ACCURATE TUNING)
     bool_query = {
         "must": [
             {
                 "multi_match": {
                     "query": request.query,
-                    "fields": ["name^4", "brand^2", "category^1.5", "description"],
-                    "fuzziness": "AUTO",           # Handles typos and spaces
-                    "minimum_should_match": "70%"  # Ensures most words match
+                    "fields": ["name^10", "brand^5", "category^2", "description"], 
+                    "fuzziness": "AUTO",           # Handles typos
+                    "minimum_should_match": "70%"  # Requires most of the words to be found
                 }
             }
         ],
         "should": [
             {
+                # 🚀 The "Secret Sauce": Massive boost if the exact phrase 
+                # is in the name (e.g., "iPhone 14" vs "Car Phone Mount for iPhone")
                 "match_phrase": {
                     "name": {
                         "query": request.query,
-                        "boost": 10                # Massive boost for exact phrase matches
+                        "boost": 100 
                     }
                 }
             }
@@ -57,8 +59,8 @@ def execute_search(request: SearchRequest):
         "query": {"bool": bool_query},
         "sort": sort_query,
         "aggs": {
-            "brands": {"terms": {"field": "brand", "size": 15}},
-            "categories": {"terms": {"field": "category", "size": 15}}
+            "brands": {"terms": {"field": "brand", "size": 20}},
+            "categories": {"terms": {"field": "category", "size": 20}}
         }
     }
 
@@ -110,7 +112,6 @@ def execute_search(request: SearchRequest):
         ]
     }
 
-    # 10. Return the perfect JSON package
     return {
         "total_results": total_hits,
         "total_pages": total_pages,
