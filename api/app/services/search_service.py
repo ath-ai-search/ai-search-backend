@@ -5,9 +5,28 @@ def execute_search(request: SearchRequest):
     # 1. Calculate starting point for pagination
     from_val = (request.page - 1) * request.page_size
 
-    # 2. Build the base query
+    # 2. Build the base query (UPGRADED FOR SMART RELEVANCE)
     bool_query = {
-        "must": [{"multi_match": {"query": request.query, "fields": ["name^3", "brand^2", "category^1.5", "description"]}}],
+        "must": [
+            {
+                "multi_match": {
+                    "query": request.query,
+                    "fields": ["name^4", "brand^2", "category^1.5", "description"],
+                    "fuzziness": "AUTO",           # Handles typos and spaces
+                    "minimum_should_match": "70%"  # Ensures most words match
+                }
+            }
+        ],
+        "should": [
+            {
+                "match_phrase": {
+                    "name": {
+                        "query": request.query,
+                        "boost": 10                # Massive boost for exact phrase matches
+                    }
+                }
+            }
+        ],
         "filter": []
     }
 
@@ -38,8 +57,8 @@ def execute_search(request: SearchRequest):
         "query": {"bool": bool_query},
         "sort": sort_query,
         "aggs": {
-            "brands": {"terms": {"field": "brand", "size": 10}},
-            "categories": {"terms": {"field": "category", "size": 10}}
+            "brands": {"terms": {"field": "brand", "size": 15}},
+            "categories": {"terms": {"field": "category", "size": 15}}
         }
     }
 
@@ -55,7 +74,6 @@ def execute_search(request: SearchRequest):
     for hit in response["hits"]["hits"]:
         source = hit["_source"]
         
-        # Check if brand is empty or missing, and replace with "Other Brands"
         raw_brand = source.get("brand", "")
         brand_display = raw_brand if raw_brand and str(raw_brand).strip() else "Other Brands"
         
@@ -80,7 +98,6 @@ def execute_search(request: SearchRequest):
     facets = {
         "brands": [
             {
-                # Give empty strings a real label for the UI checkboxes
                 "label": b["key"] if b["key"] and str(b["key"]).strip() else "Other Brands", 
                 "value": b["key"], 
                 "count": b["doc_count"]
