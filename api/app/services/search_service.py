@@ -1,7 +1,7 @@
 from app.config import os_client, INDEX_NAME
 from app.models.search import SearchRequest
 
-def execute_search(request: SearchRequest):
+async def execute_search(request: SearchRequest):
     # 1. Calculate starting point for pagination
     from_val = (request.page - 1) * request.page_size
 
@@ -11,16 +11,16 @@ def execute_search(request: SearchRequest):
             {
                 "multi_match": {
                     "query": request.query,
+                    # Name is 10x more important than description
                     "fields": ["name^10", "brand^5", "category^2", "description"], 
-                    "fuzziness": "AUTO",           # Handles typos
-                    "minimum_should_match": "70%"  # Requires most of the words to be found
+                    "fuzziness": "AUTO",           
+                    "minimum_should_match": "70%"  
                 }
             }
         ],
         "should": [
             {
-                # 🚀 The "Secret Sauce": Massive boost if the exact phrase 
-                # is in the name (e.g., "iPhone 14" vs "Car Phone Mount for iPhone")
+                # 🚀 Massive boost for exact phrase matches (e.g., "iPhone 14")
                 "match_phrase": {
                     "name": {
                         "query": request.query,
@@ -59,19 +59,19 @@ def execute_search(request: SearchRequest):
         "query": {"bool": bool_query},
         "sort": sort_query,
         "aggs": {
-            "brands": {"terms": {"field": "brand", "size": 20}},
-            "categories": {"terms": {"field": "category", "size": 20}}
+            "brands": {"terms": {"field": "brand", "size": 25}},
+            "categories": {"terms": {"field": "category", "size": 25}}
         }
     }
 
     # 6. Execute Search
     response = os_client.search(index=INDEX_NAME, body=os_query)
     
-    # 7. Calculate Pagination Logic
+    # 7. Pagination Logic
     total_hits = response["hits"]["total"]["value"]
     total_pages = (total_hits + request.page_size - 1) // request.page_size
 
-    # 8. Clean up Results and Empty Brands
+    # 8. Clean up Results
     results = []
     for hit in response["hits"]["hits"]:
         source = hit["_source"]
@@ -83,7 +83,7 @@ def execute_search(request: SearchRequest):
             "id": source.get("product_id"),
             "name": source.get("name"),
             "description": source.get("description"),
-            "brand": brand_display,
+            "brand": brand_display, # FIXED: Removed walrus operator
             "category": source.get("category", []),
             "price": source.get("price"),
             "sale_price": source.get("sale_price"),
@@ -91,19 +91,14 @@ def execute_search(request: SearchRequest):
             "sku": source.get("sku"),
             "url": source.get("url"),
             "attributes": source.get("attributes", {}),
-            "total_sold": source.get("total_sold"),
             "primary_image": source.get("images", [None])[0] if source.get("images") else None,
             "images": source.get("images", [])
         })
 
-    # 9. Clean up Facets for the UI Sidebar
+    # 9. Clean up Facets
     facets = {
         "brands": [
-            {
-                "label": b["key"] if b["key"] and str(b["key"]).strip() else "Other Brands", 
-                "value": b["key"], 
-                "count": b["doc_count"]
-            } 
+            {"label": b["key"] if b["key"].strip() else "Other Brands", "value": b["key"], "count": b["doc_count"]} 
             for b in response["aggregations"]["brands"]["buckets"]
         ],
         "categories": [

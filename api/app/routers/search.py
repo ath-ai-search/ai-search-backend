@@ -6,4 +6,5 @@ router = APIRouter()
 
 @router.post("")
 async def search_products(request: SearchRequest):
-    return execute_search(request)
+    # ✅ MUST use 'await' because service is now 'async'
+    return await execute_search(request)
