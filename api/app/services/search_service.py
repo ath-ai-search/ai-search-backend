@@ -2,13 +2,16 @@ from app.config import os_client, INDEX_NAME
 from app.models.search import SearchRequest
 
 def execute_search(request: SearchRequest):
+    # 1. Calculate starting point for pagination
     from_val = (request.page - 1) * request.page_size
 
+    # 2. Build the base query
     bool_query = {
         "must": [{"multi_match": {"query": request.query, "fields": ["name^3", "brand^2", "category^1.5", "description"]}}],
         "filter": []
     }
 
+    # 3. Apply Filters dynamically
     if request.filters:
         if request.filters.brand:
             bool_query["filter"].append({"terms": {"brand": request.filters.brand}})
@@ -25,8 +28,10 @@ def execute_search(request: SearchRequest):
             if price_range:
                 bool_query["filter"].append({"range": {"price": price_range}})
 
+    # 4. Apply Sorting
     sort_query = [{"price": "asc"}] if request.sort == "price_asc" else [{"price": "desc"}] if request.sort == "price_desc" else ["_score"]
 
+    # 5. Full OpenSearch Payload
     os_query = {
         "from": from_val,
         "size": request.page_size,
@@ -38,20 +43,27 @@ def execute_search(request: SearchRequest):
         }
     }
 
+    # 6. Execute Search
     response = os_client.search(index=INDEX_NAME, body=os_query)
     
-    # ==========================================
-    # ✅ NEW: Pulling all the rich product data!
-    # ==========================================
+    # 7. Calculate Pagination Logic
+    total_hits = response["hits"]["total"]["value"]
+    total_pages = (total_hits + request.page_size - 1) // request.page_size
+
+    # 8. Clean up Results and Empty Brands
     results = []
     for hit in response["hits"]["hits"]:
         source = hit["_source"]
+        
+        # Check if brand is empty or missing, and replace with "Other Brands"
+        raw_brand = source.get("brand", "")
+        brand_display = raw_brand if raw_brand and str(raw_brand).strip() else "Other Brands"
         
         results.append({
             "id": source.get("product_id"),
             "name": source.get("name"),
             "description": source.get("description"),
-            "brand": source.get("brand"),
+            "brand": brand_display,
             "category": source.get("category", []),
             "price": source.get("price"),
             "sale_price": source.get("sale_price"),
@@ -60,14 +72,32 @@ def execute_search(request: SearchRequest):
             "url": source.get("url"),
             "attributes": source.get("attributes", {}),
             "total_sold": source.get("total_sold"),
-            # Keep a convenient "primary_image" while also sending all images
             "primary_image": source.get("images", [None])[0] if source.get("images") else None,
             "images": source.get("images", [])
         })
 
+    # 9. Clean up Facets for the UI Sidebar
     facets = {
-        "brands": [{"value": b["key"], "count": b["doc_count"]} for b in response["aggregations"]["brands"]["buckets"]],
-        "categories": [{"value": c["key"], "count": c["doc_count"]} for c in response["aggregations"]["categories"]["buckets"]]
+        "brands": [
+            {
+                # Give empty strings a real label for the UI checkboxes
+                "label": b["key"] if b["key"] and str(b["key"]).strip() else "Other Brands", 
+                "value": b["key"], 
+                "count": b["doc_count"]
+            } 
+            for b in response["aggregations"]["brands"]["buckets"]
+        ],
+        "categories": [
+            {"value": c["key"], "count": c["doc_count"]} 
+            for c in response["aggregations"]["categories"]["buckets"]
+        ]
     }
 
-    return {"total": response["hits"]["total"]["value"], "page": request.page, "results": results, "facets": facets}
+    # 10. Return the perfect JSON package
+    return {
+        "total_results": total_hits,
+        "total_pages": total_pages,
+        "current_page": request.page,
+        "results": results,
+        "facets": facets
+    }
