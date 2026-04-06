@@ -4,7 +4,6 @@ from app.services.search_service import execute_search
 
 router = APIRouter()
 
-@router.post("/")
+@router.post("")
 async def search_products(request: SearchRequest):
-    # Pass the request to the brain (search_service)
     return execute_search(request)

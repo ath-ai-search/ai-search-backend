@@ -3,7 +3,6 @@ import boto3
 from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
 from dotenv import load_dotenv
 
-# Load your local .env (it will use the server's .env when deployed)
 load_dotenv("/opt/pipeline/scripts/.env")
 
 def get_opensearch_client():
@@ -11,8 +10,12 @@ def get_opensearch_client():
     credentials = boto3.Session().get_credentials()
     auth = AWSV4SignerAuth(credentials, region, 'aoss')
 
+    # ✅ FIX 1: Strip https:// from the Terraform URL
+    raw_host = os.getenv("OPENSEARCH_HOST", "")
+    clean_host = raw_host.replace("https://", "").replace("/", "")
+
     client = OpenSearch(
-        hosts=[{'host': os.getenv("OPENSEARCH_HOST"), 'port': 443}],
+        hosts=[{'host': clean_host, 'port': 443}],
         http_auth=auth,
         use_ssl=True,
         verify_certs=True,
@@ -20,6 +23,5 @@ def get_opensearch_client():
     )
     return client
 
-# Create a single instance of the client to share across the app
 os_client = get_opensearch_client()
 INDEX_NAME = os.getenv("OPENSEARCH_INDEX", "products")
