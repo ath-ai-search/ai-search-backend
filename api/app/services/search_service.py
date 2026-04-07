@@ -7,9 +7,6 @@ from app.models.search import SearchRequest
 # ==========================================
 # 🔄 GLOBAL CATEGORY MAPPING
 # ==========================================
-# To make this "work for everything," add your BigCommerce IDs and Names here.
-# In a professional setup, this dictionary can be fetched from a database 
-# or a JSON file so you never have to touch this code again.
 CATEGORY_MAP = {
     "2152": "Laptops",
     "1607": "Mobiles",
@@ -135,7 +132,6 @@ async def execute_search(request: SearchRequest):
         "categories": [
             {
                 "value": c["key"], 
-                # 🔥 If the ID is in our map, show the Name. Otherwise, show "Category [ID]"
                 "label": CATEGORY_MAP.get(str(c["key"]), f"Category {c['key']}"), 
                 "count": c["doc_count"]
             } 
@@ -156,5 +152,73 @@ async def execute_search(request: SearchRequest):
         await redis_client.set(cache_key, json.dumps(final_response), ex=300)
     except Exception as e:
         print(f"⚠️ Redis write error: {e}")
+
+    return final_response
+
+
+# =================================================================
+# 🚀 NEW: AUTOCOMPLETE FUNCTION (AMAZON-STYLE)
+# =================================================================
+async def execute_autocomplete(query_string: str):
+    """
+    Amazon-style Type-ahead logic. Returns unique product names matching the prefix.
+    """
+    # 1. Create a super-fast cache key
+    cache_key = f"auto:{hashlib.md5(query_string.encode()).hexdigest()}"
+
+    # 2. Check Redis
+    try:
+        cached_result = await redis_client.get(cache_key)
+        if cached_result:
+            return json.loads(cached_result)
+    except Exception as e:
+        print(f"⚠️ Redis read error: {e}")
+
+    # 3. Build the OpenSearch "Prefix" Query
+    os_query = {
+        "size": 10, 
+        "_source": ["name", "images"], 
+        "query": {
+            "match_phrase_prefix": {
+                "name": {
+                    "query": query_string,
+                    "max_expansions": 50 
+                }
+            }
+        }
+    }
+
+    # 4. Execute the lightweight search
+    try:
+        response = os_client.search(index=INDEX_NAME, body=os_query)
+    except Exception as e:
+        print(f"❌ OpenSearch Autocomplete Error: {e}")
+        return {"suggestions": []}
+
+    # 5. Clean up the results (Remove duplicates)
+    seen_names = set()
+    suggestions = []
+    
+    for hit in response["hits"]["hits"]:
+        source = hit["_source"]
+        name = source.get("name")
+        clean_name = str(name).strip().lower()
+        
+        if clean_name and clean_name not in seen_names:
+            seen_names.add(clean_name)
+            thumbnail = source.get("images", [None])[0] if source.get("images") else None
+            
+            suggestions.append({
+                "text": name.lower(), 
+                "thumbnail": thumbnail
+            })
+
+    final_response = {"suggestions": suggestions}
+
+    # 6. Save to Redis (Cache for 1 hour)
+    try:
+        await redis_client.set(cache_key, json.dumps(final_response), ex=3600)
+    except Exception as e:
+        pass
 
     return final_response
