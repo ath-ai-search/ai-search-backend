@@ -1,17 +1,38 @@
-from app.config import os_client, INDEX_NAME
+import json
+import hashlib
+from app.config import os_client, INDEX_NAME, redis_client # ✅ Added redis_client
 from app.models.search import SearchRequest
 
 async def execute_search(request: SearchRequest):
-    # 1. Calculate starting point for pagination
+    # ==========================================
+    # 1. CREATE A UNIQUE CACHE KEY
+    # ==========================================
+    # We turn the whole request into a unique string to use as a "folder name" in Redis
+    request_data = request.model_dump()
+    request_str = json.dumps(request_data, sort_keys=True)
+    cache_key = f"search:{hashlib.md5(request_str.encode()).hexdigest()}"
+
+    # ==========================================
+    # 2. CHECK REDIS FIRST (The "Fast Lane")
+    # ==========================================
+    try:
+        cached_result = await redis_client.get(cache_key)
+        if cached_result:
+            print(f"🚀 CACHE HIT: Serving results for key {cache_key}")
+            return json.loads(cached_result)
+    except Exception as e:
+        print(f"⚠️ Redis read error (skipping to OpenSearch): {e}")
+
+    # ==========================================
+    # 3. BUILD THE OPENSEARCH QUERY (Your Existing Logic)
+    # ==========================================
     from_val = (request.page - 1) * request.page_size
 
-    # 2. Build the base query (ULTRA-ACCURATE TUNING)
     bool_query = {
         "must": [
             {
                 "multi_match": {
                     "query": request.query,
-                    # Name is 10x more important than description
                     "fields": ["name^10", "brand^5", "category^2", "description"], 
                     "fuzziness": "AUTO",           
                     "minimum_should_match": "70%"  
@@ -20,7 +41,6 @@ async def execute_search(request: SearchRequest):
         ],
         "should": [
             {
-                # 🚀 Massive boost for exact phrase matches (e.g., "iPhone 14")
                 "match_phrase": {
                     "name": {
                         "query": request.query,
@@ -32,7 +52,6 @@ async def execute_search(request: SearchRequest):
         "filter": []
     }
 
-    # 3. Apply Filters dynamically
     if request.filters:
         if request.filters.brand:
             bool_query["filter"].append({"terms": {"brand": request.filters.brand}})
@@ -49,34 +68,31 @@ async def execute_search(request: SearchRequest):
             if price_range:
                 bool_query["filter"].append({"range": {"price": price_range}})
 
-    # 4. Apply Sorting
     sort_query = [{"price": "asc"}] if request.sort == "price_asc" else [{"price": "desc"}] if request.sort == "price_desc" else ["_score"]
 
-    # 5. Full OpenSearch Payload
     os_query = {
         "from": from_val,
         "size": request.page_size,
         "query": {"bool": bool_query},
         "sort": sort_query,
-        "track_total_hits": True,  # ✅ FIX: Allows counting past 10,000 results
+        "track_total_hits": True,
         "aggs": {
             "brands": {"terms": {"field": "brand", "size": 25}},
             "categories": {"terms": {"field": "category", "size": 25}}
         }
     }
 
-    # 6. Execute Search
+    # ==========================================
+    # 4. EXECUTE SEARCH IN OPENSEARCH
+    # ==========================================
     response = os_client.search(index=INDEX_NAME, body=os_query)
     
-    # 7. Pagination Logic
     total_hits = response["hits"]["total"]["value"]
     total_pages = (total_hits + request.page_size - 1) // request.page_size
 
-    # 8. Clean up Results
     results = []
     for hit in response["hits"]["hits"]:
         source = hit["_source"]
-        
         raw_brand = source.get("brand", "")
         brand_display = raw_brand if raw_brand and str(raw_brand).strip() else "Other Brands"
         
@@ -96,27 +112,40 @@ async def execute_search(request: SearchRequest):
             "images": source.get("images", [])
         })
 
-    # 9. Clean up Facets
     facets = {
         "brands": [
             {"label": b["key"] if b["key"].strip() else "Other Brands", "value": b["key"], "count": b["doc_count"]} 
             for b in response["aggregations"]["brands"]["buckets"]
         ],
         "categories": [
-            {
-                "value": c["key"], 
-                # ✅ FIX: Prepends "Category" so the IDs look better in your UI
-                "label": f"Category {c['key']}", 
-                "count": c["doc_count"]
-            } 
+            {"value": c["key"], "label": f"Category {c['key']}", "count": c["doc_count"]} 
             for c in response["aggregations"]["categories"]["buckets"]
         ]
     }
 
-    return {
+    # ==========================================
+    # 5. PREPARE FINAL RESPONSE
+    # ==========================================
+    final_response = {
         "total_results": total_hits,
         "total_pages": total_pages,
         "current_page": request.page,
         "results": results,
         "facets": facets
     }
+
+    # ==========================================
+    # 6. SAVE TO REDIS (Set it and forget it)
+    # ==========================================
+    try:
+        # We save it for 300 seconds (5 minutes). 
+        # This gives you a great speed boost without results getting too old.
+        await redis_client.set(
+            cache_key, 
+            json.dumps(final_response), 
+            ex=300
+        )
+    except Exception as e:
+        print(f"⚠️ Redis write error: {e}")
+
+    return final_response
