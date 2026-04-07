@@ -1,13 +1,13 @@
 import json
 import hashlib
-from app.config import os_client, INDEX_NAME, redis_client # ✅ Added redis_client
+import time
+from app.config import os_client, INDEX_NAME, redis_client
 from app.models.search import SearchRequest
 
 async def execute_search(request: SearchRequest):
     # ==========================================
     # 1. CREATE A UNIQUE CACHE KEY
     # ==========================================
-    # We turn the whole request into a unique string to use as a "folder name" in Redis
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
     cache_key = f"search:{hashlib.md5(request_str.encode()).hexdigest()}"
@@ -16,15 +16,17 @@ async def execute_search(request: SearchRequest):
     # 2. CHECK REDIS FIRST (The "Fast Lane")
     # ==========================================
     try:
+        start_time = time.time()
         cached_result = await redis_client.get(cache_key)
         if cached_result:
-            print(f"🚀 CACHE HIT: Serving results for key {cache_key}")
+            latency = (time.time() - start_time) * 1000
+            print(f"🚀 CACHE HIT: [{latency:.2f}ms] Key: {cache_key}")
             return json.loads(cached_result)
     except Exception as e:
         print(f"⚠️ Redis read error (skipping to OpenSearch): {e}")
 
     # ==========================================
-    # 3. BUILD THE OPENSEARCH QUERY (Your Existing Logic)
+    # 3. BUILD THE OPENSEARCH QUERY
     # ==========================================
     from_val = (request.page - 1) * request.page_size
 
@@ -52,6 +54,7 @@ async def execute_search(request: SearchRequest):
         "filter": []
     }
 
+    # Apply Filters
     if request.filters:
         if request.filters.brand:
             bool_query["filter"].append({"terms": {"brand": request.filters.brand}})
@@ -85,16 +88,24 @@ async def execute_search(request: SearchRequest):
     # ==========================================
     # 4. EXECUTE SEARCH IN OPENSEARCH
     # ==========================================
-    response = os_client.search(index=INDEX_NAME, body=os_query)
+    try:
+        os_start = time.time()
+        response = os_client.search(index=INDEX_NAME, body=os_query)
+        os_latency = (time.time() - os_start) * 1000
+        print(f"🔍 DB SEARCH: [{os_latency:.2f}ms] Query: '{request.query}'")
+    except Exception as e:
+        print(f"❌ OpenSearch Error: {e}")
+        return {"error": "Search service temporarily unavailable", "results": [], "total_results": 0}
     
     total_hits = response["hits"]["total"]["value"]
     total_pages = (total_hits + request.page_size - 1) // request.page_size
 
+    # Clean Result List
     results = []
     for hit in response["hits"]["hits"]:
         source = hit["_source"]
         raw_brand = source.get("brand", "")
-        brand_display = raw_brand if raw_brand and str(raw_brand).strip() else "Other Brands"
+        brand_display = str(raw_brand).strip() if raw_brand and str(raw_brand).strip() else "Other Brands"
         
         results.append({
             "id": source.get("product_id"),
@@ -112,20 +123,29 @@ async def execute_search(request: SearchRequest):
             "images": source.get("images", [])
         })
 
+    # ==========================================
+    # 5. SAFE FACET CLEANUP (Professional Labels)
+    # ==========================================
     facets = {
         "brands": [
-            {"label": b["key"] if b["key"].strip() else "Other Brands", "value": b["key"], "count": b["doc_count"]} 
+            {
+                "label": str(b["key"]).strip() if b.get("key") and str(b["key"]).strip() else "Other Brands", 
+                "value": b["key"], 
+                "count": b["doc_count"]
+            } 
             for b in response["aggregations"]["brands"]["buckets"]
         ],
         "categories": [
-            {"value": c["key"], "label": f"Category {c['key']}", "count": c["doc_count"]} 
+            {
+                "value": c["key"], 
+                # ✅ FIX: Clean labels (e.g. "Shoes" instead of "Category Shoes")
+                "label": str(c["key"]).strip() if c.get("key") and str(c["key"]).strip() else "Uncategorized", 
+                "count": c["doc_count"]
+            } 
             for c in response["aggregations"]["categories"]["buckets"]
         ]
     }
 
-    # ==========================================
-    # 5. PREPARE FINAL RESPONSE
-    # ==========================================
     final_response = {
         "total_results": total_hits,
         "total_pages": total_pages,
@@ -135,16 +155,10 @@ async def execute_search(request: SearchRequest):
     }
 
     # ==========================================
-    # 6. SAVE TO REDIS (Set it and forget it)
+    # 6. SAVE TO REDIS
     # ==========================================
     try:
-        # We save it for 300 seconds (5 minutes). 
-        # This gives you a great speed boost without results getting too old.
-        await redis_client.set(
-            cache_key, 
-            json.dumps(final_response), 
-            ex=300
-        )
+        await redis_client.set(cache_key, json.dumps(final_response), ex=300)
     except Exception as e:
         print(f"⚠️ Redis write error: {e}")
 

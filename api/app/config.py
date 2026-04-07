@@ -1,11 +1,11 @@
 import os
 import boto3
-import redis.asyncio as redis # ✅ Added for Caching
+import redis.asyncio as redis
 from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
 from dotenv import load_dotenv
 
-# Load the env file created by your Terraform bootstrap script
-load_dotenv("/opt/pipeline/scripts/.env")
+# ✅ FIX 1: Match the path where Terraform saves the .env file
+load_dotenv("/opt/pipeline/api/.env")
 
 # --- OpenSearch Setup ---
 def get_opensearch_client():
@@ -28,13 +28,14 @@ def get_opensearch_client():
 os_client = get_opensearch_client()
 INDEX_NAME = os.getenv("OPENSEARCH_INDEX", "products")
 
-# --- Redis Setup (New) ---
-# This URL is automatically provided by your Secrets Manager via Terraform
+# --- Redis Setup ---
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
-# We use the asyncio version to keep the FastAPI backend non-blocking and fast
+# ✅ FIX 2: Added timeouts to prevent the API from hanging if Redis is busy
 redis_client = redis.from_url(
     REDIS_URL, 
     decode_responses=True, 
-    encoding="utf-8"
+    encoding="utf-8",
+    socket_connect_timeout=5,  # Time to establish connection
+    socket_timeout=5          # Time to wait for a response
 )
