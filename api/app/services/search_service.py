@@ -37,21 +37,43 @@ async def execute_search(request: SearchRequest):
 
     # 3. BUILD THE OPENSEARCH QUERY
     from_val = (request.page - 1) * request.page_size
+    
     bool_query = {
-        "must": [{
+        "must": [],
+        "should": [
+            # 🔥 POWER-UP: Always give a score boost to items that are actually IN STOCK
+            {
+                "term": {
+                    "in_stock": {
+                        "value": True,
+                        "boost": 2.0
+                    }
+                }
+            }
+        ],
+        "filter": []
+    }
+
+    # 🔥 POWER-UP: Handle empty searches gracefully
+    query_text = request.query.strip() if request.query else ""
+    
+    if query_text:
+        bool_query["must"].append({
             "multi_match": {
-                "query": request.query,
+                "query": query_text,
                 "fields": ["name^10", "brand^5", "category^2", "description"], 
                 "fuzziness": "AUTO",           
                 "minimum_should_match": "70%"  
             }
-        }],
-        "should": [{
-            "match_phrase": {"name": {"query": request.query, "boost": 100}}
-        }],
-        "filter": []
-    }
+        })
+        bool_query["should"].append({
+            "match_phrase": {"name": {"query": query_text, "boost": 100}}
+        })
+    else:
+        # If they hit search with an empty box, just show them everything
+        bool_query["must"].append({"match_all": {}})
 
+    # 4. APPLY FILTERS
     if request.filters:
         if request.filters.brand:
             bool_query["filter"].append({"terms": {"brand": request.filters.brand}})
@@ -65,6 +87,7 @@ async def execute_search(request: SearchRequest):
             if request.filters.price.max is not None: price_range["lte"] = request.filters.price.max
             if price_range: bool_query["filter"].append({"range": {"price": price_range}})
 
+    # 5. EXECUTE SEARCH
     sort_query = [{"price": "asc"}] if request.sort == "price_asc" else [{"price": "desc"}] if request.sort == "price_desc" else ["_score"]
 
     os_query = {
@@ -79,7 +102,6 @@ async def execute_search(request: SearchRequest):
         }
     }
 
-    # 4. EXECUTE SEARCH
     try:
         os_start = time.time()
         response = os_client.search(index=INDEX_NAME, body=os_query)
@@ -98,7 +120,7 @@ async def execute_search(request: SearchRequest):
         raw_brand = source.get("brand", "")
         brand_display = str(raw_brand).strip() if raw_brand and str(raw_brand).strip() else "Other Brands"
         
-        # Translate categories in the results list too
+        # Translate categories
         raw_cats = source.get("category", [])
         if not isinstance(raw_cats, list): raw_cats = [raw_cats]
         clean_cats = [CATEGORY_MAP.get(str(c), f"ID {c}") for c in raw_cats]
@@ -117,9 +139,7 @@ async def execute_search(request: SearchRequest):
             "primary_image": source.get("images", [None])[0] if source.get("images") else None
         })
 
-    # ==========================================
-    # ✅ 5. THE PERMANENT FIX: FACET MAPPING
-    # ==========================================
+    # Facet Mapping
     facets = {
         "brands": [
             {
@@ -157,16 +177,14 @@ async def execute_search(request: SearchRequest):
 
 
 # =================================================================
-# 🚀 NEW: AUTOCOMPLETE FUNCTION (AMAZON-STYLE)
+# 🚀 AUTOCOMPLETE FUNCTION (AMAZON-STYLE)
 # =================================================================
 async def execute_autocomplete(query_string: str):
     """
     Amazon-style Type-ahead logic. Returns unique product names matching the prefix.
     """
-    # 1. Create a super-fast cache key
     cache_key = f"auto:{hashlib.md5(query_string.encode()).hexdigest()}"
 
-    # 2. Check Redis
     try:
         cached_result = await redis_client.get(cache_key)
         if cached_result:
@@ -174,7 +192,6 @@ async def execute_autocomplete(query_string: str):
     except Exception as e:
         print(f"⚠️ Redis read error: {e}")
 
-    # 3. Build the OpenSearch "Prefix" Query
     os_query = {
         "size": 10, 
         "_source": ["name", "images"], 
@@ -188,14 +205,12 @@ async def execute_autocomplete(query_string: str):
         }
     }
 
-    # 4. Execute the lightweight search
     try:
         response = os_client.search(index=INDEX_NAME, body=os_query)
     except Exception as e:
         print(f"❌ OpenSearch Autocomplete Error: {e}")
         return {"suggestions": []}
 
-    # 5. Clean up the results (Remove duplicates)
     seen_names = set()
     suggestions = []
     
@@ -215,7 +230,6 @@ async def execute_autocomplete(query_string: str):
 
     final_response = {"suggestions": suggestions}
 
-    # 6. Save to Redis (Cache for 1 hour)
     try:
         await redis_client.set(cache_key, json.dumps(final_response), ex=3600)
     except Exception as e:
