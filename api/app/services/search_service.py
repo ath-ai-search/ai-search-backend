@@ -1,8 +1,15 @@
 import json
 import hashlib
 import time
+import logging
 from app.config import os_client, INDEX_NAME, redis_client
 from app.models.search import SearchRequest
+
+# ==========================================
+# 🛠️ ENTERPRISE LOGGING SETUP
+# ==========================================
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 # ==========================================
 # 🔄 GLOBAL CATEGORY MAPPING
@@ -18,62 +25,94 @@ CATEGORY_MAP = {
     "453": "Software"
 }
 
+# Maximum allowed results by OpenSearch without scroll API (Default is 10,000)
+MAX_OS_WINDOW = 10000 
+
 async def execute_search(request: SearchRequest):
+    """
+    Executes a highly optimized, Pure BM25 Keyword Search.
+    Architected with a 'should' array foundation to allow seamless drop-in of Vector/AI search in the future.
+    """
     # 1. CREATE A UNIQUE CACHE KEY
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
     cache_key = f"search:{hashlib.md5(request_str.encode()).hexdigest()}"
 
-    # 2. CHECK REDIS FIRST
+    # 2. CHECK REDIS FIRST (Safe failure handling)
     try:
         start_time = time.time()
         cached_result = await redis_client.get(cache_key)
         if cached_result:
             latency = (time.time() - start_time) * 1000
-            print(f"🚀 CACHE HIT: [{latency:.2f}ms] Key: {cache_key}")
+            logger.info(f"🚀 CACHE HIT: [{latency:.2f}ms] Key: {cache_key}")
             return json.loads(cached_result)
     except Exception as e:
-        print(f"⚠️ Redis read error: {e}")
+        logger.warning(f"⚠️ Redis read error (bypassing cache): {e}")
 
-    # 3. BUILD THE OPENSEARCH QUERY
+    # 3. PAGINATION SAFETY CHECK
     from_val = (request.page - 1) * request.page_size
-    
+    if from_val + request.page_size > MAX_OS_WINDOW:
+        logger.warning(f"⚠️ User attempted deep pagination: Page {request.page}")
+        from_val = MAX_OS_WINDOW - request.page_size # Lock to maximum safe depth
+
+    # ==========================================
+    # 🧠 FUTURE-PROOF HYBRID QUERY ARCHITECTURE
+    # ==========================================
     bool_query = {
-        "must": [],
-        "should": [
-            # 🔥 POWER-UP: Always give a score boost to items that are actually IN STOCK
-            {
-                "term": {
-                    "in_stock": {
-                        "value": True,
-                        "boost": 2.0
-                    }
-                }
-            }
-        ],
-        "filter": []
+        "must": [],     # Strict rules (Must match)
+        "should": [],   # Scoring elements (BM25 Lexical + Future AI Vector)
+        "filter": [],   # Yes/No filters (Brand, Price, Category)
+        "minimum_should_match": 0
     }
 
-    # 🔥 POWER-UP: Handle empty searches gracefully
     query_text = request.query.strip() if request.query else ""
     
     if query_text:
-        bool_query["must"].append({
+        # User typed a search. They MUST match at least ONE of the 'should' conditions.
+        bool_query["minimum_should_match"] = 1
+        
+        # --- PART A: PURE BM25 LEXICAL ENGINE ---
+        bool_query["should"].append({
             "multi_match": {
                 "query": query_text,
                 "fields": ["name^10", "brand^5", "category^2", "description"], 
                 "fuzziness": "AUTO",           
-                "minimum_should_match": "70%"  
+                "minimum_should_match": "70%",
+                "analyzer": "standard",  # Pre-empts the edge_ngram autocomplete bug
+                "boost": 1.0             # Weight of the keyword engine
             }
         })
+        
+        # --- PART B: EXACT PHRASE BOOSTER ---
         bool_query["should"].append({
-            "match_phrase": {"name": {"query": query_text, "boost": 100}}
+            "match_phrase": {
+                "name": {
+                    "query": query_text, 
+                    "boost": 50.0 
+                }
+            }
         })
+
+        # =================================================================
+        # 🤖 FUTURE AI SLOT: When you get your API Key, your Vector `knn` 
+        # block will be `.append()`ed right here into the `should` array.
+        # =================================================================
+        
     else:
-        # If they hit search with an empty box, just show them everything
+        # Empty Search Box: Return everything
         bool_query["must"].append({"match_all": {}})
 
-    # 4. APPLY FILTERS
+    # --- PART C: IN-STOCK BOOSTER (Always apply) ---
+    bool_query["should"].append({
+        "term": {
+            "in_stock": {
+                "value": True,
+                "boost": 2.0  # Pushes in-stock items higher in ties
+            }
+        }
+    })
+
+    # 4. APPLY HARD FILTERS
     if request.filters:
         if request.filters.brand:
             bool_query["filter"].append({"terms": {"brand": request.filters.brand}})
@@ -105,57 +144,70 @@ async def execute_search(request: SearchRequest):
     try:
         os_start = time.time()
         response = os_client.search(index=INDEX_NAME, body=os_query)
-        print(f"🔍 DB SEARCH: [{(time.time() - os_start) * 1000:.2f}ms]")
+        logger.info(f"🔍 DB SEARCH: [{(time.time() - os_start) * 1000:.2f}ms]")
     except Exception as e:
-        print(f"❌ OpenSearch Error: {e}")
+        logger.error(f"❌ OpenSearch Error: {str(e)}")
         return {"error": "Search service unavailable", "results": [], "total_results": 0}
     
-    total_hits = response["hits"]["total"]["value"]
-    total_pages = (total_hits + request.page_size - 1) // request.page_size
+    # Safely extract hits
+    hits = response.get("hits", {})
+    total_hits = hits.get("total", {}).get("value", 0)
+    total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
 
-    # Clean Results
+    # 6. CLEAN RESULTS & PREPARE FRONTEND PAYLOAD
     results = []
-    for hit in response["hits"]["hits"]:
-        source = hit["_source"]
+    for hit in hits.get("hits", []):
+        source = hit.get("_source", {})
+        
+        # Safely parse Brand
         raw_brand = source.get("brand", "")
         brand_display = str(raw_brand).strip() if raw_brand and str(raw_brand).strip() else "Other Brands"
         
-        # Translate categories
+        # Safely parse Categories
         raw_cats = source.get("category", [])
-        if not isinstance(raw_cats, list): raw_cats = [raw_cats]
-        clean_cats = [CATEGORY_MAP.get(str(c), f"ID {c}") for c in raw_cats]
+        if not isinstance(raw_cats, list): 
+            raw_cats = [raw_cats]
+        clean_cats = [CATEGORY_MAP.get(str(c), f"Category {c}") for c in raw_cats if c]
+
+        # Safely parse Images
+        images = source.get("images", [])
+        primary_image = images[0] if isinstance(images, list) and len(images) > 0 else None
 
         results.append({
             "id": source.get("product_id"),
-            "name": source.get("name"),
-            "description": source.get("description"),
+            "name": source.get("name", "Unknown Product"),
+            "description": source.get("description", ""),
             "brand": brand_display, 
             "category": clean_cats,
-            "price": source.get("price"),
+            "price": source.get("price", 0.0),
             "sale_price": source.get("sale_price"),
-            "in_stock": source.get("in_stock"),
-            "sku": source.get("sku"),
-            "url": source.get("url"),
-            "primary_image": source.get("images", [None])[0] if source.get("images") else None
+            "in_stock": source.get("in_stock", False),
+            "sku": source.get("sku", ""),
+            "url": source.get("url", ""),
+            "primary_image": primary_image
         })
 
-    # Facet Mapping
+    # Safely extract Aggregations (Facets)
+    aggregations = response.get("aggregations", {})
+    brands_agg = aggregations.get("brands", {}).get("buckets", [])
+    categories_agg = aggregations.get("categories", {}).get("buckets", [])
+
     facets = {
         "brands": [
             {
-                "label": str(b["key"]).strip() if b.get("key") and str(b["key"]).strip() else "Other Brands", 
-                "value": b["key"], 
-                "count": b["doc_count"]
+                "label": str(b.get("key", "")).strip() if b.get("key") and str(b.get("key")).strip() else "Other Brands", 
+                "value": b.get("key"), 
+                "count": b.get("doc_count", 0)
             } 
-            for b in response["aggregations"]["brands"]["buckets"]
+            for b in brands_agg
         ],
         "categories": [
             {
-                "value": c["key"], 
-                "label": CATEGORY_MAP.get(str(c["key"]), f"Category {c['key']}"), 
-                "count": c["doc_count"]
+                "value": c.get("key"), 
+                "label": CATEGORY_MAP.get(str(c.get("key")), f"Category {c.get('key')}"), 
+                "count": c.get("doc_count", 0)
             } 
-            for c in response["aggregations"]["categories"]["buckets"]
+            for c in categories_agg
         ]
     }
 
@@ -167,11 +219,11 @@ async def execute_search(request: SearchRequest):
         "facets": facets
     }
 
-    # 6. SAVE TO REDIS
+    # 7. SAVE TO REDIS (Safe write)
     try:
         await redis_client.set(cache_key, json.dumps(final_response), ex=300)
     except Exception as e:
-        print(f"⚠️ Redis write error: {e}")
+        logger.warning(f"⚠️ Redis write error: {e}")
 
     return final_response
 
@@ -181,16 +233,20 @@ async def execute_search(request: SearchRequest):
 # =================================================================
 async def execute_autocomplete(query_string: str):
     """
-    Amazon-style Type-ahead logic. Returns unique product names matching the prefix.
+    Lightning-fast edge_ngram autocomplete.
     """
-    cache_key = f"auto:{hashlib.md5(query_string.encode()).hexdigest()}"
+    clean_query = query_string.strip()
+    if not clean_query:
+        return {"suggestions": []}
+
+    cache_key = f"auto:{hashlib.md5(clean_query.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
         if cached_result:
             return json.loads(cached_result)
     except Exception as e:
-        print(f"⚠️ Redis read error: {e}")
+        logger.warning(f"⚠️ Redis read error: {e}")
 
     os_query = {
         "size": 10, 
@@ -198,7 +254,7 @@ async def execute_autocomplete(query_string: str):
         "query": {
             "match_phrase_prefix": {
                 "name": {
-                    "query": query_string,
+                    "query": clean_query,
                     "max_expansions": 50 
                 }
             }
@@ -208,23 +264,25 @@ async def execute_autocomplete(query_string: str):
     try:
         response = os_client.search(index=INDEX_NAME, body=os_query)
     except Exception as e:
-        print(f"❌ OpenSearch Autocomplete Error: {e}")
+        logger.error(f"❌ OpenSearch Autocomplete Error: {e}")
         return {"suggestions": []}
 
     seen_names = set()
     suggestions = []
     
-    for hit in response["hits"]["hits"]:
-        source = hit["_source"]
-        name = source.get("name")
-        clean_name = str(name).strip().lower()
+    for hit in response.get("hits", {}).get("hits", []):
+        source = hit.get("_source", {})
+        name = source.get("name", "")
+        normalized_name = str(name).strip().lower()
         
-        if clean_name and clean_name not in seen_names:
-            seen_names.add(clean_name)
-            thumbnail = source.get("images", [None])[0] if source.get("images") else None
+        if normalized_name and normalized_name not in seen_names:
+            seen_names.add(normalized_name)
+            
+            images = source.get("images", [])
+            thumbnail = images[0] if isinstance(images, list) and len(images) > 0 else None
             
             suggestions.append({
-                "text": name.lower(), 
+                "text": name, # Return the original casing for display
                 "thumbnail": thumbnail
             })
 
