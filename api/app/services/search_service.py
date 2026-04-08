@@ -126,13 +126,39 @@ async def execute_search(request: SearchRequest):
             if request.filters.price.max is not None: price_range["lte"] = request.filters.price.max
             if price_range: bool_query["filter"].append({"range": {"price": price_range}})
 
-    # 5. EXECUTE SEARCH
+    # 5. EXECUTE SEARCH WITH WEIGHTED SCORING
     sort_query = [{"price": "asc"}] if request.sort == "price_asc" else [{"price": "desc"}] if request.sort == "price_desc" else ["_score"]
 
     os_query = {
         "from": from_val,
         "size": request.page_size,
-        "query": {"bool": bool_query},
+        "query": {
+            # 🔥 THE UPGRADE: function_score wraps the bool_query
+            "function_score": {
+                "query": {"bool": bool_query},
+                "functions": [
+                    {
+                        # Boost based on ratings (e.g., 5-star items get pushed up)
+                        "field_value_factor": {
+                            "field": "rating",    
+                            "factor": 1.5,        
+                            "missing": 1.0        # If no rating exists, it won't break. It just gets a 1.0 multiplier.
+                        }
+                    },
+                    {
+                        # Boost based on how many units have sold
+                        "field_value_factor": {
+                            "field": "sales_count", 
+                            "modifier": "log1p",  # Smooths out the math for items with massive sales
+                            "factor": 0.5,
+                            "missing": 0
+                        }
+                    }
+                ],
+                "boost_mode": "multiply",
+                "score_mode": "sum"
+            }
+        },
         "sort": sort_query,
         "track_total_hits": True,
         "aggs": {
@@ -184,7 +210,9 @@ async def execute_search(request: SearchRequest):
             "in_stock": source.get("in_stock", False),
             "sku": source.get("sku", ""),
             "url": source.get("url", ""),
-            "primary_image": primary_image
+            "primary_image": primary_image,
+            "rating": source.get("rating", 0.0),
+            "sales_count": source.get("sales_count", 0)
         })
 
     # Safely extract Aggregations (Facets)
