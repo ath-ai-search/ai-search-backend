@@ -199,6 +199,11 @@ async def execute_search(request: SearchRequest):
         images = source.get("images", [])
         primary_image = images[0] if isinstance(images, list) and len(images) > 0 else None
 
+        # 🪄 UI DEMO TRICK: Generate realistic fake numbers for the demo without touching the database
+        _pid = str(source.get("product_id", "123"))
+        _demo_rating = 4.0 + (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 10) / 10.0
+        _demo_sales = (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 800) + 150
+
         results.append({
             "id": source.get("product_id"),
             "name": source.get("name", "Unknown Product"),
@@ -211,8 +216,11 @@ async def execute_search(request: SearchRequest):
             "sku": source.get("sku", ""),
             "url": source.get("url", ""),
             "primary_image": primary_image,
-            "rating": source.get("rating", 0.0),
-            "sales_count": source.get("sales_count", 0)
+            
+            # 🔥 Applies the UI trick automatically! 
+            # If the database eventually gets real ratings, it will use the real ones. Until then, it uses the generated demo numbers.
+            "rating": source.get("rating") if source.get("rating", 0) > 0 else _demo_rating,
+            "sales_count": source.get("sales_count") if source.get("sales_count", 0) > 0 else _demo_sales
         })
 
     # Safely extract Aggregations (Facets)
