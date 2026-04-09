@@ -216,11 +216,11 @@ async def execute_search(request: SearchRequest):
             "sku": source.get("sku", ""),
             "url": source.get("url", ""),
             "primary_image": primary_image,
-            
-            # 🔥 Applies the UI trick automatically! 
-            # If the database eventually gets real ratings, it will use the real ones. Until then, it uses the generated demo numbers.
             "rating": source.get("rating") if source.get("rating", 0) > 0 else _demo_rating,
-            "sales_count": source.get("sales_count") if source.get("sales_count", 0) > 0 else _demo_sales
+            "sales_count": source.get("sales_count") if source.get("sales_count", 0) > 0 else _demo_sales,
+            
+            # 🔥 NEW: Send the actual OpenSearch calculation score to the frontend!
+            "score": round(hit.get("_score", 0) or 0, 2)
         })
 
     # Safely extract Aggregations (Facets)
