@@ -19,7 +19,7 @@ class SearchRequest(BaseModel):
     
     # 🔥 PAGINATION CONTROLS 🔥
     page: int = 1         # The UI changes this to 2, 3, 4, etc.
-    page_size: int = 24   # Keeps the grid looking nice (4 columns x 6 rows = 24)
+    page_size: int = 25   # Keeps the grid looking nice (4 columns x 6 rows = 24)
     
     filters: Optional[Filters] = None
     sort: str = "relevance"
