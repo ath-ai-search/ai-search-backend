@@ -59,6 +59,10 @@ async def execute_search(request: SearchRequest):
     Executes a highly optimized, Pure BM25 Keyword Search.
     Architected with a 'should' array foundation to allow seamless drop-in of Vector/AI search in the future.
     """
+    
+    # 🔥 FORCE OVERRIDE: Backend ignores frontend and sets page size to 25 🔥
+    request.page_size = 25
+
     # 1. CREATE A UNIQUE CACHE KEY
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
@@ -94,7 +98,6 @@ async def execute_search(request: SearchRequest):
     query_text = request.query.strip() if request.query else ""
     
     if query_text:
-        # User typed a search. They MUST match at least ONE of the 'should' conditions.
         bool_query["minimum_should_match"] = 1
         
         # --- PART A: PURE BM25 LEXICAL ENGINE ---
@@ -104,8 +107,8 @@ async def execute_search(request: SearchRequest):
                 "fields": ["name^10", "brand^5", "category^2", "description"], 
                 "fuzziness": "AUTO",           
                 "minimum_should_match": "70%",
-                "analyzer": "standard",  # Pre-empts the edge_ngram autocomplete bug
-                "boost": 1.0             # Weight of the keyword engine
+                "analyzer": "standard",
+                "boost": 1.0 
             }
         })
         
@@ -118,11 +121,6 @@ async def execute_search(request: SearchRequest):
                 }
             }
         })
-
-        # =================================================================
-        # 🤖 FUTURE AI SLOT: When you get your API Key, your Vector `knn` 
-        # block will be `.append()`ed right here into the `should` array.
-        # =================================================================
         
     else:
         # Empty Search Box: Return everything
@@ -133,7 +131,7 @@ async def execute_search(request: SearchRequest):
         "term": {
             "in_stock": {
                 "value": True,
-                "boost": 2.0  # Pushes in-stock items higher in ties
+                "boost": 2.0 
             }
         }
     })
@@ -159,23 +157,20 @@ async def execute_search(request: SearchRequest):
         "from": from_val,
         "size": request.page_size,
         "query": {
-            # 🔥 THE UPGRADE: function_score wraps the bool_query
             "function_score": {
                 "query": {"bool": bool_query},
                 "functions": [
                     {
-                        # Boost based on ratings (e.g., 5-star items get pushed up)
                         "field_value_factor": {
                             "field": "rating",    
                             "factor": 1.5,        
-                            "missing": 1.0        # If no rating exists, it won't break. It just gets a 1.0 multiplier.
+                            "missing": 1.0 
                         }
                     },
                     {
-                        # Boost based on how many units have sold
                         "field_value_factor": {
                             "field": "sales_count", 
-                            "modifier": "log1p",  # Smooths out the math for items with massive sales
+                            "modifier": "log1p", 
                             "factor": 0.5,
                             "missing": 0
                         }
@@ -204,28 +199,25 @@ async def execute_search(request: SearchRequest):
     # Safely extract hits
     hits = response.get("hits", {})
     total_hits = hits.get("total", {}).get("value", 0)
+    
+    # 🔥 Pagination math now uses the forced 25
     total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
 
     # 6. CLEAN RESULTS & PREPARE FRONTEND PAYLOAD
     results = []
     for hit in hits.get("hits", []):
         source = hit.get("_source", {})
-        
-        # Safely parse Brand
         raw_brand = source.get("brand", "")
         brand_display = str(raw_brand).strip() if raw_brand and str(raw_brand).strip() else "Other Brands"
         
-        # Safely parse Categories
         raw_cats = source.get("category", [])
         if not isinstance(raw_cats, list): 
             raw_cats = [raw_cats]
         clean_cats = [CATEGORY_MAP.get(str(c), f"Category {c}") for c in raw_cats if c]
 
-        # Safely parse Images
         images = source.get("images", [])
         primary_image = images[0] if isinstance(images, list) and len(images) > 0 else None
 
-        # 🪄 UI DEMO TRICK: Generate realistic fake numbers for the demo without touching the database
         _pid = str(source.get("product_id", "123"))
         _demo_rating = 4.0 + (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 10) / 10.0
         _demo_sales = (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 800) + 150
@@ -244,8 +236,6 @@ async def execute_search(request: SearchRequest):
             "primary_image": primary_image,
             "rating": source.get("rating") if source.get("rating", 0) > 0 else _demo_rating,
             "sales_count": source.get("sales_count") if source.get("sales_count", 0) > 0 else _demo_sales,
-            
-            # 🔥 NEW: Send the actual OpenSearch calculation score to the frontend!
             "score": round(hit.get("_score", 0) or 0, 2)
         })
 
@@ -277,10 +267,7 @@ async def execute_search(request: SearchRequest):
         "total_results": total_hits,
         "total_pages": total_pages,
         "current_page": request.page,
-        
-        # 🔥 THE UPGRADE: Python does the heavy lifting and writes the HTML!
         "pagination_html": build_pagination_html(total_pages, request.page),
-        
         "results": results,
         "facets": facets
     }
@@ -348,7 +335,7 @@ async def execute_autocomplete(query_string: str):
             thumbnail = images[0] if isinstance(images, list) and len(images) > 0 else None
             
             suggestions.append({
-                "text": name, # Return the original casing for display
+                "text": name, 
                 "thumbnail": thumbnail
             })
 
