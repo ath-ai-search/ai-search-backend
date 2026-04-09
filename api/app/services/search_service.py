@@ -28,6 +28,32 @@ CATEGORY_MAP = {
 # Maximum allowed results by OpenSearch without scroll API (Default is 10,000)
 MAX_OS_WINDOW = 10000 
 
+# ==========================================
+# 📄 SERVER-SIDE HTML GENERATION
+# ==========================================
+def build_pagination_html(total_pages: int, current_page: int) -> str:
+    """Generates the exact HTML code for the frontend pagination buttons."""
+    if total_pages <= 1:
+        return ""
+        
+    start = max(1, current_page - 2)
+    end = min(total_pages, start + 4)
+    if end - start < 4:
+        start = max(1, end - 4)
+        
+    html = ""
+    if start > 1:
+        html += '<button class="page-btn" data-page="1">1</button><span style="align-self:center;">...</span>'
+        
+    for i in range(start, end + 1):
+        active_class = "active" if i == current_page else ""
+        html += f'<button class="page-btn {active_class}" data-page="{i}">{i}</button>'
+        
+    if end < total_pages:
+        html += f'<span style="align-self:center;">...</span><button class="page-btn" data-page="{total_pages}">{total_pages}</button>'
+        
+    return html
+
 async def execute_search(request: SearchRequest):
     """
     Executes a highly optimized, Pure BM25 Keyword Search.
@@ -251,6 +277,10 @@ async def execute_search(request: SearchRequest):
         "total_results": total_hits,
         "total_pages": total_pages,
         "current_page": request.page,
+        
+        # 🔥 THE UPGRADE: Python does the heavy lifting and writes the HTML!
+        "pagination_html": build_pagination_html(total_pages, request.page),
+        
         "results": results,
         "facets": facets
     }

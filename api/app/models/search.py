@@ -34,6 +34,10 @@ class SearchResponse(BaseModel):
     total_pages: int
     current_page: int
     
+    # 👇 THIS IS THE CRITICAL LINE YOU MISSED! 👇
+    # It tells FastAPI that it is allowed to send the HTML to the frontend
+    pagination_html: Optional[str] = ""
+    
     # The actual products and filters
     results: List[Dict[str, Any]]
     facets: Dict[str, Any]
