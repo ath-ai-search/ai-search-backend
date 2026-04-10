@@ -132,7 +132,7 @@ async def execute_search(request: SearchRequest):
     for hit in hits.get("hits", []):
         source = hit.get("_source", {})
         raw_brand = source.get("brand", "")
-        brand_display = str(raw_brand).strip() if raw_brand and str(raw_brand).strip() else "Other Brands"
+        brand_display = str(raw_brand).strip().upper() if raw_brand and str(raw_brand).strip().lower() != "none" else "OTHER BRANDS"
         
         raw_cats = source.get("category", [])
         if not isinstance(raw_cats, list): raw_cats = [raw_cats]
@@ -217,7 +217,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     """
     clean_query = query_string.strip().lower()
     
-    # ✅ DYNAMIC CATEGORIES ADDED TO AGGREGATIONS
     if not clean_query:
         os_query = {
             "size": 4, 
@@ -275,7 +274,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         dynamic_cats = []
         for c in cats_agg:
             cat_val = str(c.get("key"))
-            # Use mapping if available, otherwise title case the raw keyword
             cat_name = CATEGORY_MAP.get(cat_val, cat_val).title()
             if cat_name and cat_name.lower() != "none":
                 dynamic_cats.append(cat_name)
@@ -295,7 +293,11 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         for hit in hits:
             source = hit.get("_source", {})
             name = source.get("name", "Unknown Product")
-            brand = str(source.get("brand", "")).upper()
+            
+            # ✅ FALLBACK FIX: If brand is missing from DB, force it to "OTHER BRANDS"
+            raw_brand = source.get("brand", "")
+            brand_display = str(raw_brand).strip().upper() if raw_brand and str(raw_brand).strip().lower() != "none" else "OTHER BRANDS"
+            
             price = float(source.get("price", 0.0))
             images = source.get("images", [])
             img_url = images[0] if isinstance(images, list) and images else "https://placehold.co/100x100?text=No+Image"
@@ -304,7 +306,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             <div class="ath-prod-row" onclick="window.location.href='/search.php?search_query={name}'">
                 <div class="ath-prod-img"><img src="{img_url}" alt="{name}"></div>
                 <div class="ath-prod-info">
-                    <div class="ath-prod-brand">{brand}</div>
+                    <div class="ath-prod-brand">{brand_display}</div>
                     <div class="ath-prod-title" title="{name}">{name}</div>
                     <div class="ath-prod-price">${price:.2f}</div>
                 </div>
@@ -329,7 +331,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         for b in dynamic_brands[:4]:
             sidebar_html += f"<div class='ath-side-item'><div style='display:flex; align-items:center; gap:12px;'><i class='fas fa-filter'></i> <span>{str(b).upper()}</span></div></div>"
 
-    # ✅ DYNAMIC POPULAR SEARCHES (Based on matched categories)
     if dynamic_cats:
         sidebar_html += "<div class='ath-side-title' style='margin-top:24px;'>POPULAR SEARCHES</div>"
         for c in dynamic_cats[:3]:
@@ -366,7 +367,10 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         .ath-prod-img {{ width: 60px; height: 60px; background: white; display: flex; align-items: center; justify-content: center; }}
         .ath-prod-img img {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
         .ath-prod-info {{ flex: 1; overflow: hidden; }}
-        .ath-prod-brand {{ font-size: 12px; font-weight: 700; color: #111; text-transform: uppercase; margin-bottom: 4px; }}
+        
+        /* ✅ DESIGN FIX: Made the Brand Name Bolder (800) and Pitch Black (#000) */
+        .ath-prod-brand {{ font-size: 13px; font-weight: 800; color: #000; text-transform: uppercase; margin-bottom: 4px; letter-spacing: 0.5px; }}
+        
         .ath-prod-title {{ font-size: 14px; color: #444; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
         .ath-prod-price {{ font-size: 14px; font-weight: 700; color: #111; }}
     </style>
