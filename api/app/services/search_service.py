@@ -347,3 +347,135 @@ async def execute_autocomplete(query_string: str):
         pass
 
     return final_response
+
+# =================================================================
+# 🎨 MEGA MENU HTML GENERATOR (SERVER-DRIVEN UI)
+# =================================================================
+async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
+    """
+    Generates the full HTML & CSS for the Mega Menu directly from the backend.
+    Sorts by highest weighted score first. Designed to be injected directly into BigCommerce.
+    """
+    clean_query = query_string.strip().lower()
+    
+    # 1. High-Score OpenSearch Query
+    if not clean_query:
+        # EMPTY STATE: Show top overall products
+        os_query = {
+            "size": 5,
+            "query": {"match_all": {}},
+            "sort": [{"score": {"order": "desc"}}] # Uses default high score
+        }
+    else:
+        # TYPING STATE: Match query and sort by score
+        os_query = {
+            "size": 5,
+            "query": {
+                "multi_match": {
+                    "query": clean_query,
+                    "fields": ["name^10", "brand^5", "category^2"],
+                    "type": "phrase_prefix"
+                }
+            },
+            "sort": [{"score": {"order": "desc"}}]
+        }
+
+    # 2. Execute Search
+    try:
+        response = os_client.search(index=INDEX_NAME, body=os_query)
+        hits = response.get("hits", {}).get("hits", [])
+    except Exception as e:
+        logger.error(f"❌ OpenSearch Mega Menu Error: {e}")
+        hits = []
+
+    # 3. Extract Dynamic Brands & Products
+    products_html = ""
+    brands = set()
+    
+    if not hits:
+        products_html = "<div style='padding: 20px; color: #666; font-family: sans-serif;'>No products found.</div>"
+    else:
+        for hit in hits:
+            source = hit.get("_source", {})
+            name = source.get("name", "Unknown Product")
+            brand = str(source.get("brand", "")).upper()
+            price = float(source.get("price", 0.0))
+            images = source.get("images", [])
+            img_url = images[0] if isinstance(images, list) and images else "https://placehold.co/100x100?text=No+Image"
+            
+            if brand and brand.lower() != "none":
+                brands.add(brand)
+
+            # Construct Product Row (Image, Brand, Title, Price ONLY - No colors/sizes)
+            products_html += f"""
+            <div class="athera-prod-row" onclick="window.location.href='/search.php?search_query={name}'">
+                <div class="athera-prod-img"><img src="{img_url}" alt="{name}"></div>
+                <div class="athera-prod-info">
+                    <div class="athera-prod-brand">{brand}</div>
+                    <div class="athera-prod-title">{name}</div>
+                    <div class="athera-prod-price">${price:.2f}</div>
+                </div>
+            </div>
+            """
+
+    # 4. Build Left Sidebar Logic
+    sidebar_html = ""
+    
+    # Recent Searches (Passed dynamically from Frontend JS)
+    if recent_searches:
+        recent_list = recent_searches.split("||")[:3]
+        if recent_list and recent_list[0]:
+            sidebar_html += "<div class='athera-sidebar-title'>RECENT SEARCHES</div>"
+            for r in recent_list:
+                sidebar_html += f"<div class='athera-sidebar-item' onclick='document.getElementById(\"search_query\").value=\"{r}\"; document.getElementById(\"search_query\").dispatchEvent(new Event(\"input\"));'><i class='fas fa-history' style='margin-right:8px;'></i> {r}</div>"
+
+    # Dynamic Brands
+    if brands:
+        sidebar_html += "<div class='athera-sidebar-title' style='margin-top:24px;'>BRAND</div>"
+        for b in list(brands)[:4]:
+            sidebar_html += f"<div class='athera-sidebar-item'><i class='fas fa-filter' style='margin-right:8px;'></i> {b}</div>"
+
+    # Popular Searches (Static fallback placeholders)
+    sidebar_html += """
+        <div class='athera-sidebar-title' style='margin-top:24px;'>POPULAR SEARCHES</div>
+        <div class='athera-sidebar-item' onclick='window.location.href="/search.php?search_query=designer handbags"'><i class='fas fa-search' style='margin-right:8px;'></i> designer handbags</div>
+        <div class='athera-sidebar-item' onclick='window.location.href="/search.php?search_query=leather boots"'><i class='fas fa-search' style='margin-right:8px;'></i> leather boots</div>
+        <div class='athera-sidebar-item' onclick='window.location.href="/search.php?search_query=evening bag"'><i class='fas fa-search' style='margin-right:8px;'></i> evening bag</div>
+    """
+
+    # 5. Generate the MASTER HTML & CSS String
+    master_html = f"""
+    <style>
+        .athera-mega-menu {{ display: flex; width: 100%; max-width: 850px; background: white; border-radius: 0 0 12px 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.15); font-family: 'Inter', sans-serif; text-align: left; overflow: hidden; border: 1px solid #e5e7eb; }}
+        .athera-left-col {{ width: 35%; background: #fafafa; padding: 24px; border-right: 1px solid #eee; }}
+        .athera-sidebar-title {{ font-size: 11px; font-weight: 800; color: #111; margin-bottom: 12px; letter-spacing: 0.5px; text-transform: uppercase; }}
+        .athera-sidebar-item {{ font-size: 14px; color: #333; padding: 8px 0; cursor: pointer; display: flex; align-items: center; transition: color 0.2s; }}
+        .athera-sidebar-item i {{ color: #999; font-size: 12px; }}
+        .athera-sidebar-item:hover {{ color: #000; text-decoration: underline; }}
+        .athera-right-col {{ width: 65%; padding: 24px; background: white; }}
+        .athera-section-title {{ font-size: 13px; font-weight: 800; color: #111; margin-bottom: 16px; display: flex; justify-content: space-between; text-transform: uppercase; }}
+        .athera-section-title span {{ font-weight: normal; color: #666; font-size: 12px; cursor: pointer; text-transform: none; }}
+        .athera-section-title span:hover {{ text-decoration: underline; color: #111; }}
+        .athera-prod-row {{ display: flex; align-items: center; gap: 20px; padding: 12px 0; border-bottom: 1px solid #f5f5f5; cursor: pointer; transition: background 0.2s; }}
+        .athera-prod-row:hover {{ background: #fdfdfd; }}
+        .athera-prod-row:last-child {{ border-bottom: none; }}
+        .athera-prod-img {{ width: 70px; height: 70px; background: #f9f9f9; display: flex; align-items: center; justify-content: center; border-radius: 6px; }}
+        .athera-prod-img img {{ max-width: 90%; max-height: 90%; object-fit: contain; }}
+        .athera-prod-info {{ flex: 1; }}
+        .athera-prod-brand {{ font-size: 11px; font-weight: 800; color: #111; letter-spacing: 0.5px; margin-bottom: 4px; text-transform: uppercase; }}
+        .athera-prod-title {{ font-size: 14px; color: #444; line-height: 1.3; margin-bottom: 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }}
+        .athera-prod-price {{ font-size: 14px; font-weight: 800; color: #111; }}
+    </style>
+
+    <div class="athera-mega-menu">
+        <div class="athera-left-col">
+            {sidebar_html}
+        </div>
+        <div class="athera-right-col">
+            <div class="athera-section-title">PRODUCTS <span onclick='window.location.href="/search.php?search_query={clean_query}"'>See all products &rarr;</span></div>
+            {products_html}
+        </div>
+    </div>
+    """
+
+    return {"html": master_html}
