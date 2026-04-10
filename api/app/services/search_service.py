@@ -58,15 +58,13 @@ async def execute_search(request: SearchRequest):
     """
     Executes a highly optimized, Pure BM25 Keyword Search.
     """
-    # 🔥 FORCE OVERRIDE: Backend ignores frontend and sets page size to 25
+    
     request.page_size = 25
 
-    # 1. CREATE A UNIQUE CACHE KEY
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
     cache_key = f"search:{hashlib.md5(request_str.encode()).hexdigest()}"
 
-    # 2. CHECK REDIS FIRST
     try:
         start_time = time.time()
         cached_result = await redis_client.get(cache_key)
@@ -77,10 +75,8 @@ async def execute_search(request: SearchRequest):
     except Exception as e:
         logger.warning(f"⚠️ Redis read error (bypassing cache): {e}")
 
-    # 3. PAGINATION SAFETY CHECK
     from_val = (request.page - 1) * request.page_size
     if from_val + request.page_size > MAX_OS_WINDOW:
-        logger.warning(f"⚠️ User attempted deep pagination: Page {request.page}")
         from_val = MAX_OS_WINDOW - request.page_size 
 
     bool_query = {
@@ -98,8 +94,8 @@ async def execute_search(request: SearchRequest):
         bool_query["should"].append({
             "multi_match": {
                 "query": query_text,
-                # ✅ FIX: Removed "category^2" to prevent OpenSearch crash
-                "fields": ["name^10", "brand^5", "description"], 
+                # ✅ FIX: Removed both brand and category. Only true text fields remain.
+                "fields": ["name^10", "description"], 
                 "fuzziness": "AUTO",           
                 "minimum_should_match": "70%",
                 "analyzer": "standard",
@@ -128,7 +124,6 @@ async def execute_search(request: SearchRequest):
         }
     })
 
-    # 4. APPLY HARD FILTERS
     if request.filters:
         if request.filters.brand:
             bool_query["filter"].append({"terms": {"brand": request.filters.brand}})
@@ -142,7 +137,6 @@ async def execute_search(request: SearchRequest):
             if request.filters.price.max is not None: price_range["lte"] = request.filters.price.max
             if price_range: bool_query["filter"].append({"range": {"price": price_range}})
 
-    # 5. EXECUTE SEARCH WITH WEIGHTED SCORING
     sort_query = [{"price": "asc"}] if request.sort == "price_asc" else [{"price": "desc"}] if request.sort == "price_desc" else ["_score"]
 
     os_query = {
@@ -190,6 +184,7 @@ async def execute_search(request: SearchRequest):
     
     hits = response.get("hits", {})
     total_hits = hits.get("total", {}).get("value", 0)
+    
     total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
 
     results = []
@@ -281,6 +276,71 @@ async def execute_autocomplete(query_string: str):
         cached_result = await redis_client.get(cache_key)
         if cached_result:
             return json.loads(cached_result)
+    except Exception as e:
+        logger.warning(f"⚠️ Redis read error: {e}")
+
+    os_query = {
+        "size": 10, 
+        "_source": ["name", "images"], 
+        "query": {
+            "match_phrase_prefix": {
+                "name": {
+                    "query": clean_query,
+                    "max_expansions": 50 
+                }
+            }
+        }
+    }
+
+    try:
+        response = os_client.search(index=INDEX_NAME, body=os_query)
+    except Exception as e:
+        logger.error(f"❌ OpenSearch Autocomplete Error: {e}")
+        return {"suggestions": []}
+
+    seen_names = set()
+    suggestions = []
+    
+    for hit in response.get("hits", {}).get("hits", []):
+        source = hit.get("_source", {})
+        name = source.get("name", "")
+        normalized_name = str(name).strip().lower()
+        
+        if normalized_name and normalized_name not in seen_names:
+            seen_names.add(normalized_name)
+            
+            images = source.get("images", [])
+            thumbnail = images[0] if isinstance(images, list) and len(images) > 0 else None
+            
+            suggestions.append({
+                "text": name, 
+                "thumbnail": thumbnail
+            })
+
+    final_response = {"suggestions": suggestions}
+
+    try:
+        await redis_client.set(cache_key, json.dumps(final_response), ex=3600)
+    except Exception as e:
+        pass
+
+    return final_response
+
+
+# =================================================================
+# 🚀 OLD AUTOCOMPLETE FUNCTION
+# =================================================================
+async def execute_autocomplete(query_string: str):
+    clean_query = query_string.strip()
+    if not clean_query:
+        return {"suggestions": []}
+
+    cache_key = f"auto:{hashlib.md5(clean_query.encode()).hexdigest()}"
+
+    try:
+        cached_result = await redis_client.get(cache_key)
+        if cached_result:
+            return json.loads(cached_result)
     except Exception:
         pass
 
@@ -338,14 +398,15 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     if not clean_query:
         os_query = {"size": 4, "query": {"match_all": {}}, "sort": [{"_score": {"order": "desc"}}]}
     else:
+        # ✅ BULLETPROOF QUERY: Only targeting "name" for partial typing to prevent Keyword crashes
         os_query = {
             "size": 4,
             "query": {
-                "multi_match": {
-                    "query": clean_query, 
-                    # ✅ FIX: Removed "category^2" to prevent OpenSearch crash
-                    "fields": ["name^10", "brand^5"], 
-                    "type": "phrase_prefix"
+                "match_phrase_prefix": {
+                    "name": {
+                        "query": clean_query,
+                        "max_expansions": 50 
+                    }
                 }
             },
             "sort": [{"_score": {"order": "desc"}}]
@@ -377,13 +438,13 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             
             if brand and brand.lower() != "none": brands.add(brand)
 
-            # Product Row (No sizes/colors as requested)
+            # Product Row
             products_html += f"""
             <div class="ath-prod-row" onclick="window.location.href='/search.php?search_query={name}'">
                 <div class="ath-prod-img"><img src="{img_url}" alt="{name}"></div>
                 <div class="ath-prod-info">
                     <div class="ath-prod-brand">{brand}</div>
-                    <div class="ath-prod-title">{name}</div>
+                    <div class="ath-prod-title" title="{name}">{name}</div>
                     <div class="ath-prod-price">${price:.2f}</div>
                 </div>
             </div>
@@ -452,9 +513,12 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         .ath-prod-row:last-child {{ border-bottom: none; }}
         .ath-prod-img {{ width: 60px; height: 60px; background: white; display: flex; align-items: center; justify-content: center; }}
         .ath-prod-img img {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
-        .ath-prod-info {{ flex: 1; }}
+        .ath-prod-info {{ flex: 1; overflow: hidden; }} /* Added overflow hidden to container */
         .ath-prod-brand {{ font-size: 12px; font-weight: 700; color: #111; text-transform: uppercase; margin-bottom: 4px; }}
-        .ath-prod-title {{ font-size: 14px; color: #444; line-height: 1.4; margin-bottom: 8px; }}
+        
+        /* ✅ EXACTLY 1 LINE TITLE WITH ELLIPSIS (...) */
+        .ath-prod-title {{ font-size: 14px; color: #444; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+        
         .ath-prod-price {{ font-size: 14px; font-weight: 700; color: #111; }}
     </style>
 
