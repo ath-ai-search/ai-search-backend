@@ -57,10 +57,8 @@ def build_pagination_html(total_pages: int, current_page: int) -> str:
 async def execute_search(request: SearchRequest):
     """
     Executes a highly optimized, Pure BM25 Keyword Search.
-    Architected with a 'should' array foundation to allow seamless drop-in of Vector/AI search in the future.
     """
-    
-    # 🔥 FORCE OVERRIDE: Backend ignores frontend and sets page size to 25 🔥
+    # 🔥 FORCE OVERRIDE: Backend ignores frontend and sets page size to 25
     request.page_size = 25
 
     # 1. CREATE A UNIQUE CACHE KEY
@@ -68,7 +66,7 @@ async def execute_search(request: SearchRequest):
     request_str = json.dumps(request_data, sort_keys=True)
     cache_key = f"search:{hashlib.md5(request_str.encode()).hexdigest()}"
 
-    # 2. CHECK REDIS FIRST (Safe failure handling)
+    # 2. CHECK REDIS FIRST
     try:
         start_time = time.time()
         cached_result = await redis_client.get(cache_key)
@@ -83,15 +81,12 @@ async def execute_search(request: SearchRequest):
     from_val = (request.page - 1) * request.page_size
     if from_val + request.page_size > MAX_OS_WINDOW:
         logger.warning(f"⚠️ User attempted deep pagination: Page {request.page}")
-        from_val = MAX_OS_WINDOW - request.page_size # Lock to maximum safe depth
+        from_val = MAX_OS_WINDOW - request.page_size 
 
-    # ==========================================
-    # 🧠 FUTURE-PROOF HYBRID QUERY ARCHITECTURE
-    # ==========================================
     bool_query = {
-        "must": [],     # Strict rules (Must match)
-        "should": [],   # Scoring elements (BM25 Lexical + Future AI Vector)
-        "filter": [],   # Yes/No filters (Brand, Price, Category)
+        "must": [],     
+        "should": [],   
+        "filter": [],   
         "minimum_should_match": 0
     }
 
@@ -100,7 +95,6 @@ async def execute_search(request: SearchRequest):
     if query_text:
         bool_query["minimum_should_match"] = 1
         
-        # --- PART A: PURE BM25 LEXICAL ENGINE ---
         bool_query["should"].append({
             "multi_match": {
                 "query": query_text,
@@ -112,7 +106,6 @@ async def execute_search(request: SearchRequest):
             }
         })
         
-        # --- PART B: EXACT PHRASE BOOSTER ---
         bool_query["should"].append({
             "match_phrase": {
                 "name": {
@@ -121,12 +114,9 @@ async def execute_search(request: SearchRequest):
                 }
             }
         })
-        
     else:
-        # Empty Search Box: Return everything
         bool_query["must"].append({"match_all": {}})
 
-    # --- PART C: IN-STOCK BOOSTER (Always apply) ---
     bool_query["should"].append({
         "term": {
             "in_stock": {
@@ -196,14 +186,10 @@ async def execute_search(request: SearchRequest):
         logger.error(f"❌ OpenSearch Error: {str(e)}")
         return {"error": "Search service unavailable", "results": [], "total_results": 0}
     
-    # Safely extract hits
     hits = response.get("hits", {})
     total_hits = hits.get("total", {}).get("value", 0)
-    
-    # 🔥 Pagination math now uses the forced 25
     total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
 
-    # 6. CLEAN RESULTS & PREPARE FRONTEND PAYLOAD
     results = []
     for hit in hits.get("hits", []):
         source = hit.get("_source", {})
@@ -239,7 +225,6 @@ async def execute_search(request: SearchRequest):
             "score": round(hit.get("_score", 0) or 0, 2)
         })
 
-    # Safely extract Aggregations (Facets)
     aggregations = response.get("aggregations", {})
     brands_agg = aggregations.get("brands", {}).get("buckets", [])
     categories_agg = aggregations.get("categories", {}).get("buckets", [])
@@ -272,7 +257,6 @@ async def execute_search(request: SearchRequest):
         "facets": facets
     }
 
-    # 7. SAVE TO REDIS (Safe write)
     try:
         await redis_client.set(cache_key, json.dumps(final_response), ex=300)
     except Exception as e:
@@ -282,12 +266,9 @@ async def execute_search(request: SearchRequest):
 
 
 # =================================================================
-# 🚀 AUTOCOMPLETE FUNCTION (AMAZON-STYLE)
+# 🚀 OLD AUTOCOMPLETE FUNCTION
 # =================================================================
 async def execute_autocomplete(query_string: str):
-    """
-    Lightning-fast edge_ngram autocomplete.
-    """
     clean_query = query_string.strip()
     if not clean_query:
         return {"suggestions": []}
@@ -298,8 +279,8 @@ async def execute_autocomplete(query_string: str):
         cached_result = await redis_client.get(cache_key)
         if cached_result:
             return json.loads(cached_result)
-    except Exception as e:
-        logger.warning(f"⚠️ Redis read error: {e}")
+    except Exception:
+        pass
 
     os_query = {
         "size": 10, 
@@ -317,7 +298,6 @@ async def execute_autocomplete(query_string: str):
     try:
         response = os_client.search(index=INDEX_NAME, body=os_query)
     except Exception as e:
-        logger.error(f"❌ OpenSearch Autocomplete Error: {e}")
         return {"suggestions": []}
 
     seen_names = set()
@@ -330,70 +310,55 @@ async def execute_autocomplete(query_string: str):
         
         if normalized_name and normalized_name not in seen_names:
             seen_names.add(normalized_name)
-            
             images = source.get("images", [])
             thumbnail = images[0] if isinstance(images, list) and len(images) > 0 else None
-            
-            suggestions.append({
-                "text": name, 
-                "thumbnail": thumbnail
-            })
+            suggestions.append({"text": name, "thumbnail": thumbnail})
 
     final_response = {"suggestions": suggestions}
 
     try:
         await redis_client.set(cache_key, json.dumps(final_response), ex=3600)
-    except Exception as e:
+    except Exception:
         pass
 
     return final_response
 
 # =================================================================
-# 🎨 MEGA MENU HTML GENERATOR (SERVER-DRIVEN UI)
+# 🎨 MEGA MENU HTML GENERATOR (EXACT MATCH DESIGN)
 # =================================================================
 async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     """
-    Generates the full HTML & CSS for the Mega Menu directly from the backend.
-    Sorts by highest weighted score first. Designed to be injected directly into BigCommerce.
+    Generates the HTML & CSS for the Mega Menu matching the reference image layout.
     """
     clean_query = query_string.strip().lower()
     
     # 1. High-Score OpenSearch Query
     if not clean_query:
-        # EMPTY STATE: Show top overall products
-        os_query = {
-            "size": 5,
-            "query": {"match_all": {}},
-            "sort": [{"score": {"order": "desc"}}] # Uses default high score
-        }
+        # ✅ BUG FIXED: Changed "score" to "_score"
+        os_query = {"size": 4, "query": {"match_all": {}}, "sort": [{"_score": {"order": "desc"}}]}
     else:
-        # TYPING STATE: Match query and sort by score
+        # ✅ BUG FIXED: Changed "score" to "_score"
         os_query = {
-            "size": 5,
-            "query": {
-                "multi_match": {
-                    "query": clean_query,
-                    "fields": ["name^10", "brand^5", "category^2"],
-                    "type": "phrase_prefix"
-                }
-            },
-            "sort": [{"score": {"order": "desc"}}]
+            "size": 4,
+            "query": {"multi_match": {"query": clean_query, "fields": ["name^10", "brand^5", "category^2"], "type": "phrase_prefix"}},
+            "sort": [{"_score": {"order": "desc"}}]
         }
 
-    # 2. Execute Search
     try:
         response = os_client.search(index=INDEX_NAME, body=os_query)
         hits = response.get("hits", {}).get("hits", [])
+        total_products = response.get("hits", {}).get("total", {}).get("value", 0)
     except Exception as e:
         logger.error(f"❌ OpenSearch Mega Menu Error: {e}")
         hits = []
+        total_products = 0
 
-    # 3. Extract Dynamic Brands & Products
+    # 2. Extract Products
     products_html = ""
     brands = set()
     
     if not hits:
-        products_html = "<div style='padding: 20px; color: #666; font-family: sans-serif;'>No products found.</div>"
+        products_html = "<div style='padding: 20px; color: #666;'>No products found.</div>"
     else:
         for hit in hits:
             source = hit.get("_source", {})
@@ -403,77 +368,112 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             images = source.get("images", [])
             img_url = images[0] if isinstance(images, list) and images else "https://placehold.co/100x100?text=No+Image"
             
-            if brand and brand.lower() != "none":
-                brands.add(brand)
+            if brand and brand.lower() != "none": brands.add(brand)
 
-            # Construct Product Row (Image, Brand, Title, Price ONLY - No colors/sizes)
+            # Product Row (No sizes/colors as requested)
             products_html += f"""
-            <div class="athera-prod-row" onclick="window.location.href='/search.php?search_query={name}'">
-                <div class="athera-prod-img"><img src="{img_url}" alt="{name}"></div>
-                <div class="athera-prod-info">
-                    <div class="athera-prod-brand">{brand}</div>
-                    <div class="athera-prod-title">{name}</div>
-                    <div class="athera-prod-price">${price:.2f}</div>
+            <div class="ath-prod-row" onclick="window.location.href='/search.php?search_query={name}'">
+                <div class="ath-prod-img"><img src="{img_url}" alt="{name}"></div>
+                <div class="ath-prod-info">
+                    <div class="ath-prod-brand">{brand}</div>
+                    <div class="ath-prod-title">{name}</div>
+                    <div class="ath-prod-price">${price:.2f}</div>
                 </div>
             </div>
             """
 
-    # 4. Build Left Sidebar Logic
+    # 3. Build Left Sidebar Logic
     sidebar_html = ""
     
-    # Recent Searches (Passed dynamically from Frontend JS)
+    # Recent Searches
     if recent_searches:
         recent_list = recent_searches.split("||")[:3]
         if recent_list and recent_list[0]:
-            sidebar_html += "<div class='athera-sidebar-title'>RECENT SEARCHES</div>"
+            sidebar_html += "<div class='ath-side-title'>RECENT SEARCHES</div>"
             for r in recent_list:
-                sidebar_html += f"<div class='athera-sidebar-item' onclick='document.getElementById(\"search_query\").value=\"{r}\"; document.getElementById(\"search_query\").dispatchEvent(new Event(\"input\"));'><i class='fas fa-history' style='margin-right:8px;'></i> {r}</div>"
+                sidebar_html += f"""
+                <div class='ath-side-item' onclick='document.getElementById("search_query").value="{r}"; document.getElementById("search_query").dispatchEvent(new Event("input"));'>
+                    <div style="display:flex; align-items:center; gap:12px;"><i class='far fa-clock'></i> <span>{r}</span></div>
+                    <div style="display:flex; gap:8px; color:#999;"><i class="fas fa-times" style="font-size:10px;"></i><i class="fas fa-arrow-up" style="transform: rotate(45deg); font-size:10px;"></i></div>
+                </div>"""
 
     # Dynamic Brands
     if brands:
-        sidebar_html += "<div class='athera-sidebar-title' style='margin-top:24px;'>BRAND</div>"
-        for b in list(brands)[:4]:
-            sidebar_html += f"<div class='athera-sidebar-item'><i class='fas fa-filter' style='margin-right:8px;'></i> {b}</div>"
+        sidebar_html += "<div class='ath-side-title' style='margin-top:24px;'>BRAND</div>"
+        for b in list(brands)[:3]:
+            sidebar_html += f"<div class='ath-side-item'><div style='display:flex; align-items:center; gap:12px;'><i class='fas fa-filter'></i> <span>{b}</span></div></div>"
 
-    # Popular Searches (Static fallback placeholders)
+    # Static Popular Searches
     sidebar_html += """
-        <div class='athera-sidebar-title' style='margin-top:24px;'>POPULAR SEARCHES</div>
-        <div class='athera-sidebar-item' onclick='window.location.href="/search.php?search_query=designer handbags"'><i class='fas fa-search' style='margin-right:8px;'></i> designer handbags</div>
-        <div class='athera-sidebar-item' onclick='window.location.href="/search.php?search_query=leather boots"'><i class='fas fa-search' style='margin-right:8px;'></i> leather boots</div>
-        <div class='athera-sidebar-item' onclick='window.location.href="/search.php?search_query=evening bag"'><i class='fas fa-search' style='margin-right:8px;'></i> evening bag</div>
+        <div class='ath-side-title' style='margin-top:24px;'>POPULAR SEARCHES</div>
+        <div class='ath-side-item' onclick='window.location.href="/search.php?search_query=designer handbags"'><div style='display:flex; align-items:center; gap:12px;'><i class='fas fa-search'></i> <span>designer handbags</span></div><i class="fas fa-arrow-up" style="transform: rotate(45deg); font-size:10px; color:#999;"></i></div>
+        <div class='ath-side-item' onclick='window.location.href="/search.php?search_query=leather boots"'><div style='display:flex; align-items:center; gap:12px;'><i class='fas fa-search'></i> <span>leather boots</span></div><i class="fas fa-arrow-up" style="transform: rotate(45deg); font-size:10px; color:#999;"></i></div>
     """
 
-    # 5. Generate the MASTER HTML & CSS String
+    # 4. Generate the Exact HTML & CSS Layout
     master_html = f"""
     <style>
-        .athera-mega-menu {{ display: flex; width: 100%; max-width: 850px; background: white; border-radius: 0 0 12px 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.15); font-family: 'Inter', sans-serif; text-align: left; overflow: hidden; border: 1px solid #e5e7eb; }}
-        .athera-left-col {{ width: 35%; background: #fafafa; padding: 24px; border-right: 1px solid #eee; }}
-        .athera-sidebar-title {{ font-size: 11px; font-weight: 800; color: #111; margin-bottom: 12px; letter-spacing: 0.5px; text-transform: uppercase; }}
-        .athera-sidebar-item {{ font-size: 14px; color: #333; padding: 8px 0; cursor: pointer; display: flex; align-items: center; transition: color 0.2s; }}
-        .athera-sidebar-item i {{ color: #999; font-size: 12px; }}
-        .athera-sidebar-item:hover {{ color: #000; text-decoration: underline; }}
-        .athera-right-col {{ width: 65%; padding: 24px; background: white; }}
-        .athera-section-title {{ font-size: 13px; font-weight: 800; color: #111; margin-bottom: 16px; display: flex; justify-content: space-between; text-transform: uppercase; }}
-        .athera-section-title span {{ font-weight: normal; color: #666; font-size: 12px; cursor: pointer; text-transform: none; }}
-        .athera-section-title span:hover {{ text-decoration: underline; color: #111; }}
-        .athera-prod-row {{ display: flex; align-items: center; gap: 20px; padding: 12px 0; border-bottom: 1px solid #f5f5f5; cursor: pointer; transition: background 0.2s; }}
-        .athera-prod-row:hover {{ background: #fdfdfd; }}
-        .athera-prod-row:last-child {{ border-bottom: none; }}
-        .athera-prod-img {{ width: 70px; height: 70px; background: #f9f9f9; display: flex; align-items: center; justify-content: center; border-radius: 6px; }}
-        .athera-prod-img img {{ max-width: 90%; max-height: 90%; object-fit: contain; }}
-        .athera-prod-info {{ flex: 1; }}
-        .athera-prod-brand {{ font-size: 11px; font-weight: 800; color: #111; letter-spacing: 0.5px; margin-bottom: 4px; text-transform: uppercase; }}
-        .athera-prod-title {{ font-size: 14px; color: #444; line-height: 1.3; margin-bottom: 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }}
-        .athera-prod-price {{ font-size: 14px; font-weight: 800; color: #111; }}
+        .ath-mega-menu {{ display: flex; width: 100%; max-width: 900px; height: 500px; background: white; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.15); font-family: 'Inter', sans-serif; text-align: left; overflow: hidden; border: 1px solid #e5e7eb; }}
+        
+        /* Left Column (Light Gray) */
+        .ath-left-col {{ width: 320px; background: #fdfdfd; padding: 24px; border-right: 1px solid #f0f0f0; overflow-y: auto; }}
+        .ath-side-title {{ font-size: 12px; font-weight: 700; color: #111; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }}
+        .ath-side-item {{ font-size: 14px; color: #111; padding: 10px 0; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: background 0.2s; }}
+        .ath-side-item i {{ color: #111; font-size: 14px; }}
+        .ath-side-item:hover {{ background: #f5f5f5; border-radius: 4px; }}
+        
+        /* Right Column (White) */
+        .ath-right-col {{ flex: 1; padding: 24px 32px; background: white; overflow-y: auto; }}
+        
+        /* Shopping Guides */
+        .ath-guide-title {{ font-size: 14px; font-weight: 700; color: #111; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }}
+        .ath-guide-card {{ display: flex; align-items: center; gap: 20px; background: #f9fafb; padding: 16px; border-radius: 12px; margin-bottom: 32px; cursor: pointer; transition: 0.2s; }}
+        .ath-guide-card:hover {{ background: #f3f4f6; }}
+        .ath-guide-img {{ width: 80px; height: 80px; background: white; border-radius: 8px; display: flex; align-items: center; justify-content: center; overflow: hidden; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }}
+        .ath-guide-img img {{ width: 100%; height: 100%; object-fit: contain; }}
+        .ath-guide-text h4 {{ font-size: 14px; font-weight: 600; color: #111; margin-bottom: 6px; }}
+        .ath-guide-text p {{ font-size: 12px; color: #666; line-height: 1.4; }}
+        
+        /* Products List */
+        .ath-prod-header {{ display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px; }}
+        .ath-prod-header h3 {{ font-size: 14px; font-weight: 700; color: #111; text-transform: uppercase; letter-spacing: 0.5px; margin: 0; }}
+        .ath-prod-header span {{ font-size: 13px; color: #111; cursor: pointer; font-weight: 500; }}
+        .ath-prod-header span:hover {{ text-decoration: underline; }}
+        
+        .ath-prod-row {{ display: flex; align-items: flex-start; gap: 20px; padding: 16px 0; border-bottom: 1px solid #f5f5f5; cursor: pointer; transition: 0.2s; }}
+        .ath-prod-row:hover {{ background: #fafafa; }}
+        .ath-prod-row:last-child {{ border-bottom: none; }}
+        .ath-prod-img {{ width: 60px; height: 60px; background: white; display: flex; align-items: center; justify-content: center; }}
+        .ath-prod-img img {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
+        .ath-prod-info {{ flex: 1; }}
+        .ath-prod-brand {{ font-size: 12px; font-weight: 700; color: #111; text-transform: uppercase; margin-bottom: 4px; }}
+        .ath-prod-title {{ font-size: 14px; color: #444; line-height: 1.4; margin-bottom: 8px; }}
+        .ath-prod-price {{ font-size: 14px; font-weight: 700; color: #111; }}
     </style>
 
-    <div class="athera-mega-menu">
-        <div class="athera-left-col">
+    <div class="ath-mega-menu">
+        <div class="ath-left-col">
             {sidebar_html}
         </div>
-        <div class="athera-right-col">
-            <div class="athera-section-title">PRODUCTS <span onclick='window.location.href="/search.php?search_query={clean_query}"'>See all products &rarr;</span></div>
+        <div class="ath-right-col">
+            
+            <div class="ath-guide-title">SHOPPING GUIDES</div>
+            <div class="ath-guide-card">
+                <div class="ath-guide-img">
+                    <img src="https://placehold.co/80x80?text=Guide" alt="Guide">
+                </div>
+                <div class="ath-guide-text">
+                    <h4>Choosing The Right Product For Your Style</h4>
+                    <p>Explore different styles to find what suits you best. From casual to formal, understanding shapes and sizes can elevate your look.</p>
+                </div>
+            </div>
+
+            <div class="ath-prod-header">
+                <h3>PRODUCTS</h3>
+                <span onclick='window.location.href="/search.php?search_query={clean_query}"'>See {total_products} more products &rarr;</span>
+            </div>
             {products_html}
+            
         </div>
     </div>
     """
