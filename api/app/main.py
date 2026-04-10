@@ -1,7 +1,7 @@
-from fastapi import FastAPI, Query  # ✅ NEW: Imported Query
+from fastapi import FastAPI, Query 
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import search  
-from app.services.search_service import execute_autocomplete # ✅ NEW: Imported your autocomplete logic
+from app.services.search_service import execute_autocomplete
 
 app = FastAPI(title="ATH AI Search API")
 
