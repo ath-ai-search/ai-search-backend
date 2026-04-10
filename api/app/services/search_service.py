@@ -212,20 +212,23 @@ async def execute_autocomplete(query_string: str):
 # =================================================================
 async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     """
-    Generates the HTML & CSS for the Mega Menu matching the reference image layout.
-    Features Hybrid Search for scattered words and dynamic brand aggregations.
+    Generates the HTML & CSS for the Mega Menu.
+    Features Hybrid Search, dynamic brand, and dynamic category (Popular Search) aggregations.
     """
     clean_query = query_string.strip().lower()
     
+    # ✅ DYNAMIC CATEGORIES ADDED TO AGGREGATIONS
     if not clean_query:
         os_query = {
             "size": 4, 
             "query": {"match_all": {}}, 
             "sort": [{"_score": {"order": "desc"}}],
-            "aggs": {"top_brands": {"terms": {"field": "brand", "size": 4}}}
+            "aggs": {
+                "top_brands": {"terms": {"field": "brand", "size": 4}},
+                "top_categories": {"terms": {"field": "category", "size": 3}}
+            }
         }
     else:
-        # ✅ BULLETPROOF HYBRID QUERY
         os_query = {
             "size": 4,
             "query": {
@@ -252,7 +255,10 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                 }
             },
             "sort": [{"_score": {"order": "desc"}}],
-            "aggs": {"top_brands": {"terms": {"field": "brand", "size": 4}}}
+            "aggs": {
+                "top_brands": {"terms": {"field": "brand", "size": 4}},
+                "top_categories": {"terms": {"field": "category", "size": 3}}
+            }
         }
 
     try:
@@ -260,14 +266,26 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         hits = response.get("hits", {}).get("hits", [])
         total_products = response.get("hits", {}).get("total", {}).get("value", 0)
         
-        # Extract dynamic top brands based on search results
+        # Extract dynamic top brands
         brands_agg = response.get("aggregations", {}).get("top_brands", {}).get("buckets", [])
         dynamic_brands = [b.get("key") for b in brands_agg if b.get("key") and str(b.get("key")).lower() != "none"]
+
+        # Extract dynamic top categories to use as "Popular Searches"
+        cats_agg = response.get("aggregations", {}).get("top_categories", {}).get("buckets", [])
+        dynamic_cats = []
+        for c in cats_agg:
+            cat_val = str(c.get("key"))
+            # Use mapping if available, otherwise title case the raw keyword
+            cat_name = CATEGORY_MAP.get(cat_val, cat_val).title()
+            if cat_name and cat_name.lower() != "none":
+                dynamic_cats.append(cat_name)
+
     except Exception as e:
         logger.error(f"❌ OpenSearch Mega Menu Error: {e}")
         hits = []
         total_products = 0
         dynamic_brands = []
+        dynamic_cats = []
 
     products_html = ""
     
@@ -311,11 +329,16 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         for b in dynamic_brands[:4]:
             sidebar_html += f"<div class='ath-side-item'><div style='display:flex; align-items:center; gap:12px;'><i class='fas fa-filter'></i> <span>{str(b).upper()}</span></div></div>"
 
-    sidebar_html += """
-        <div class='ath-side-title' style='margin-top:24px;'>POPULAR SEARCHES</div>
-        <div class='ath-side-item' onclick='window.location.href="/search.php?search_query=designer handbags"'><div style='display:flex; align-items:center; gap:12px;'><i class='fas fa-search'></i> <span>designer handbags</span></div><i class="fas fa-arrow-up" style="transform: rotate(45deg); font-size:10px; color:#999;"></i></div>
-        <div class='ath-side-item' onclick='window.location.href="/search.php?search_query=leather boots"'><div style='display:flex; align-items:center; gap:12px;'><i class='fas fa-search'></i> <span>leather boots</span></div><i class="fas fa-arrow-up" style="transform: rotate(45deg); font-size:10px; color:#999;"></i></div>
-    """
+    # ✅ DYNAMIC POPULAR SEARCHES (Based on matched categories)
+    if dynamic_cats:
+        sidebar_html += "<div class='ath-side-title' style='margin-top:24px;'>POPULAR SEARCHES</div>"
+        for c in dynamic_cats[:3]:
+            sidebar_html += f"""
+            <div class='ath-side-item' onclick='window.location.href="/search.php?search_query={c}"'>
+                <div style='display:flex; align-items:center; gap:12px;'><i class='fas fa-search'></i> <span>{c}</span></div>
+                <i class="fas fa-arrow-up" style="transform: rotate(45deg); font-size:10px; color:#999;"></i>
+            </div>
+            """
 
     master_html = f"""
     <style>
@@ -342,12 +365,9 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         .ath-prod-row:last-child {{ border-bottom: none; }}
         .ath-prod-img {{ width: 60px; height: 60px; background: white; display: flex; align-items: center; justify-content: center; }}
         .ath-prod-img img {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
-        .ath-prod-info {{ flex: 1; overflow: hidden; }} /* Required for the ellipsis to work! */
+        .ath-prod-info {{ flex: 1; overflow: hidden; }}
         .ath-prod-brand {{ font-size: 12px; font-weight: 700; color: #111; text-transform: uppercase; margin-bottom: 4px; }}
-        
-        /* ✅ EXACTLY 1 LINE TITLE WITH ELLIPSIS (...) */
         .ath-prod-title {{ font-size: 14px; color: #444; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-        
         .ath-prod-price {{ font-size: 14px; font-weight: 700; color: #111; }}
     </style>
 
