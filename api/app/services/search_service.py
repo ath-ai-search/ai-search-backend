@@ -25,8 +25,54 @@ CATEGORY_MAP = {
     "453": "Software"
 }
 
-# Maximum allowed results by OpenSearch without scroll API (Default is 10,000)
 MAX_OS_WINDOW = 10000 
+
+# =================================================================
+# 🧠 AI SMART BRAND EXTRACTOR (Solves empty database fields)
+# =================================================================
+def get_smart_brand(source):
+    # 1. Check if the database actually has the brand
+    raw_brand = source.get("brand", "")
+    if raw_brand and str(raw_brand).strip().lower() not in ["none", "", "null", "other brands", "unknown"]:
+        return str(raw_brand).strip().upper()
+        
+    title = str(source.get("name", "")).strip()
+    title_lower = title.lower()
+    
+    # 2. Product Line to Parent Brand Mappings
+    brand_mappings = {
+        "iphone": "APPLE", "ipad": "APPLE", "macbook": "APPLE", "airpods": "APPLE", "imac": "APPLE",
+        "galaxy": "SAMSUNG", "s20": "SAMSUNG", "s21": "SAMSUNG", "s22": "SAMSUNG", "s23": "SAMSUNG", "s24": "SAMSUNG", "note": "SAMSUNG",
+        "thinkpad": "LENOVO", "yoga": "LENOVO", "ideapad": "LENOVO",
+        "predator": "ACER", "aspire": "ACER",
+        "pavilion": "HP", "envy": "HP", "omen": "HP", "spectre": "HP",
+        "rog": "ASUS", "zenbook": "ASUS", "vivobook": "ASUS",
+        "playstation": "SONY", "bravia": "SONY",
+        "xbox": "MICROSOFT", "surface": "MICROSOFT",
+        "pixel": "GOOGLE", "kindle": "AMAZON", "echo": "AMAZON"
+    }
+    for keyword, mapped_brand in brand_mappings.items():
+        if keyword in title_lower:
+            return mapped_brand
+            
+    # 3. Known Brands Check
+    known_brands = [
+        "nike", "adidas", "puma", "reebok", "under armour", "new balance", "vans",
+        "sony", "lg", "panasonic", "dell", "asus", "acer", "lenovo", "hp", "microsoft", "apple", "samsung",
+        "omnica", "envysun", "hogan", "guess", "gabs", "michael kors", "springa"
+    ]
+    for b in known_brands:
+        if b in title_lower:
+            return b.upper()
+            
+    # 4. Fallback: Extract the first word of the title as the brand
+    words = title.split()
+    if words:
+        first_word = words[0].strip('",\'()[]{}!@#$%-').upper()
+        if len(first_word) > 1 and not first_word.isnumeric():
+            return first_word
+            
+    return "UNKNOWN BRAND"
 
 # ==========================================
 # 📄 SERVER-SIDE HTML GENERATION
@@ -46,9 +92,6 @@ def build_pagination_html(total_pages: int, current_page: int) -> str:
     return html
 
 async def execute_search(request: SearchRequest):
-    """
-    Executes a highly optimized, Pure BM25 Keyword Search.
-    """
     request.page_size = 25
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
@@ -131,8 +174,9 @@ async def execute_search(request: SearchRequest):
     results = []
     for hit in hits.get("hits", []):
         source = hit.get("_source", {})
-        raw_brand = source.get("brand", "")
-        brand_display = str(raw_brand).strip().upper() if raw_brand and str(raw_brand).strip().lower() != "none" else "OTHER BRANDS"
+        
+        # ✅ Using the Smart Extractor!
+        brand_display = get_smart_brand(source)
         
         raw_cats = source.get("category", [])
         if not isinstance(raw_cats, list): raw_cats = [raw_cats]
@@ -172,10 +216,6 @@ async def execute_search(request: SearchRequest):
 
     return final_response
 
-
-# =================================================================
-# 🚀 OLD AUTOCOMPLETE FUNCTION
-# =================================================================
 async def execute_autocomplete(query_string: str):
     clean_query = query_string.strip()
     if not clean_query: return {"suggestions": []}
@@ -208,24 +248,15 @@ async def execute_autocomplete(query_string: str):
     return final_response
 
 # =================================================================
-# 🎨 MEGA MENU HTML GENERATOR (HYBRID SEARCH & DYNAMIC AGGS)
+# 🎨 MEGA MENU HTML GENERATOR
 # =================================================================
 async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
-    """
-    Generates the HTML & CSS for the Mega Menu.
-    Features Hybrid Search, dynamic brand, and dynamic category (Popular Search) aggregations.
-    """
     clean_query = query_string.strip().lower()
     
     if not clean_query:
         os_query = {
-            "size": 4, 
-            "query": {"match_all": {}}, 
-            "sort": [{"_score": {"order": "desc"}}],
-            "aggs": {
-                "top_brands": {"terms": {"field": "brand", "size": 4}},
-                "top_categories": {"terms": {"field": "category", "size": 3}}
-            }
+            "size": 4, "query": {"match_all": {}}, "sort": [{"_score": {"order": "desc"}}],
+            "aggs": {"top_categories": {"terms": {"field": "category", "size": 3}}}
         }
     else:
         os_query = {
@@ -233,59 +264,36 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             "query": {
                 "bool": {
                     "should": [
-                        {
-                            "multi_match": {
-                                "query": clean_query,
-                                "fields": ["name^10", "description^2"],
-                                "fuzziness": "AUTO",
-                                "minimum_should_match": "60%"
-                            }
-                        },
-                        {
-                            "match_phrase_prefix": {
-                                "name": {
-                                    "query": clean_query,
-                                    "boost": 10.0
-                                }
-                            }
-                        }
+                        {"multi_match": {"query": clean_query, "fields": ["name^10", "description^2"], "fuzziness": "AUTO", "minimum_should_match": "60%"}},
+                        {"match_phrase_prefix": {"name": {"query": clean_query, "boost": 10.0}}}
                     ],
                     "minimum_should_match": 1
                 }
             },
             "sort": [{"_score": {"order": "desc"}}],
-            "aggs": {
-                "top_brands": {"terms": {"field": "brand", "size": 4}},
-                "top_categories": {"terms": {"field": "category", "size": 3}}
-            }
+            "aggs": {"top_categories": {"terms": {"field": "category", "size": 3}}}
         }
 
     try:
         response = os_client.search(index=INDEX_NAME, body=os_query)
         hits = response.get("hits", {}).get("hits", [])
         total_products = response.get("hits", {}).get("total", {}).get("value", 0)
-        
-        # Extract dynamic top brands
-        brands_agg = response.get("aggregations", {}).get("top_brands", {}).get("buckets", [])
-        dynamic_brands = [b.get("key") for b in brands_agg if b.get("key") and str(b.get("key")).lower() != "none"]
 
-        # Extract dynamic top categories to use as "Popular Searches"
         cats_agg = response.get("aggregations", {}).get("top_categories", {}).get("buckets", [])
         dynamic_cats = []
         for c in cats_agg:
             cat_val = str(c.get("key"))
             cat_name = CATEGORY_MAP.get(cat_val, cat_val).title()
-            if cat_name and cat_name.lower() != "none":
-                dynamic_cats.append(cat_name)
+            if cat_name and cat_name.lower() != "none": dynamic_cats.append(cat_name)
 
     except Exception as e:
         logger.error(f"❌ OpenSearch Mega Menu Error: {e}")
         hits = []
         total_products = 0
-        dynamic_brands = []
         dynamic_cats = []
 
     products_html = ""
+    dynamic_brands_set = set() # We build this directly from the smart extractor!
     
     if not hits:
         products_html = "<div style='padding: 20px; color: #666;'>No products found.</div>"
@@ -294,9 +302,10 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             source = hit.get("_source", {})
             name = source.get("name", "Unknown Product")
             
-            # ✅ FALLBACK FIX: If brand is missing from DB, force it to "OTHER BRANDS"
-            raw_brand = source.get("brand", "")
-            brand_display = str(raw_brand).strip().upper() if raw_brand and str(raw_brand).strip().lower() != "none" else "OTHER BRANDS"
+            # ✅ Using the Smart Extractor to build the Sidebar and the Cards!
+            brand_display = get_smart_brand(source)
+            if brand_display != "UNKNOWN BRAND":
+                dynamic_brands_set.add(brand_display)
             
             price = float(source.get("price", 0.0))
             images = source.get("images", [])
@@ -326,10 +335,11 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                     <div style="display:flex; gap:8px; color:#999;"><i class="fas fa-times" style="font-size:10px;"></i><i class="fas fa-arrow-up" style="transform: rotate(45deg); font-size:10px;"></i></div>
                 </div>"""
 
+    dynamic_brands = list(dynamic_brands_set)
     if dynamic_brands:
         sidebar_html += "<div class='ath-side-title' style='margin-top:24px;'>BRAND</div>"
         for b in dynamic_brands[:4]:
-            sidebar_html += f"<div class='ath-side-item'><div style='display:flex; align-items:center; gap:12px;'><i class='fas fa-filter'></i> <span>{str(b).upper()}</span></div></div>"
+            sidebar_html += f"<div class='ath-side-item'><div style='display:flex; align-items:center; gap:12px;'><i class='fas fa-filter'></i> <span>{b}</span></div></div>"
 
     if dynamic_cats:
         sidebar_html += "<div class='ath-side-title' style='margin-top:24px;'>POPULAR SEARCHES</div>"
@@ -367,10 +377,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         .ath-prod-img {{ width: 60px; height: 60px; background: white; display: flex; align-items: center; justify-content: center; }}
         .ath-prod-img img {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
         .ath-prod-info {{ flex: 1; overflow: hidden; }}
-        
-        /* ✅ DESIGN FIX: Made the Brand Name Bolder (800) and Pitch Black (#000) */
         .ath-prod-brand {{ font-size: 13px; font-weight: 800; color: #000; text-transform: uppercase; margin-bottom: 4px; letter-spacing: 0.5px; }}
-        
         .ath-prod-title {{ font-size: 14px; color: #444; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
         .ath-prod-price {{ font-size: 14px; font-weight: 700; color: #111; }}
     </style>
