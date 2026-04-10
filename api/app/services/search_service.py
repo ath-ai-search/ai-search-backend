@@ -98,7 +98,8 @@ async def execute_search(request: SearchRequest):
         bool_query["should"].append({
             "multi_match": {
                 "query": query_text,
-                "fields": ["name^10", "brand^5", "category^2", "description"], 
+                # ✅ FIX: Removed "category^2" to prevent OpenSearch crash
+                "fields": ["name^10", "brand^5", "description"], 
                 "fuzziness": "AUTO",           
                 "minimum_should_match": "70%",
                 "analyzer": "standard",
@@ -114,6 +115,7 @@ async def execute_search(request: SearchRequest):
                 }
             }
         })
+        
     else:
         bool_query["must"].append({"match_all": {}})
 
@@ -334,13 +336,18 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     
     # 1. High-Score OpenSearch Query
     if not clean_query:
-        # ✅ BUG FIXED: Changed "score" to "_score"
         os_query = {"size": 4, "query": {"match_all": {}}, "sort": [{"_score": {"order": "desc"}}]}
     else:
-        # ✅ BUG FIXED: Changed "score" to "_score"
         os_query = {
             "size": 4,
-            "query": {"multi_match": {"query": clean_query, "fields": ["name^10", "brand^5", "category^2"], "type": "phrase_prefix"}},
+            "query": {
+                "multi_match": {
+                    "query": clean_query, 
+                    # ✅ FIX: Removed "category^2" to prevent OpenSearch crash
+                    "fields": ["name^10", "brand^5"], 
+                    "type": "phrase_prefix"
+                }
+            },
             "sort": [{"_score": {"order": "desc"}}]
         }
 
