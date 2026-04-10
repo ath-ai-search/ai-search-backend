@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Query 
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import search  
-from app.services.search_service import execute_autocomplete
+from app.services.search_service import execute_autocomplete, get_mega_menu_widget # ✅ ADDED MEGA MENU IMPORT
 
 app = FastAPI(title="ATH AI Search API")
 
@@ -24,9 +24,20 @@ async def root():
     return {"message": "Search API is Online"}
 
 # ==========================================
-# 🚀 AUTOCOMPLETE ENDPOINT 
+# 🚀 AUTOCOMPLETE ENDPOINT (Standard Data)
 # ==========================================
 @app.get("/autocomplete")
 async def autocomplete(q: str = Query(..., min_length=1)):
     """Handles the autocomplete dropdown from the frontend"""
     return await execute_autocomplete(q)
+
+# ==========================================
+# 🎨 NEW MEGA MENU ENDPOINT (Server-Driven UI)
+# ==========================================
+@app.get("/widget/autocomplete")
+async def mega_menu_endpoint(
+    q: str = Query("", description="The search query"),
+    recent: str = Query("", description="List of recent searches separated by ||")
+):
+    """Returns the fully rendered HTML and CSS for the Mega Menu directly from the backend"""
+    return await get_mega_menu_widget(q, recent)
