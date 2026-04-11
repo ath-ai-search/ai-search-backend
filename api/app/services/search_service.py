@@ -2,6 +2,7 @@ import json
 import hashlib
 import time
 import logging
+import re
 from app.config import os_client, INDEX_NAME, redis_client
 from app.models.search import SearchRequest
 
@@ -141,7 +142,12 @@ async def execute_search(request: SearchRequest):
             if request.filters.price.max is not None: price_range["lte"] = request.filters.price.max
             if price_range: bool_query["filter"].append({"range": {"price": price_range}})
 
-    sort_query = [{"price": "asc"}] if request.sort == "price_asc" else [{"price": "desc"}] if request.sort == "price_desc" else ["_score"]
+    # ✅ ADDED: Magic filter for the new "On Sale Items" dropdown option!
+    if request.sort == "on_sale":
+        bool_query["filter"].append({"range": {"sale_price": {"gt": 0}}})
+        sort_query = [{"_score": "desc"}] # Default to best match for the sale items
+    else:
+        sort_query = [{"price": "asc"}] if request.sort == "price_asc" else [{"price": "desc"}] if request.sort == "price_desc" else [{"_score": "desc"}]
 
     os_query = {
         "from": from_val, "size": request.page_size,
@@ -175,7 +181,6 @@ async def execute_search(request: SearchRequest):
     for hit in hits.get("hits", []):
         source = hit.get("_source", {})
         
-        # ✅ Using the Smart Extractor!
         brand_display = get_smart_brand(source)
         
         raw_cats = source.get("category", [])
@@ -293,7 +298,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         dynamic_cats = []
 
     products_html = ""
-    dynamic_brands_set = set() # We build this directly from the smart extractor!
+    dynamic_brands_set = set()
     
     if not hits:
         products_html = "<div style='padding: 20px; color: #666;'>No products found.</div>"
@@ -302,7 +307,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             source = hit.get("_source", {})
             name = source.get("name", "Unknown Product")
             
-            # ✅ Using the Smart Extractor to build the Sidebar and the Cards!
             brand_display = get_smart_brand(source)
             if brand_display != "UNKNOWN BRAND":
                 dynamic_brands_set.add(brand_display)
@@ -316,11 +320,9 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 
             # 🏷️ BUILD SALE BADGE AND PRICE HTML
             if sale_price > 0 and sale_price < price:
-                # It IS on sale
                 badge_html = '<div style="position: absolute; top: -6px; right: -6px; background: #CC0000; color: white; font-size: 9px; font-weight: bold; padding: 2px 6px; border-radius: 3px; z-index: 10; text-transform: uppercase; letter-spacing: 0.5px;">Sale</div>'
                 price_html = f'<div class="ath-prod-price"><span style="color: #CC0000; font-weight: 800;">${sale_price:.2f}</span> <del style="color: #888; font-size: 13px; font-weight: 600; margin-left: 4px;">${price:.2f}</del></div>'
             else:
-                # It is NOT on sale
                 badge_html = ""
                 price_html = f'<div class="ath-prod-price">${price:.2f}</div>'
 
@@ -395,7 +397,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         .ath-prod-info {{ flex: 1; overflow: hidden; }}
         .ath-prod-brand {{ font-size: 13px; font-weight: 800; color: #000; text-transform: uppercase; margin-bottom: 4px; letter-spacing: 0.5px; }}
         .ath-prod-title {{ font-size: 14px; color: #444; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-        .ath-prod-price {{ font-size: 14px; font-weight: 700; color: #111; display: flex; align-items: baseline; }}
+        .ath-prod-price {{ font-size: 14px; font-weight: 700; color: #111; }}
     </style>
 
     <div class="ath-mega-menu">
