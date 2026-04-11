@@ -12,38 +12,31 @@ from app.models.search import SearchRequest
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# ==========================================
-# 🔄 GLOBAL CATEGORY MAPPING
-# ==========================================
-CATEGORY_MAP = {
-    "2152": "Laptops",
-    "1607": "Mobiles",
-    "116": "Electronics",
-    "1330": "Home & Garden",
-    "1087": "Fashion",
-    "47": "Appliances",
-    "2487": "Accessories",
-    "453": "Software"
-}
-
 MAX_OS_WINDOW = 10000 
 
 # =================================================================
-# 🧠 AI SMART BRAND EXTRACTOR (Solves empty database fields)
+# 🧠 AI SMART BRAND EXTRACTOR (Ultimate Brain Version)
 # =================================================================
 def get_smart_brand(source):
-    # 1. Check if the database actually has the brand
+    # 1. Try to get the official Brand from the Database
     raw_brand = source.get("brand", "")
     if raw_brand and str(raw_brand).strip().lower() not in ["none", "", "null", "other brands", "unknown"]:
         return str(raw_brand).strip().upper()
         
+    # 2. Try to get the Brand from the "Supplier" Attribute!
+    attrs = source.get("attributes", {})
+    if isinstance(attrs, dict):
+        supplier = attrs.get("supplier", "")
+        if supplier and str(supplier).strip().lower() not in ["none", "", "null", "unknown"]:
+            return str(supplier).strip().upper()
+
     title = str(source.get("name", "")).strip()
     title_lower = title.lower()
     
-    # 2. Product Line to Parent Brand Mappings
+    # 3. Product Line strict mappings
     brand_mappings = {
         "iphone": "APPLE", "ipad": "APPLE", "macbook": "APPLE", "airpods": "APPLE", "imac": "APPLE",
-        "galaxy": "SAMSUNG", "s20": "SAMSUNG", "s21": "SAMSUNG", "s22": "SAMSUNG", "s23": "SAMSUNG", "s24": "SAMSUNG", "note": "SAMSUNG",
+        "galaxy": "SAMSUNG", "s20": "SAMSUNG", "s21": "SAMSUNG", "s22": "SAMSUNG", "s23": "SAMSUNG", "s24": "SAMSUNG",
         "thinkpad": "LENOVO", "yoga": "LENOVO", "ideapad": "LENOVO",
         "predator": "ACER", "aspire": "ACER",
         "pavilion": "HP", "envy": "HP", "omen": "HP", "spectre": "HP",
@@ -53,27 +46,25 @@ def get_smart_brand(source):
         "pixel": "GOOGLE", "kindle": "AMAZON", "echo": "AMAZON"
     }
     for keyword, mapped_brand in brand_mappings.items():
-        if keyword in title_lower:
+        if re.search(rf'\b{keyword}\b', title_lower):
             return mapped_brand
             
-    # 3. Known Brands Check
+    # 4. Known Brands check
     known_brands = [
-        "nike", "adidas", "puma", "reebok", "under armour", "new balance", "vans",
-        "sony", "lg", "panasonic", "dell", "asus", "acer", "lenovo", "hp", "microsoft", "apple", "samsung",
-        "omnica", "envysun", "hogan", "guess", "gabs", "michael kors", "springa"
+        "nike", "adidas", "puma", "reebok", "sony", "dell", "asus", "acer", "lenovo", "hp", "microsoft", "apple", "samsung", "viking", "u-line"
     ]
     for b in known_brands:
-        if b in title_lower:
+        if re.search(rf'\b{b}\b', title_lower):
             return b.upper()
             
-    # 4. Fallback: Extract the first word of the title as the brand
+    # 5. Ultimate Fallback: The First Word of the Title
     words = title.split()
     if words:
         first_word = words[0].strip('",\'()[]{}!@#$%-').upper()
-        if len(first_word) > 1 and not first_word.isnumeric():
+        if len(first_word) > 2 and not first_word.isnumeric() and first_word not in ["THE", "FOR", "AND", "WITH"]:
             return first_word
             
-    return "UNKNOWN BRAND"
+    return "UNKNOWN"
 
 # ==========================================
 # 📄 SERVER-SIDE HTML GENERATION
@@ -142,10 +133,10 @@ async def execute_search(request: SearchRequest):
             if request.filters.price.max is not None: price_range["lte"] = request.filters.price.max
             if price_range: bool_query["filter"].append({"range": {"price": price_range}})
 
-    # ✅ ADDED: Magic filter for the new "On Sale Items" dropdown option!
+    # 🔥 On Sale Filter
     if request.sort == "on_sale":
         bool_query["filter"].append({"range": {"sale_price": {"gt": 0}}})
-        sort_query = [{"_score": "desc"}] # Default to best match for the sale items
+        sort_query = [{"_score": "desc"}] 
     else:
         sort_query = [{"price": "asc"}] if request.sort == "price_asc" else [{"price": "desc"}] if request.sort == "price_desc" else [{"_score": "desc"}]
 
@@ -183,9 +174,12 @@ async def execute_search(request: SearchRequest):
         
         brand_display = get_smart_brand(source)
         
+        # ✅ FIX: Load categories safely as strings from the database
         raw_cats = source.get("category", [])
-        if not isinstance(raw_cats, list): raw_cats = [raw_cats]
-        clean_cats = [CATEGORY_MAP.get(str(c), f"Category {c}") for c in raw_cats if c]
+        if isinstance(raw_cats, str):
+            clean_cats = [c.strip() for c in raw_cats.split(",")]
+        else:
+            clean_cats = [str(c).strip() for c in raw_cats if c]
 
         images = source.get("images", [])
         primary_image = images[0] if isinstance(images, list) and len(images) > 0 else None
@@ -211,7 +205,7 @@ async def execute_search(request: SearchRequest):
 
     facets = {
         "brands": [{"label": str(b.get("key", "")).strip() if b.get("key") and str(b.get("key")).strip() else "Other Brands", "value": b.get("key"), "count": b.get("doc_count", 0)} for b in brands_agg],
-        "categories": [{"value": c.get("key"), "label": CATEGORY_MAP.get(str(c.get("key")), f"Category {c.get('key')}"), "count": c.get("doc_count", 0)} for c in categories_agg]
+        "categories": [{"value": str(c.get("key")).strip(), "label": str(c.get("key")).strip(), "count": c.get("doc_count", 0)} for c in categories_agg if c.get("key")]
     }
 
     final_response = {"total_results": total_hits, "total_pages": total_pages, "current_page": request.page, "pagination_html": build_pagination_html(total_pages, request.page), "results": results, "facets": facets}
@@ -285,11 +279,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         total_products = response.get("hits", {}).get("total", {}).get("value", 0)
 
         cats_agg = response.get("aggregations", {}).get("top_categories", {}).get("buckets", [])
-        dynamic_cats = []
-        for c in cats_agg:
-            cat_val = str(c.get("key"))
-            cat_name = CATEGORY_MAP.get(cat_val, cat_val).title()
-            if cat_name and cat_name.lower() != "none": dynamic_cats.append(cat_name)
+        dynamic_cats = [str(c.get("key")) for c in cats_agg if str(c.get("key")).lower() != "none"]
 
     except Exception as e:
         logger.error(f"❌ OpenSearch Mega Menu Error: {e}")
@@ -308,7 +298,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             name = source.get("name", "Unknown Product")
             
             brand_display = get_smart_brand(source)
-            if brand_display != "UNKNOWN BRAND":
+            if brand_display != "UNKNOWN BRAND" and brand_display != "UNKNOWN":
                 dynamic_brands_set.add(brand_display)
             
             price = float(source.get("price", 0.0))
@@ -318,7 +308,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             images = source.get("images", [])
             img_url = images[0] if isinstance(images, list) and images else "https://placehold.co/100x100?text=No+Image"
 
-            # 🏷️ BUILD SALE BADGE AND PRICE HTML
             if sale_price > 0 and sale_price < price:
                 badge_html = '<div style="position: absolute; top: -6px; right: -6px; background: #CC0000; color: white; font-size: 9px; font-weight: bold; padding: 2px 6px; border-radius: 3px; z-index: 10; text-transform: uppercase; letter-spacing: 0.5px;">Sale</div>'
                 price_html = f'<div class="ath-prod-price"><span style="color: #CC0000; font-weight: 800;">${sale_price:.2f}</span> <del style="color: #888; font-size: 13px; font-weight: 600; margin-left: 4px;">${price:.2f}</del></div>'

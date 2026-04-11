@@ -34,7 +34,8 @@ CONFIG = {
     "OPENSEARCH_HOST":          os.getenv("OPENSEARCH_HOST"),
     "OPENSEARCH_REGION":        os.getenv("OPENSEARCH_REGION", "us-west-2"),
     "OPENSEARCH_INDEX":         os.getenv("OPENSEARCH_INDEX", "products"),
-    "DELETE_EXISTING_INDEX":    False, 
+    # ✅ SET TO TRUE: This will wipe out the old IDs and put in the fresh text!
+    "DELETE_EXISTING_INDEX":    True, 
 }
 
 # ============================================================
@@ -49,6 +50,58 @@ class BigCommerceExtractor:
             "Content-Type": "application/json",
             "Accept":       "application/json",
         }
+
+    # 🧠 NEW: Fetch all Categories and build a dictionary mapping ID -> Name
+    async def get_category_map(self) -> dict:
+        logger.info("📥 Fetching Category Tree from BigCommerce...")
+        cat_map = {}
+        page = 1
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while True:
+                resp = await client.get(
+                    f"{self.base_url}/catalog/categories",
+                    params={"page": page, "limit": 250},
+                    headers=self.headers
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                
+                for cat in data.get("data", []):
+                    cat_map[cat["id"]] = cat["name"]
+                
+                total_pages = data.get("meta", {}).get("pagination", {}).get("total_pages", 1)
+                if page >= total_pages:
+                    break
+                page += 1
+                await asyncio.sleep(0.2)
+        logger.info(f"✅ Memorized {len(cat_map)} Categories.")
+        return cat_map
+
+    # 🧠 NEW: Fetch all Brands and build a dictionary mapping ID -> Name
+    async def get_brand_map(self) -> dict:
+        logger.info("📥 Fetching Brand Dictionary from BigCommerce...")
+        brand_map = {}
+        page = 1
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while True:
+                resp = await client.get(
+                    f"{self.base_url}/catalog/brands",
+                    params={"page": page, "limit": 250},
+                    headers=self.headers
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                
+                for brand in data.get("data", []):
+                    brand_map[brand["id"]] = brand["name"]
+                
+                total_pages = data.get("meta", {}).get("pagination", {}).get("total_pages", 1)
+                if page >= total_pages:
+                    break
+                page += 1
+                await asyncio.sleep(0.2)
+        logger.info(f"✅ Memorized {len(brand_map)} Brands.")
+        return brand_map
 
     async def get_all_products(
         self,
@@ -140,19 +193,31 @@ def is_product_eligible(raw: dict) -> bool:
     return True
 
 
-def transform_product(raw: dict) -> dict:
+# 🧠 UPDATED: Uses the category_map and brand_map to fetch real words
+def transform_product(raw: dict, category_map: dict, brand_map: dict) -> dict:
     try:
         product_id  = str(raw.get("id", ""))
         name        = raw.get("name", "").strip()
         description = strip_html(raw.get("description", ""))
-        brand       = raw.get("brand_name", "") or ""
+        
+        # 🧠 Brand Translation
+        brand_id = raw.get("brand_id")
+        brand = brand_map.get(brand_id, "") if brand_id else ""
+        if not brand:
+            brand = raw.get("brand_name", "") or ""
 
+        # 🧠 Category Translation
         categories = []
         for cat in raw.get("categories", []):
             if isinstance(cat, dict):
                 categories.append(cat.get("name", ""))
             elif isinstance(cat, (int, str)):
-                categories.append(str(cat))
+                cat_id_int = int(cat) if str(cat).isdigit() else cat
+                cat_name = category_map.get(cat_id_int)
+                if cat_name:
+                    categories.append(cat_name)
+                else:
+                    categories.append(str(cat))
 
         price      = float(raw.get("price", 0) or 0)
         sale_price = raw.get("sale_price")
@@ -219,13 +284,13 @@ def transform_product(raw: dict) -> dict:
         }
 
 
-def transform_batch(raw_products: list[dict]) -> list[dict]:
+def transform_batch(raw_products: list[dict], category_map: dict, brand_map: dict) -> list[dict]:
     results, skipped = [], 0
     for raw in raw_products:
         if not is_product_eligible(raw):
             skipped += 1
             continue
-        transformed = transform_product(raw)
+        transformed = transform_product(raw, category_map, brand_map)
         if transformed.get("product_id"):
             results.append(transformed)
     if skipped:
@@ -414,12 +479,17 @@ async def run():
     total = await extractor.get_product_count()
     logger.info(f"Total active+visible products in BigCommerce: {total}")
 
+    # 🧠 NEW: Grab the mappings before looping!
+    category_map = await extractor.get_category_map()
+    brand_map = await extractor.get_brand_map()
+
     indexer.create_index(delete_existing=CONFIG["DELETE_EXISTING_INDEX"])
 
     total_indexed, total_errors = 0, 0
 
     async for raw_page in extractor.get_all_products():
-        products = transform_batch(raw_page)
+        # Pass the mappings so the transformer can swap the IDs for words
+        products = transform_batch(raw_page, category_map, brand_map)
         if not products:
             continue
         
