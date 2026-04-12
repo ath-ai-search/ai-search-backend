@@ -331,6 +331,18 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 
     sidebar_html = ""
     
+    # 🔥 NEW: AI Assistant Box (Only shows if they typed something)
+    if clean_query:
+        sidebar_html += f"""
+        <div class='ath-assistant-box' onclick='window.location.href="/assistant.php?q={clean_query}"'>
+            <div class='ath-assistant-left'>
+                <i class='fas fa-magic ath-assistant-icon'></i>
+                <div class='ath-assistant-text'>Open "<span>{clean_query}</span>"<br>in Assistant</div>
+            </div>
+            <i class='fas fa-arrow-right' style='font-size: 14px; color: #111;'></i>
+        </div>
+        """
+    
     if recent_searches:
         recent_list = recent_searches.split("||")[:3]
         if recent_list and recent_list[0]:
@@ -362,6 +374,15 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     <style>
         .ath-mega-menu {{ display: flex; width: 100%; max-width: 900px; height: 500px; background: white; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.15); font-family: 'Inter', sans-serif; text-align: left; overflow: hidden; border: 1px solid #e5e7eb; }}
         .ath-left-col {{ width: 320px; background: #fdfdfd; padding: 24px; border-right: 1px solid #f0f0f0; overflow-y: auto; }}
+        
+        /* 🔥 NEW: Styles for the AI Assistant Box */
+        .ath-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }}
+        .ath-assistant-box:hover {{ border-color: #d1d5db; box-shadow: 0 4px 6px rgba(0,0,0,0.05); background: #fdfdfd; }}
+        .ath-assistant-left {{ display: flex; align-items: center; gap: 12px; }}
+        .ath-assistant-icon {{ font-size: 16px; color: #111; }}
+        .ath-assistant-text {{ font-size: 13px; font-weight: 500; color: #111; line-height: 1.4; }}
+        .ath-assistant-text span {{ font-style: italic; font-weight: 700; }}
+        
         .ath-side-title {{ font-size: 12px; font-weight: 700; color: #111; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }}
         .ath-side-item {{ font-size: 14px; color: #111; padding: 10px 0; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: background 0.2s; }}
         .ath-side-item i {{ color: #111; font-size: 14px; }}
