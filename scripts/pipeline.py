@@ -34,7 +34,6 @@ CONFIG = {
     "OPENSEARCH_HOST":          os.getenv("OPENSEARCH_HOST"),
     "OPENSEARCH_REGION":        os.getenv("OPENSEARCH_REGION", "us-west-2"),
     "OPENSEARCH_INDEX":         os.getenv("OPENSEARCH_INDEX", "products"),
-    # ✅ SET TO TRUE: This will wipe out the old IDs and put in the fresh text!
     "DELETE_EXISTING_INDEX":    True, 
 }
 
@@ -51,7 +50,6 @@ class BigCommerceExtractor:
             "Accept":       "application/json",
         }
 
-    # 🧠 NEW: Fetch all Categories and build a dictionary mapping ID -> Name
     async def get_category_map(self) -> dict:
         logger.info("📥 Fetching Category Tree from BigCommerce...")
         cat_map = {}
@@ -77,7 +75,6 @@ class BigCommerceExtractor:
         logger.info(f"✅ Memorized {len(cat_map)} Categories.")
         return cat_map
 
-    # 🧠 NEW: Fetch all Brands and build a dictionary mapping ID -> Name
     async def get_brand_map(self) -> dict:
         logger.info("📥 Fetching Brand Dictionary from BigCommerce...")
         brand_map = {}
@@ -179,9 +176,7 @@ def strip_html(html_string: str) -> str:
         clean = clean.replace(old, new)
     return __import__("re").sub(r"\s+", " ", clean).strip()
 
-
 def is_product_eligible(raw: dict) -> bool:
-    """Only index: available + visible + in-stock + price > 0."""
     if not raw.get("is_visible", True):
         return False
     if raw.get("availability", "") != "available":
@@ -192,21 +187,17 @@ def is_product_eligible(raw: dict) -> bool:
         return False
     return True
 
-
-# 🧠 UPDATED: Uses the category_map and brand_map to fetch real words
 def transform_product(raw: dict, category_map: dict, brand_map: dict) -> dict:
     try:
         product_id  = str(raw.get("id", ""))
         name        = raw.get("name", "").strip()
         description = strip_html(raw.get("description", ""))
         
-        # 🧠 Brand Translation
         brand_id = raw.get("brand_id")
         brand = brand_map.get(brand_id, "") if brand_id else ""
         if not brand:
             brand = raw.get("brand_name", "") or ""
 
-        # 🧠 Category Translation
         categories = []
         for cat in raw.get("categories", []):
             if isinstance(cat, dict):
@@ -219,9 +210,9 @@ def transform_product(raw: dict, category_map: dict, brand_map: dict) -> dict:
                 else:
                     categories.append(str(cat))
 
-        price      = float(raw.get("price", 0) or 0)
+        price      = float(raw.get("price", 0) or 0.0)
         sale_price = raw.get("sale_price")
-        sale_price = float(sale_price) if sale_price and float(sale_price) > 0 else None
+        sale_price = float(sale_price) if sale_price and float(sale_price) > 0 else 0.0
 
         inventory = raw.get("inventory_level", 0) or 0
         in_stock  = raw.get("availability") == "available" or inventory > 0
@@ -236,8 +227,8 @@ def transform_product(raw: dict, category_map: dict, brand_map: dict) -> dict:
         attributes = {}
         for cf in raw.get("custom_fields", []):
             if isinstance(cf, dict):
-                k = cf.get("name", "").strip()
-                v = cf.get("value", "").strip()
+                k = str(cf.get("name", "")).strip()
+                v = str(cf.get("value", "")).strip()
                 if k and v:
                     attributes[k] = v
 
@@ -255,7 +246,8 @@ def transform_product(raw: dict, category_map: dict, brand_map: dict) -> dict:
         for k, v in list(attributes.items())[:10]:
             search_parts.append(f"{k}: {v}")
 
-        return {
+        # ✅ FIXED: Prevent crashing by safely handling missing/empty data
+        result = {
             "product_id":      product_id,
             "name":            name,
             "description":     description,
@@ -264,17 +256,24 @@ def transform_product(raw: dict, category_map: dict, brand_map: dict) -> dict:
             "price":           price,
             "sale_price":      sale_price,
             "in_stock":        in_stock,
-            "sku":             raw.get("sku", ""),
+            "sku":             raw.get("sku", "") or "",
             "images":          images,
             "attributes":      attributes,
             "url":             url,
-            "weight":          float(raw.get("weight", 0) or 0),
+            "weight":          float(raw.get("weight", 0) or 0.0),
             "inventory_level": inventory,
             "search_text":     " | ".join(search_parts),
-            "sort_order":      raw.get("sort_order", 0),
-            "total_sold":      raw.get("total_sold", 0),
-            "date_modified":   raw.get("date_modified", ""),
+            "sort_order":      int(raw.get("sort_order", 0) or 0),
+            "total_sold":      int(raw.get("total_sold", 0) or 0)
         }
+        
+        # Only add date if it actually exists (fixes AWS date parsing crash)
+        date_mod = raw.get("date_modified", "")
+        if date_mod:
+            result["date_modified"] = date_mod
+
+        return result
+
     except Exception as e:
         logger.error(f"Transform failed for product {raw.get('id')}: {e}")
         return {
@@ -282,7 +281,6 @@ def transform_product(raw: dict, category_map: dict, brand_map: dict) -> dict:
             "name":        raw.get("name", ""),
             "search_text": raw.get("name", ""),
         }
-
 
 def transform_batch(raw_products: list[dict], category_map: dict, brand_map: dict) -> list[dict]:
     results, skipped = [], 0
@@ -353,32 +351,15 @@ async def generate_embeddings(products: list[dict], api_key: str) -> list[dict]:
 # OPENSEARCH INDEXER
 # ============================================================
 
+# ✅ FIXED: Simplified for AWS Vector Serverless compatibility 
 PRODUCT_MAPPING = {
     "settings": {
-        "index.knn": True,  # 🚀 THE MISSING MASTER SWITCH! Turns on the AI Engine.
-        "analysis": {
-            "analyzer": {
-                "autocomplete": {
-                    "type":      "custom",
-                    "tokenizer": "autocomplete_tokenizer",
-                    "filter":    ["lowercase"],
-                }
-            },
-            "tokenizer": {
-                "autocomplete_tokenizer": {
-                    "type":        "edge_ngram",
-                    "min_gram":    2,
-                    "max_gram":    15,
-                    "token_chars": ["letter", "digit"],
-                }
-            },
-        },
+        "index.knn": True,
     },
     "mappings": {
         "properties": {
             "product_id":    {"type": "keyword"},
-            "name":          {"type": "text", "analyzer": "autocomplete",
-                              "fields": {"keyword": {"type": "keyword"}}},
+            "name":          {"type": "text"},
             "description":   {"type": "text"},
             "brand":         {"type": "keyword"},
             "category":      {"type": "keyword"},
@@ -392,8 +373,6 @@ PRODUCT_MAPPING = {
             "sort_order":    {"type": "integer"},
             "total_sold":    {"type": "integer"},
             "date_modified": {"type": "date", "ignore_malformed": True},
-            
-            # 🚀 WAKING UP THE AI VECTOR DATABASE
             "embedding": {
                 "type":      "knn_vector",
                 "dimension": 1536,
@@ -403,7 +382,6 @@ PRODUCT_MAPPING = {
     },
 }
 
-
 class OpenSearchIndexer:
     def __init__(self, host: str, region: str, index_name: str = "products"):
         from opensearchpy import OpenSearch, helpers, RequestsHttpConnection, AWSV4SignerAuth
@@ -412,13 +390,8 @@ class OpenSearchIndexer:
         self.helpers    = helpers
         self.index_name = index_name
         
-        # Clean the host URL just in case 'https://' was included in the .env file
         clean_host = host.replace("https://", "").rstrip("/")
-        
-        # Get IAM credentials securely from the EC2 instance profile
         credentials = boto3.Session().get_credentials()
-        
-        # Use 'aoss' as the service name for OpenSearch Serverless
         auth = AWSV4SignerAuth(credentials, region, 'aoss')
 
         self.client     = OpenSearch(
@@ -450,6 +423,7 @@ class OpenSearchIndexer:
             {"_index": self.index_name, "_id": p["product_id"], "_source": p}
             for p in products if p.get("product_id")
         ]
+        
         success, errors = self.helpers.bulk(
             self.client, actions,
             raise_on_error=False,
@@ -457,8 +431,14 @@ class OpenSearchIndexer:
             chunk_size=50,
             request_timeout=60,
         )
+        
         error_count = len(errors) if isinstance(errors, list) else 0
         logger.info(f"Bulk index: {success} ok, {error_count} errors")
+        
+        # ✅ NEW: Emergency Error Printer! If it fails, this reveals exactly why.
+        if error_count > 0 and isinstance(errors, list):
+            logger.error(f"❌ EXACT REJECTION REASON: {errors[0]}")
+            
         return {"indexed": success, "errors": error_count}
 
 
@@ -480,7 +460,6 @@ async def run():
     total = await extractor.get_product_count()
     logger.info(f"Total active+visible products in BigCommerce: {total}")
 
-    # 🧠 NEW: Grab the mappings before looping!
     category_map = await extractor.get_category_map()
     brand_map = await extractor.get_brand_map()
 
@@ -489,12 +468,10 @@ async def run():
     total_indexed, total_errors = 0, 0
 
     async for raw_page in extractor.get_all_products():
-        # Pass the mappings so the transformer can swap the IDs for words
         products = transform_batch(raw_page, category_map, brand_map)
         if not products:
             continue
         
-        # This will automatically use zeros if OPENAI_API_KEY is empty
         products = await generate_embeddings(products, CONFIG["OPENAI_API_KEY"])
         
         result   = indexer.bulk_index(products)
