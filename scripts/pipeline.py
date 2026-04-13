@@ -420,7 +420,7 @@ class OpenSearchIndexer:
         if not products:
             return {"indexed": 0, "errors": 0}
         actions = [
-            {"_index": self.index_name, "_id": p["product_id"], "_source": p}
+            {"_index": self.index_name, "_source": p}
             for p in products if p.get("product_id")
         ]
         
