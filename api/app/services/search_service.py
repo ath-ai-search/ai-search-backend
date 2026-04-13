@@ -331,8 +331,8 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 
     sidebar_html = ""
     
-    # 🔥 NEW: AI Assistant Box (Only shows if they typed something)
- if clean_query:
+# 🔥 NEW: AI Assistant Box (Only shows if they typed something)
+    if clean_query:
         sidebar_html += f"""
         <div id='ai-toggle' class='ath-assistant-box' onclick='window.location.href="/assistant.php?q={clean_query}"'>
             <div class='ath-assistant-left'>
