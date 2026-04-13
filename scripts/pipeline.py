@@ -355,6 +355,7 @@ async def generate_embeddings(products: list[dict], api_key: str) -> list[dict]:
 
 PRODUCT_MAPPING = {
     "settings": {
+        "index.knn": True,  # 🚀 THE MISSING MASTER SWITCH! Turns on the AI Engine.
         "analysis": {
             "analyzer": {
                 "autocomplete": {
@@ -392,12 +393,12 @@ PRODUCT_MAPPING = {
             "total_sold":    {"type": "integer"},
             "date_modified": {"type": "date", "ignore_malformed": True},
             
-            # --- KNN MAPPING COMMENTED OUT AS REQUESTED ---
-            # "embedding": {
-            #     "type":      "knn_vector",
-            #     "dimension": 1536,
-            #     "method":    {"name": "hnsw", "space_type": "l2", "engine": "nmslib"},
-            # },
+            # 🚀 WAKING UP THE AI VECTOR DATABASE
+            "embedding": {
+                "type":      "knn_vector",
+                "dimension": 1536,
+                "method":    {"name": "hnsw", "space_type": "l2", "engine": "nmslib"},
+            },
         }
     },
 }
