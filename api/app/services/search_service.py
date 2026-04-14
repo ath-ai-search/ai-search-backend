@@ -71,43 +71,33 @@ def build_pagination_html(total_pages: int, current_page: int) -> str:
 
 def extract_semantic_matrix(query_string):
     query_lower = query_string.lower()
-    core_query = query_lower
     
     smart_min_price, smart_max_price, smart_size, smart_discount = None, None, None, None
     is_sale_intent = False
 
+    # Price Ranges
     range_match = re.search(r'(?:between|from)?\s*\$?\s*(\d+)\s*(?:to|and|-)\s*\$?\s*(\d+)', query_lower)
     if range_match:
         smart_min_price, smart_max_price = float(range_match.group(1)), float(range_match.group(2))
-        core_query = core_query.replace(range_match.group(0), '')
     else:
         max_match = re.search(r'(?:under|less than|below|<)\s*\$?\s*(\d+)', query_lower)
-        if max_match: 
-            smart_max_price = float(max_match.group(1))
-            core_query = core_query.replace(max_match.group(0), '')
+        if max_match: smart_max_price = float(max_match.group(1))
         min_match = re.search(r'(?:over|more than|above|>)\s*\$?\s*(\d+)', query_lower)
-        if min_match: 
-            smart_min_price = float(min_match.group(1))
-            core_query = core_query.replace(min_match.group(0), '')
+        if min_match: smart_min_price = float(min_match.group(1))
 
+    # Sizes
     size_match = re.search(r'size\s*(\d+(?:\.\d+)?)', query_lower)
-    if size_match: 
-        smart_size = str(size_match.group(1))
-        core_query = core_query.replace(size_match.group(0), '')
+    if size_match: smart_size = str(size_match.group(1))
 
+    # 🚀 FIX: Sales & Discounts Logic
     disc_match = re.search(r'(\d+)%\s*(?:off|discount|sale)', query_lower)
-    if disc_match: 
-        smart_discount = int(disc_match.group(1))
-        core_query = core_query.replace(disc_match.group(0), '')
+    if disc_match: smart_discount = int(disc_match.group(1))
     
+    # If they typed "sale", "clearance", "discount", or a percentage, activate sale filter!
     if "sale" in query_lower or "clearance" in query_lower or "discount" in query_lower or smart_discount:
         is_sale_intent = True
-        core_query = re.sub(r'\b(?:with\s+sale|on\s+sale|sale|clearance|discount)\b', '', core_query)
 
-    core_query = re.sub(r'\s+', ' ', core_query).strip()
-    if not core_query:
-        core_query = query_lower 
-
+    # Categories
     personas_dict = ["men", "mens", "women", "womens", "kids", "boys", "girls", "baby", "unisex"]
     occasions_dict = ["wedding", "party", "gym", "running", "casual", "formal", "summer", "winter", "fall", "spring", "outdoor", "indoor", "beach"]
     visuals_dict = ["red", "blue", "black", "white", "green", "yellow", "pink", "purple", "brown", "leather", "suede", "canvas", "cotton", "striped", "solid", "floral", "minimalist", "vintage", "shiny", "matte"]
@@ -117,7 +107,6 @@ def extract_semantic_matrix(query_string):
     extracted_visuals = [v for v in visuals_dict if re.search(rf'\b{v}\b', query_lower)]
 
     return {
-        "core_query": core_query,
         "min_price": smart_min_price, "max_price": smart_max_price, 
         "size": smart_size, "discount": smart_discount, "is_sale": is_sale_intent,
         "personas": extracted_personas, "occasions": extracted_occasions, "visuals": extracted_visuals
@@ -127,8 +116,9 @@ async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    # v7 Cache Key to ensure massive lexical boosts apply instantly
-    cache_key = f"search:ai:v7:{hashlib.md5(request_str.encode()).hexdigest()}"
+    
+    # Updated Cache Key to v5 to force the new Sale Filter
+    cache_key = f"search:ai:v5:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         start_time = time.time()
@@ -145,7 +135,6 @@ async def execute_search(request: SearchRequest):
     vector = None
 
     matrix = extract_semantic_matrix(query_text)
-    core_query = matrix["core_query"]
 
     if query_text:
         try:
@@ -156,15 +145,18 @@ async def execute_search(request: SearchRequest):
 
     filters = [{"term": {"in_stock": True}}]
     
+    # Apply Price Range extracted from NLP
     if matrix["min_price"] is not None or matrix["max_price"] is not None:
         price_range = {}
         if matrix["min_price"] is not None: price_range["gte"] = matrix["min_price"]
         if matrix["max_price"] is not None: price_range["lte"] = matrix["max_price"]
         filters.append({"range": {"price": price_range}})
 
+    # 🚀 FIX: Apply Strict Sale Filter if "sale" intent is true OR if sort dropdown is "on_sale"
     if matrix["is_sale"] or request.sort == "on_sale":
         filters.append({"range": {"sale_price": {"gt": 0}}})
 
+    # Apply standard UI sidebar filters
     if request.filters:
         if request.filters.brand: filters.append({"terms": {"brand": request.filters.brand}})
         if request.filters.category: filters.append({"terms": {"category": request.filters.category}})
@@ -182,50 +174,25 @@ async def execute_search(request: SearchRequest):
     if vector:
         k_val = max(200, from_val + request.page_size + 100)
         
-        # 🚀 FIX: Massive Hierarchical Lexical Overrides
         semantic_shoulds = [
-            # 1. EXACT PHRASE: If the exact phrase matches, massive 200x boost!
-            {"match_phrase": {"name": {"query": core_query, "boost": 200.0}}},
-            {"match_phrase": {"category": {"query": core_query, "boost": 150.0}}},
-            
-            # 2. ALL WORDS MATCH (Fixes "slik" to "silk" with AUTO fuzziness) - 100x boost
+            {"match_phrase": {"category": {"query": query_text, "boost": 8.0}}},
+            {"match_phrase": {"name": {"query": query_text, "boost": 5.0}}},
             {
                 "multi_match": {
-                    "query": core_query, 
-                    "fields": ["name^10", "category^8", "brand^5"],
+                    "query": query_text, 
+                    "fields": ["name^4", "category^3", "brand^2"],
                     "operator": "and",
                     "fuzziness": "AUTO",
-                    "boost": 100.0
+                    "boost": 4.0
                 }
             },
-            
-            # 3. 75% OF WORDS MATCH (Fixes complex searches where 1 word might be missing) - 50x boost
-            {
-                "multi_match": {
-                    "query": core_query, 
-                    "fields": ["name^5", "category^4", "brand^3"],
-                    "operator": "or",
-                    "minimum_should_match": "75%",
-                    "fuzziness": "AUTO",
-                    "boost": 50.0
-                }
-            },
-            
-            # 4. LOOSE MATCH (Just in case) - 10x boost
-            {
-                "multi_match": {
-                    "query": core_query, 
-                    "fields": ["name", "category", "brand", "description"],
-                    "operator": "or",
-                    "boost": 10.0
-                }
-            }
+            {"multi_match": {"query": query_text, "fields": ["name", "brand"]}}
         ]
         
-        for p in matrix["personas"]: semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^2", "category^2"], "boost": 5.0}})
-        for o in matrix["occasions"]: semantic_shoulds.append({"multi_match": {"query": o, "fields": ["name^2", "attributes^2"], "boost": 5.0}})
-        for v in matrix["visuals"]: semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^2", "attributes^2"], "boost": 5.0}})
-        if matrix["size"]: semantic_shoulds.append({"multi_match": {"query": matrix["size"], "fields": ["name^5", "attributes^4"], "boost": 15.0}})
+        for p in matrix["personas"]: semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^1.5", "category^1.5"]}})
+        for o in matrix["occasions"]: semantic_shoulds.append({"multi_match": {"query": o, "fields": ["name^1.5", "attributes^1.5"]}})
+        for v in matrix["visuals"]: semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^1.5", "attributes^1.5"]}})
+        if matrix["size"]: semantic_shoulds.append({"multi_match": {"query": matrix["size"], "fields": ["name^3", "attributes^2"]}})
 
         query_body = {
             "query": {
@@ -388,7 +355,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         except Exception: pass
 
         matrix = extract_semantic_matrix(clean_query)
-        core_query = matrix["core_query"]
             
         filters = [{"term": {"in_stock": True}}]
         
@@ -398,27 +364,28 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             if matrix["max_price"] is not None: price_range["lte"] = matrix["max_price"]
             filters.append({"range": {"price": price_range}})
 
+        # 🚀 FIX: Apply Strict Sale Filter to Mega Menu as well
         if matrix["is_sale"]:
             filters.append({"range": {"sale_price": {"gt": 0}}})
 
         if vector:
             semantic_shoulds = [
-                {"match_phrase": {"name": {"query": core_query, "boost": 200.0}}},
-                {"match_phrase": {"category": {"query": core_query, "boost": 150.0}}},
+                {"match_phrase": {"category": {"query": clean_query, "boost": 8.0}}},
+                {"match_phrase": {"name": {"query": clean_query, "boost": 5.0}}},
                 {
                     "multi_match": {
-                        "query": core_query, 
-                        "fields": ["name^10", "category^8", "brand^5"],
+                        "query": clean_query, 
+                        "fields": ["name^4", "category^3", "brand^2"],
                         "operator": "and",
                         "fuzziness": "AUTO",
-                        "boost": 100.0
+                        "boost": 4.0
                     }
-                }
+                },
             ]
-            for p in matrix["personas"]: semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^2", "category^2"]}})
-            for o in matrix["occasions"]: semantic_shoulds.append({"multi_match": {"query": o, "fields": ["name^2", "attributes^2"]}})
-            for v in matrix["visuals"]: semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^2", "attributes^2"]}})
-            if matrix["size"]: semantic_shoulds.append({"multi_match": {"query": matrix["size"], "fields": ["name^5", "attributes^4"], "boost": 10.0}})
+            for p in matrix["personas"]: semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^1.5", "category^1.5"]}})
+            for o in matrix["occasions"]: semantic_shoulds.append({"multi_match": {"query": o, "fields": ["name^1.5", "attributes^1.5"]}})
+            for v in matrix["visuals"]: semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^1.5", "attributes^1.5"]}})
+            if matrix["size"]: semantic_shoulds.append({"multi_match": {"query": matrix["size"], "fields": ["name^3", "attributes^2"]}})
 
             os_query = {
                 "size": 4,
