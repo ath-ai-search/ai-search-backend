@@ -69,11 +69,58 @@ def build_pagination_html(total_pages: int, current_page: int) -> str:
     if end < total_pages: html += f'<span style="align-self:center;">...</span><button class="page-btn" data-page="{total_pages}">{total_pages}</button>'
     return html
 
+# =========================================================================
+# 🧠 CORE AI: MULTI-DIMENSIONAL INTENT EXTRACTION
+# =========================================================================
+def extract_semantic_matrix(query_string):
+    query_lower = query_string.lower()
+    
+    # 1. Advanced Math & Numbers (Prices, Sizes, Discounts)
+    smart_min_price, smart_max_price, smart_size, smart_discount = None, None, None, None
+    is_sale_intent = False
+
+    # Ranges & Prices
+    range_match = re.search(r'(?:between|from)?\s*\$?\s*(\d+)\s*(?:to|and|-)\s*\$?\s*(\d+)', query_lower)
+    if range_match:
+        smart_min_price, smart_max_price = float(range_match.group(1)), float(range_match.group(2))
+    else:
+        max_match = re.search(r'(?:under|less than|below|<)\s*\$?\s*(\d+)', query_lower)
+        if max_match: smart_max_price = float(max_match.group(1))
+        min_match = re.search(r'(?:over|more than|above|>)\s*\$?\s*(\d+)', query_lower)
+        if min_match: smart_min_price = float(min_match.group(1))
+
+    # Sizes (e.g., "size 10", "size 9.5")
+    size_match = re.search(r'size\s*(\d+(?:\.\d+)?)', query_lower)
+    if size_match: smart_size = str(size_match.group(1))
+
+    # Discounts (e.g., "20% off", "sale", "clearance")
+    disc_match = re.search(r'(\d+)%\s*(?:off|discount)', query_lower)
+    if disc_match: smart_discount = int(disc_match.group(1))
+    if "sale" in query_lower or "clearance" in query_lower or smart_discount:
+        is_sale_intent = True
+
+    # 2. PersonaOccasion & OccasionIntent
+    personas_dict = ["men", "mens", "women", "womens", "kids", "boys", "girls", "baby", "unisex"]
+    occasions_dict = ["wedding", "party", "gym", "running", "casual", "formal", "summer", "winter", "fall", "spring", "outdoor", "indoor", "beach"]
+    
+    # 3. Visual intentSemantic & Visual intentContext
+    visuals_dict = ["red", "blue", "black", "white", "green", "yellow", "pink", "purple", "brown", "leather", "suede", "canvas", "cotton", "striped", "solid", "floral", "minimalist", "vintage", "shiny", "matte"]
+
+    extracted_personas = [p for p in personas_dict if re.search(rf'\b{p}\b', query_lower)]
+    extracted_occasions = [o for o in occasions_dict if re.search(rf'\b{o}\b', query_lower)]
+    extracted_visuals = [v for v in visuals_dict if re.search(rf'\b{v}\b', query_lower)]
+
+    return {
+        "min_price": smart_min_price, "max_price": smart_max_price, 
+        "size": smart_size, "discount": smart_discount, "is_sale": is_sale_intent,
+        "personas": extracted_personas, "occasions": extracted_occasions, "visuals": extracted_visuals
+    }
+
 async def execute_search(request: SearchRequest):
     request.page_size = 25
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v2:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         start_time = time.time()
@@ -89,84 +136,73 @@ async def execute_search(request: SearchRequest):
     query_text = request.query.strip() if request.query else ""
     vector = None
 
-    # =========================================================================
-    # 🧠 AI PART 1: NLP / NLQ (Natural Language Processing)
-    # Extracts complex human intents like "between $50 to $80" or "under 100"
-    # =========================================================================
-    smart_min_price = None
-    smart_max_price = None
-    query_lower = query_text.lower()
+    # 🧠 Run the Semantic Matrix
+    matrix = extract_semantic_matrix(query_text)
 
-    # 1a. Match Range: "between $50 and $80", "from 50 to 80", "50-80"
-    range_match = re.search(r'(?:between|from)?\s*\$?\s*(\d+)\s*(?:to|and|-)\s*\$?\s*(\d+)', query_lower)
-    if range_match:
-        smart_min_price = float(range_match.group(1))
-        smart_max_price = float(range_match.group(2))
-    else:
-        # 1b. Match Maximums: "under 50", "less than 100", "below 80"
-        max_match = re.search(r'(?:under|less than|below|<)\s*\$?\s*(\d+)', query_lower)
-        if max_match:
-            smart_max_price = float(max_match.group(1))
-        
-        # 1c. Match Minimums: "over 50", "more than 100", "above 80"
-        min_match = re.search(r'(?:over|more than|above|>)\s*\$?\s*(\d+)', query_lower)
-        if min_match:
-            smart_min_price = float(min_match.group(1))
-
-    # =========================================================================
-    # 🧠 AI PART 2: LLM (Large Language Model) - Generating Vectors
-    # Understands the "meaning" of the user's sentence and converts to Math
-    # =========================================================================
+    # Generate LLM Vector
     if query_text:
         try:
-            resp = await openai_client.embeddings.create(
-                input=query_text,
-                model="text-embedding-3-small"
-            )
+            resp = await openai_client.embeddings.create(input=query_text, model="text-embedding-3-small")
             vector = resp.data[0].embedding
         except Exception as e:
             logger.error(f"❌ OpenAI Embedding Failed: {e}")
 
-    # Build the strict hard-data filters (NLP outputs + UI Checkboxes)
+    # Build Strict Filters (Math/Numbers/Status)
     filters = [{"term": {"in_stock": True}}]
     
-    # Apply NLP Extracted Prices
-    if smart_min_price is not None or smart_max_price is not None:
+    if matrix["min_price"] is not None or matrix["max_price"] is not None:
         price_range = {}
-        if smart_min_price is not None: price_range["gte"] = smart_min_price
-        if smart_max_price is not None: price_range["lte"] = smart_max_price
+        if matrix["min_price"] is not None: price_range["gte"] = matrix["min_price"]
+        if matrix["max_price"] is not None: price_range["lte"] = matrix["max_price"]
         filters.append({"range": {"price": price_range}})
 
+    # Apply UI filters
     if request.filters:
         if request.filters.brand: filters.append({"terms": {"brand": request.filters.brand}})
         if request.filters.category: filters.append({"terms": {"category": request.filters.category}})
         if request.filters.in_stock is not None: filters.append({"term": {"in_stock": request.filters.in_stock}})
         if request.filters.price:
-            price_range = {}
-            if request.filters.price.min is not None: price_range["gte"] = request.filters.price.min
-            if request.filters.price.max is not None: price_range["lte"] = request.filters.price.max
-            if price_range: filters.append({"range": {"price": price_range}})
+            p_range = {}
+            if request.filters.price.min is not None: p_range["gte"] = request.filters.price.min
+            if request.filters.price.max is not None: p_range["lte"] = request.filters.price.max
+            if p_range: filters.append({"range": {"price": p_range}})
 
-    sort_query = [{"_score": "desc"}] if request.sort in ["weighted", "relevance"] else [{"price": "asc"}] if request.sort == "price_asc" else [{"price": "desc"}] if request.sort == "price_desc" else [{"_score": "desc"}]
+    # Handle UI Sorting OR AI Sale Intent
+    sort_query = [{"_score": "desc"}]
+    if request.sort == "price_asc": sort_query = [{"price": "asc"}]
+    elif request.sort == "price_desc": sort_query = [{"price": "desc"}]
+    elif request.sort == "on_sale" or matrix["is_sale"]: sort_query = [{"_score": "desc"}] 
 
-    # =========================================================================
-    # 🧠 AI PART 3: k-NN (k-Nearest Neighbors) & HYBRID SEARCH BOOSTER
-    # Combines fuzzy AI Meaning with Strict Exact Keywords to fix "too smart" bug
-    # =========================================================================
+    # 🚀 BUILD THE SEMANTIC OPEN SEARCH QUERY
     if vector:
         k_val = max(200, from_val + request.page_size + 100)
+        
+        # Base exact matches
+        semantic_shoulds = [
+            {"match_phrase": {"category": {"query": query_text, "boost": 10.0}}},
+            {"match_phrase": {"name": {"query": query_text, "boost": 5.0}}},
+            {"multi_match": {"query": query_text, "fields": ["name^2", "brand^2"]}}
+        ]
+        
+        # Apply PersonaOccasion / OccasionIntent Boosts
+        for p in matrix["personas"]:
+            semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^4", "category^3", "description^2"]}})
+        for o in matrix["occasions"]:
+            semantic_shoulds.append({"multi_match": {"query": o, "fields": ["name^3", "attributes^3", "description^2"]}})
+            
+        # Apply Visual intentSemantic Boosts
+        for v in matrix["visuals"]:
+            semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^5", "attributes^4", "description^2"]}})
+            
+        # Apply Math/Size Boosts
+        if matrix["size"]:
+            semantic_shoulds.append({"multi_match": {"query": matrix["size"], "fields": ["name^6", "attributes^5"]}})
+
         query_body = {
             "query": {
                 "bool": {
-                    # 3a. k-NN Vector Search (Finds the meaning/vibe)
                     "must": [{"knn": {"embedding": {"vector": vector, "k": k_val}}}],
-                    
-                    # 3b. Keyword Booster (Forces exact matches to the very top!)
-                    "should": [
-                        {"match_phrase": {"category": {"query": query_text, "boost": 10.0}}}, # 10x Boost!
-                        {"match_phrase": {"name": {"query": query_text, "boost": 5.0}}},      # 5x Boost!
-                        {"multi_match": {"query": query_text, "fields": ["name^2", "brand^2"]}}
-                    ],
+                    "should": semantic_shoulds,
                     "filter": filters,
                     "minimum_should_match": 0
                 }
@@ -180,7 +216,7 @@ async def execute_search(request: SearchRequest):
         **query_body,
         "sort": sort_query, 
         "track_total_hits": True,
-        "track_scores": True, # 🔥 Required to calculate max_score for UI percentages
+        "track_scores": True,
         "aggs": {"brands": {"terms": {"field": "brand", "size": 25}}, "categories": {"terms": {"field": "category", "size": 25}}}
     }
 
@@ -194,10 +230,6 @@ async def execute_search(request: SearchRequest):
     total_hits = hits.get("total", {}).get("value", 0)
     total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
 
-    # =========================================================================
-    # 📈 AI PART 4: SCORING NORMALIZATION
-    # Converts OpenSearch math scores into clean 0 to 1 percentages
-    # =========================================================================
     max_score = hits.get("max_score")
     if not max_score and len(hits.get("hits", [])) > 0:
         max_score = hits["hits"][0].get("_score", 1.0)
@@ -211,8 +243,7 @@ async def execute_search(request: SearchRequest):
         raw_cats = source.get("category", [])
         clean_cats = []
         if isinstance(raw_cats, str):
-            cleaned_str = re.sub(r"[\[\]'\"]", "", raw_cats)
-            clean_cats = [c.strip() for c in cleaned_str.split(",") if c.strip()]
+            clean_cats = [c.strip() for c in re.sub(r"[\[\]'\"]", "", raw_cats).split(",") if c.strip()]
         elif isinstance(raw_cats, list):
             clean_cats = [str(c).strip() for c in raw_cats if c and str(c).strip()]
         if not clean_cats or clean_cats == ["None"]: clean_cats = ["Uncategorized"]
@@ -239,12 +270,9 @@ async def execute_search(request: SearchRequest):
         })
 
     aggregations = response.get("aggregations", {})
-    brands_agg = aggregations.get("brands", {}).get("buckets", [])
-    categories_agg = aggregations.get("categories", {}).get("buckets", [])
-
     facets = {
-        "brands": [{"label": str(b.get("key", "")).strip() if b.get("key") and str(b.get("key")).strip() else "Other Brands", "value": b.get("key"), "count": b.get("doc_count", 0)} for b in brands_agg],
-        "categories": [{"value": str(c.get("key")).strip(), "label": str(c.get("key")).strip(), "count": c.get("doc_count", 0)} for c in categories_agg if c.get("key")]
+        "brands": [{"label": str(b.get("key", "")).strip() if b.get("key") and str(b.get("key")).strip() else "Other Brands", "value": b.get("key"), "count": b.get("doc_count", 0)} for b in aggregations.get("brands", {}).get("buckets", [])],
+        "categories": [{"value": str(c.get("key")).strip(), "label": str(c.get("key")).strip(), "count": c.get("doc_count", 0)} for c in aggregations.get("categories", {}).get("buckets", []) if c.get("key")]
     }
 
     final_response = {"total_results": total_hits, "total_pages": total_pages, "current_page": request.page, "pagination_html": build_pagination_html(total_pages, request.page), "results": results, "facets": facets}
@@ -298,36 +326,32 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             vector = resp.data[0].embedding
         except Exception: pass
 
-        # NLP logic added to mega menu too
-        smart_min_price = None
-        smart_max_price = None
-        range_match = re.search(r'(?:between|from)?\s*\$?\s*(\d+)\s*(?:to|and|-)\s*\$?\s*(\d+)', clean_query)
-        if range_match:
-            smart_min_price = float(range_match.group(1))
-            smart_max_price = float(range_match.group(2))
-        else:
-            max_match = re.search(r'(?:under|less than|below|<)\s*\$?\s*(\d+)', clean_query)
-            if max_match: smart_max_price = float(max_match.group(1))
-            min_match = re.search(r'(?:over|more than|above|>)\s*\$?\s*(\d+)', clean_query)
-            if min_match: smart_min_price = float(min_match.group(1))
+        # 🧠 Run Semantic Matrix for Mega Menu
+        matrix = extract_semantic_matrix(clean_query)
             
         filters = [{"term": {"in_stock": True}}]
-        if smart_min_price is not None or smart_max_price is not None:
+        if matrix["min_price"] is not None or matrix["max_price"] is not None:
             price_range = {}
-            if smart_min_price is not None: price_range["gte"] = smart_min_price
-            if smart_max_price is not None: price_range["lte"] = smart_max_price
+            if matrix["min_price"] is not None: price_range["gte"] = matrix["min_price"]
+            if matrix["max_price"] is not None: price_range["lte"] = matrix["max_price"]
             filters.append({"range": {"price": price_range}})
 
         if vector:
+            semantic_shoulds = [
+                {"match_phrase": {"category": {"query": clean_query, "boost": 10.0}}},
+                {"match_phrase": {"name": {"query": clean_query, "boost": 5.0}}}
+            ]
+            for p in matrix["personas"]: semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^4", "category^3"]}})
+            for o in matrix["occasions"]: semantic_shoulds.append({"multi_match": {"query": o, "fields": ["name^3", "attributes^3"]}})
+            for v in matrix["visuals"]: semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^5", "attributes^4"]}})
+            if matrix["size"]: semantic_shoulds.append({"multi_match": {"query": matrix["size"], "fields": ["name^6", "attributes^5"]}})
+
             os_query = {
                 "size": 4,
                 "query": {
                     "bool": {
                         "must": [{"knn": {"embedding": {"vector": vector, "k": 50}}}],
-                        "should": [
-                            {"match_phrase": {"category": {"query": clean_query, "boost": 10.0}}},
-                            {"match_phrase": {"name": {"query": clean_query, "boost": 5.0}}}
-                        ],
+                        "should": semantic_shoulds,
                         "filter": filters,
                         "minimum_should_match": 0
                     }
