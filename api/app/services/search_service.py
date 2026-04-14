@@ -75,6 +75,7 @@ def extract_semantic_matrix(query_string):
     smart_min_price, smart_max_price, smart_size, smart_discount = None, None, None, None
     is_sale_intent = False
 
+    # Price Ranges
     range_match = re.search(r'(?:between|from)?\s*\$?\s*(\d+)\s*(?:to|and|-)\s*\$?\s*(\d+)', query_lower)
     if range_match:
         smart_min_price, smart_max_price = float(range_match.group(1)), float(range_match.group(2))
@@ -84,14 +85,19 @@ def extract_semantic_matrix(query_string):
         min_match = re.search(r'(?:over|more than|above|>)\s*\$?\s*(\d+)', query_lower)
         if min_match: smart_min_price = float(min_match.group(1))
 
+    # Sizes
     size_match = re.search(r'size\s*(\d+(?:\.\d+)?)', query_lower)
     if size_match: smart_size = str(size_match.group(1))
 
-    disc_match = re.search(r'(\d+)%\s*(?:off|discount)', query_lower)
+    # 🚀 FIX: Sales & Discounts Logic
+    disc_match = re.search(r'(\d+)%\s*(?:off|discount|sale)', query_lower)
     if disc_match: smart_discount = int(disc_match.group(1))
-    if "sale" in query_lower or "clearance" in query_lower or smart_discount:
+    
+    # If they typed "sale", "clearance", "discount", or a percentage, activate sale filter!
+    if "sale" in query_lower or "clearance" in query_lower or "discount" in query_lower or smart_discount:
         is_sale_intent = True
 
+    # Categories
     personas_dict = ["men", "mens", "women", "womens", "kids", "boys", "girls", "baby", "unisex"]
     occasions_dict = ["wedding", "party", "gym", "running", "casual", "formal", "summer", "winter", "fall", "spring", "outdoor", "indoor", "beach"]
     visuals_dict = ["red", "blue", "black", "white", "green", "yellow", "pink", "purple", "brown", "leather", "suede", "canvas", "cotton", "striped", "solid", "floral", "minimalist", "vintage", "shiny", "matte"]
@@ -110,8 +116,9 @@ async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    # v4 Cache Key to force fresh results with the new logic
-    cache_key = f"search:ai:v4:{hashlib.md5(request_str.encode()).hexdigest()}"
+    
+    # Updated Cache Key to v5 to force the new Sale Filter
+    cache_key = f"search:ai:v5:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         start_time = time.time()
@@ -138,12 +145,18 @@ async def execute_search(request: SearchRequest):
 
     filters = [{"term": {"in_stock": True}}]
     
+    # Apply Price Range extracted from NLP
     if matrix["min_price"] is not None or matrix["max_price"] is not None:
         price_range = {}
         if matrix["min_price"] is not None: price_range["gte"] = matrix["min_price"]
         if matrix["max_price"] is not None: price_range["lte"] = matrix["max_price"]
         filters.append({"range": {"price": price_range}})
 
+    # 🚀 FIX: Apply Strict Sale Filter if "sale" intent is true OR if sort dropdown is "on_sale"
+    if matrix["is_sale"] or request.sort == "on_sale":
+        filters.append({"range": {"sale_price": {"gt": 0}}})
+
+    # Apply standard UI sidebar filters
     if request.filters:
         if request.filters.brand: filters.append({"terms": {"brand": request.filters.brand}})
         if request.filters.category: filters.append({"terms": {"category": request.filters.category}})
@@ -157,12 +170,10 @@ async def execute_search(request: SearchRequest):
     sort_query = [{"_score": "desc"}]
     if request.sort == "price_asc": sort_query = [{"price": "asc"}]
     elif request.sort == "price_desc": sort_query = [{"price": "desc"}]
-    elif request.sort == "on_sale" or matrix["is_sale"]: sort_query = [{"_score": "desc"}] 
 
     if vector:
         k_val = max(200, from_val + request.page_size + 100)
         
-        # 🚀 FIX: Fuzzy 'AND' Matching to stop "Silk Milk" and fix "Slik" typos
         semantic_shoulds = [
             {"match_phrase": {"category": {"query": query_text, "boost": 8.0}}},
             {"match_phrase": {"name": {"query": query_text, "boost": 5.0}}},
@@ -170,15 +181,14 @@ async def execute_search(request: SearchRequest):
                 "multi_match": {
                     "query": query_text, 
                     "fields": ["name^4", "category^3", "brand^2"],
-                    "operator": "and",          # Demands all words match! (No Silk Milk)
-                    "fuzziness": "AUTO",        # Fixes typos! (slik -> silk)
+                    "operator": "and",
+                    "fuzziness": "AUTO",
                     "boost": 4.0
                 }
             },
             {"multi_match": {"query": query_text, "fields": ["name", "brand"]}}
         ]
         
-        # Reduced dimension boosts so colors don't overpower the actual item
         for p in matrix["personas"]: semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^1.5", "category^1.5"]}})
         for o in matrix["occasions"]: semantic_shoulds.append({"multi_match": {"query": o, "fields": ["name^1.5", "attributes^1.5"]}})
         for v in matrix["visuals"]: semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^1.5", "attributes^1.5"]}})
@@ -347,14 +357,18 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         matrix = extract_semantic_matrix(clean_query)
             
         filters = [{"term": {"in_stock": True}}]
+        
         if matrix["min_price"] is not None or matrix["max_price"] is not None:
             price_range = {}
             if matrix["min_price"] is not None: price_range["gte"] = matrix["min_price"]
             if matrix["max_price"] is not None: price_range["lte"] = matrix["max_price"]
             filters.append({"range": {"price": price_range}})
 
+        # 🚀 FIX: Apply Strict Sale Filter to Mega Menu as well
+        if matrix["is_sale"]:
+            filters.append({"range": {"sale_price": {"gt": 0}}})
+
         if vector:
-            # 🚀 FIX: Apply the same Fuzzy AND logic to the mega menu preview!
             semantic_shoulds = [
                 {"match_phrase": {"category": {"query": clean_query, "boost": 8.0}}},
                 {"match_phrase": {"name": {"query": clean_query, "boost": 5.0}}},
