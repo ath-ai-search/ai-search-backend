@@ -7,7 +7,8 @@ from app.config import os_client, INDEX_NAME, redis_client, openai_client
 from app.models.search import SearchRequest
 
 # =========================================================================
-# ⚙️ SYSTEM SETUP & CONFIGURATION
+# ⚙️ SECTION 1: SYSTEM SETUP & CONFIGURATION
+# Sets up the server logs and safety limits for OpenSearch
 # =========================================================================
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -15,12 +16,13 @@ logger = logging.getLogger(__name__)
 MAX_OS_WINDOW = 10000 
 
 # =========================================================================
-# 🛠️ UTILITY FUNCTIONS
+# 🛠️ SECTION 2: UTILITY FUNCTIONS
+# Helper functions to clean data and build HTML elements
 # =========================================================================
 def get_smart_brand(source):
     """
-    Cleans up brand names and maps missing/messy brands to official names 
-    based on the product title (e.g., 'macbook' -> 'APPLE').
+    Cleans up messy brand names from the database and intelligently maps 
+    product models (like 'macbook' or 's20') to their parent brand (APPLE, SAMSUNG).
     """
     raw_brand = source.get("brand", "")
     if raw_brand and str(raw_brand).strip().lower() not in ["none", "", "null", "other brands", "unknown"]:
@@ -66,7 +68,9 @@ def get_smart_brand(source):
     return "UNKNOWN"
 
 def build_pagination_html(total_pages: int, current_page: int) -> str:
-    """Generates the HTML buttons for page navigation at the bottom of the grid."""
+    """
+    Generates the clickable HTML pagination buttons (1, 2, 3...) for the frontend grid.
+    """
     if total_pages <= 1: return ""
     start = max(1, current_page - 2)
     end = min(total_pages, start + 4)
@@ -81,8 +85,9 @@ def build_pagination_html(total_pages: int, current_page: int) -> str:
     return html
 
 # =========================================================================
-# 🧠 AI PART 1: NLP (NATURAL LANGUAGE PROCESSING) MATRIX
-# Extracts complex intents (Prices, Sizes, Sales, Colors, Personas) from text
+# 🧠 SECTION 3: AI NLP (NATURAL LANGUAGE PROCESSING) MATRIX
+# This is the "Brain" that rips apart the user's sentence to find prices, 
+# sizes, colors, genders, and sales, leaving only the "core" item behind.
 # =========================================================================
 def extract_semantic_matrix(query_string):
     query_lower = query_string.lower()
@@ -91,13 +96,13 @@ def extract_semantic_matrix(query_string):
     smart_min_price, smart_max_price, smart_size, smart_discount = None, None, None, None
     is_sale_intent = False
 
-    # 1a. Math NLP: Extract Price Ranges (e.g., "between $40 to $100")
+    # Extractor: Price Ranges ("between $40 to $100")
     range_match = re.search(r'(?:between|from)?\s*\$?\s*(\d+)\s*(?:to|and|-)\s*\$?\s*(\d+)', query_lower)
     if range_match:
         smart_min_price, smart_max_price = float(range_match.group(1)), float(range_match.group(2))
         core_query = core_query.replace(range_match.group(0), '')
     else:
-        # Extract Maximums ("under 100") and Minimums ("over 50")
+        # Extractor: Price Limits ("under 100", "over 50")
         max_match = re.search(r'(?:under|less than|below|<)\s*\$?\s*(\d+)', query_lower)
         if max_match: 
             smart_max_price = float(max_match.group(1))
@@ -107,13 +112,13 @@ def extract_semantic_matrix(query_string):
             smart_min_price = float(min_match.group(1))
             core_query = core_query.replace(min_match.group(0), '')
 
-    # 1b. Math NLP: Extract Sizes
+    # Extractor: Sizes ("size 10.5")
     size_match = re.search(r'size\s*(\d+(?:\.\d+)?)', query_lower)
     if size_match: 
         smart_size = str(size_match.group(1))
         core_query = core_query.replace(size_match.group(0), '')
 
-    # 1c. Math NLP: Extract Discounts and Sale Intent ("20% off", "clearance")
+    # Extractor: Sales and Discounts ("20% off", "clearance")
     disc_match = re.search(r'(\d+)%\s*(?:off|discount|sale)', query_lower)
     if disc_match: 
         smart_discount = int(disc_match.group(1))
@@ -123,16 +128,17 @@ def extract_semantic_matrix(query_string):
         is_sale_intent = True
         core_query = re.sub(r'\b(?:with\s+sale|on\s+sale|sale|clearance|discount)\b', '', core_query)
 
-    # Clean up the query so text-search only sees the actual object
+    # Clean the Core Query (Removes double spaces)
     core_query = re.sub(r'\s+', ' ', core_query).strip()
     if not core_query:
         core_query = query_lower 
 
-    # 1d. Semantic Context NLP (Who, Where, What)
+    # Dimension Dictionaries
     personas_dict = ["men", "mens", "women", "womens", "kids", "boys", "girls", "baby", "unisex"]
     occasions_dict = ["wedding", "party", "gym", "running", "casual", "formal", "summer", "winter", "fall", "spring", "outdoor", "indoor", "beach"]
     visuals_dict = ["red", "blue", "black", "white", "green", "yellow", "pink", "purple", "brown", "leather", "suede", "canvas", "cotton", "striped", "solid", "floral", "minimalist", "vintage", "shiny", "matte"]
 
+    # Extractor: Dimension Matching
     extracted_personas = [p for p in personas_dict if re.search(rf'\b{p}\b', query_lower)]
     extracted_occasions = [o for o in occasions_dict if re.search(rf'\b{o}\b', query_lower)]
     extracted_visuals = [v for v in visuals_dict if re.search(rf'\b{v}\b', query_lower)]
@@ -144,19 +150,18 @@ def extract_semantic_matrix(query_string):
         "personas": extracted_personas, "occasions": extracted_occasions, "visuals": extracted_visuals
     }
 
-
 # =========================================================================
-# 👑 MAIN SEARCH ROUTE
-# Handles the central product grid and the AI Assistant Sidebar Chat
+# 👑 SECTION 4: MAIN SEARCH ROUTE
+# This handles the big product grid, the sidebar filters, and AI Chat
 # =========================================================================
 async def execute_search(request: SearchRequest):
-    # Determine if this is a main grid search (25 items) or AI chat search (10 items)
+    # Differentiate between main grid (25 items) and Chat Assistant (10 items)
     request.page_size = 25 if request.page_size != 10 else 10
-    
-    # ⚡ Redis Caching (Instantly returns repeated searches)
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v8:{hashlib.md5(request_str.encode()).hexdigest()}"
+    
+    # ⚡ Redis Cache (v12)
+    cache_key = f"search:ai:v12:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         start_time = time.time()
@@ -172,14 +177,11 @@ async def execute_search(request: SearchRequest):
     query_text = request.query.strip() if request.query else ""
     vector = None
 
-    # Step 1: Run Natural Language Processing
+    # Step 4.1: Run the NLP Matrix
     matrix = extract_semantic_matrix(query_text)
     core_query = matrix["core_query"]
 
-    # =========================================================================
-    # 🧠 AI PART 2: LLM (LARGE LANGUAGE MODEL) EMBEDDINGS
-    # Translates the search sentence into a 1,536-dimensional math vector
-    # =========================================================================
+    # Step 4.2: Get the OpenAI Embedding Vector
     if query_text:
         try:
             resp = await openai_client.embeddings.create(input=query_text, model="text-embedding-3-small")
@@ -188,11 +190,12 @@ async def execute_search(request: SearchRequest):
             logger.error(f"❌ OpenAI Embedding Failed: {e}")
 
     # =========================================================================
-    # 🛡️ HARD FILTERS (Stock, Price, Brand, Sale Status)
-    # Applies exact rules discovered by the NLP Matrix or UI Checkboxes
+    # 🛡️ SECTION 4.3: STRICT FILTERING (Backend & UI Sidebar)
+    # Automatically applies NLP math rules AND listens to user clicks on the UI
     # =========================================================================
     filters = [{"term": {"in_stock": True}}]
     
+    # NLP Auto-Filters (from text)
     if matrix["min_price"] is not None or matrix["max_price"] is not None:
         price_range = {}
         if matrix["min_price"] is not None: price_range["gte"] = matrix["min_price"]
@@ -202,45 +205,53 @@ async def execute_search(request: SearchRequest):
     if matrix["is_sale"] or request.sort == "on_sale":
         filters.append({"range": {"sale_price": {"gt": 0}}})
 
-    if request.filters:
-        if request.filters.brand: filters.append({"terms": {"brand": request.filters.brand}})
-        if request.filters.category: filters.append({"terms": {"category": request.filters.category}})
-        if request.filters.in_stock is not None: filters.append({"term": {"in_stock": request.filters.in_stock}})
-        if request.filters.price:
-            p_range = {}
-            if request.filters.price.min is not None: p_range["gte"] = request.filters.price.min
-            if request.filters.price.max is not None: p_range["lte"] = request.filters.price.max
-            if p_range: filters.append({"range": {"price": p_range}})
+    # UI Sidebar Checkboxes (User Clicks)
+    req_filters = request_data.get("filters", {}) or {}
+    
+    if req_filters.get("brand"): filters.append({"terms": {"brand": req_filters["brand"]}})
+    if req_filters.get("category"): filters.append({"terms": {"category": req_filters["category"]}})
+    if req_filters.get("in_stock") is not None: filters.append({"term": {"in_stock": req_filters["in_stock"]}})
+    
+    # New Dynamic Attributes (Colors, Sizes, Genders)
+    if req_filters.get("colors"): filters.append({"terms": {"attributes.color": req_filters["colors"]}})
+    if req_filters.get("sizes"): filters.append({"terms": {"attributes.size": req_filters["sizes"]}})
+    if req_filters.get("genders"): filters.append({"terms": {"attributes.gender": req_filters["genders"]}})
 
-    # Default Sorting
+    # UI Price Range Inputs
+    if request.filters and request.filters.price:
+        p_range = {}
+        if request.filters.price.min is not None: p_range["gte"] = request.filters.price.min
+        if request.filters.price.max is not None: p_range["lte"] = request.filters.price.max
+        if p_range: filters.append({"range": {"price": p_range}})
+
+    # Sorting Rules
     sort_query = [{"_score": "desc"}]
     if request.sort == "price_asc": sort_query = [{"price": "asc"}]
     elif request.sort == "price_desc": sort_query = [{"price": "desc"}]
 
     # =========================================================================
-    # 🧠 AI PART 3: k-NN (k-Nearest Neighbors) & HYBRID SCORING
-    # Combines vector meaning with exact keyword boosts to fix "hallucinations"
+    # ⚖️ SECTION 4.4: WEIGHTED HYBRID SCORING (k-NN + Lexical)
+    # Balances AI Meaning with Exact Text Matching to prevent Hallucinations
     # =========================================================================
     if vector:
         k_val = max(200, from_val + request.page_size + 100)
         
-        # Lexical Score Boosters
         semantic_shoulds = [
-            {"match_phrase": {"name": {"query": core_query, "boost": 10.0}}},      # Boost exact name match
-            {"match_phrase": {"brand": {"query": core_query, "boost": 8.0}}},       # Boost exact brand match
-            {"match_phrase": {"category": {"query": core_query, "boost": 5.0}}},    # Boost exact category match
+            {"match_phrase": {"name": {"query": core_query, "boost": 10.0}}},      
+            {"match_phrase": {"brand": {"query": core_query, "boost": 8.0}}},       
+            {"match_phrase": {"category": {"query": core_query, "boost": 5.0}}},    
             {
                 "multi_match": {
                     "query": core_query, 
                     "fields": ["name^4", "brand^3", "category^2"],
-                    "operator": "and",     # Requires all core words to match
-                    "fuzziness": "AUTO",   # Auto-fixes typos (e.g., slik -> silk)
+                    "operator": "and",     
+                    "fuzziness": "AUTO",   
                     "boost": 5.0
                 }
             }
         ]
         
-        # Apply Semantic Context Boosts
+        # Add multipliers for detected Dimensions
         for p in matrix["personas"]: semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^2", "category^2"], "boost": 3.0}})
         for o in matrix["occasions"]: semantic_shoulds.append({"multi_match": {"query": o, "fields": ["name^2", "attributes^2"], "boost": 3.0}})
         for v in matrix["visuals"]: semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^2", "attributes^2"], "boost": 3.0}})
@@ -249,9 +260,9 @@ async def execute_search(request: SearchRequest):
         query_body = {
             "query": {
                 "bool": {
-                    "must": [{"knn": {"embedding": {"vector": vector, "k": k_val}}}], # The Vector Math
-                    "should": semantic_shoulds, # The Lexical Boosts
-                    "filter": filters,          # The Hard Rules
+                    "must": [{"knn": {"embedding": {"vector": vector, "k": k_val}}}], 
+                    "should": semantic_shoulds, 
+                    "filter": filters,          
                     "minimum_should_match": 0
                 }
             }
@@ -259,16 +270,25 @@ async def execute_search(request: SearchRequest):
     else:
         query_body = {"query": {"bool": {"must": [{"match_all": {}}], "filter": filters}}}
 
+    # =========================================================================
+    # 📊 SECTION 4.5: DYNAMIC AGGREGATION (Building the UI Sidebar)
+    # Automatically counts every brand, category, color, size, and gender
+    # =========================================================================
     os_query = {
         "from": from_val, "size": request.page_size,
         **query_body,
         "sort": sort_query, 
         "track_total_hits": True,
-        "track_scores": True, # Required to grab max_score for normalization
-        "aggs": {"brands": {"terms": {"field": "brand", "size": 25}}, "categories": {"terms": {"field": "category", "size": 25}}}
+        "track_scores": True, 
+        "aggs": {
+            "brands": {"terms": {"field": "brand", "size": 15}}, 
+            "categories": {"terms": {"field": "category", "size": 15}},
+            "colors": {"terms": {"field": "attributes.color", "size": 10}},
+            "sizes": {"terms": {"field": "attributes.size", "size": 10}},
+            "genders": {"terms": {"field": "attributes.gender", "size": 5}}
+        }
     }
 
-    # 📡 Execute Query against AWS OpenSearch
     try:
         response = os_client.search(index=INDEX_NAME, body=os_query)
     except Exception as e:
@@ -279,21 +299,17 @@ async def execute_search(request: SearchRequest):
     total_hits = hits.get("total", {}).get("value", 0)
     total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
 
-    # =========================================================================
-    # 📈 AI PART 4: SCORE NORMALIZATION
-    # Converts messy OpenSearch math into a clean 0 to 1 percentage score
-    # =========================================================================
     max_score = hits.get("max_score")
     if not max_score and len(hits.get("hits", [])) > 0:
         max_score = hits["hits"][0].get("_score", 1.0)
     if not max_score or max_score == 0: max_score = 1.0
 
+    # Clean and Format the Results
     results = []
     for hit in hits.get("hits", []):
         source = hit.get("_source", {})
         brand_display = get_smart_brand(source)
         
-        # Clean Categories
         raw_cats = source.get("category", [])
         clean_cats = []
         if isinstance(raw_cats, str):
@@ -302,14 +318,12 @@ async def execute_search(request: SearchRequest):
             clean_cats = [str(c).strip() for c in raw_cats if c and str(c).strip()]
         if not clean_cats or clean_cats == ["None"]: clean_cats = ["Uncategorized"]
 
-        # Parse Images & Fallbacks
         images = source.get("images", [])
         primary_image = images[0] if isinstance(images, list) and len(images) > 0 else None
         _pid = str(source.get("product_id", "123"))
         _demo_rating = 4.0 + (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 10) / 10.0
         _demo_sales = (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 800) + 150
 
-        # Calculate Final Percentage
         raw_score = hit.get("_score", 0) or 0
         normalized_score = min(1.0, raw_score / max_score)
 
@@ -324,17 +338,18 @@ async def execute_search(request: SearchRequest):
             "score": round(normalized_score, 2)
         })
 
-    # Format Facets for Sidebar
     aggregations = response.get("aggregations", {})
     facets = {
-        "brands": [{"label": str(b.get("key", "")).strip() if b.get("key") and str(b.get("key")).strip() else "Other Brands", "value": b.get("key"), "count": b.get("doc_count", 0)} for b in aggregations.get("brands", {}).get("buckets", [])],
-        "categories": [{"value": str(c.get("key")).strip(), "label": str(c.get("key")).strip(), "count": c.get("doc_count", 0)} for c in aggregations.get("categories", {}).get("buckets", []) if c.get("key")]
+        "brands": [{"label": str(b.get("key", "")).strip(), "value": b.get("key"), "count": b.get("doc_count", 0)} for b in aggregations.get("brands", {}).get("buckets", []) if b.get("key")],
+        "categories": [{"value": str(c.get("key")).strip(), "label": str(c.get("key")).strip(), "count": c.get("doc_count", 0)} for c in aggregations.get("categories", {}).get("buckets", []) if c.get("key")],
+        "colors": [{"value": str(c.get("key")).strip(), "label": str(c.get("key")).strip(), "count": c.get("doc_count", 0)} for c in aggregations.get("colors", {}).get("buckets", []) if c.get("key")],
+        "sizes": [{"value": str(s.get("key")).strip(), "label": str(s.get("key")).strip(), "count": s.get("doc_count", 0)} for s in aggregations.get("sizes", {}).get("buckets", []) if s.get("key")],
+        "genders": [{"value": str(g.get("key")).strip(), "label": str(g.get("key")).strip(), "count": g.get("doc_count", 0)} for g in aggregations.get("genders", {}).get("buckets", []) if g.get("key")]
     }
 
     # =========================================================================
-    # 🤖 AI PART 5: GENERATIVE CHAT RESPONSE
-    # Uses OpenAI to write a custom sentence based on the fetched products.
-    # ONLY triggers when the sidebar assistant calls it (page_size == 10).
+    # 💬 SECTION 4.6: GENERATIVE AI CHAT RESPONSE
+    # Uses OpenAI GPT-3.5 to talk to the user in the right sidebar.
     # =========================================================================
     ai_chat_message = "Here are some great options I found for you:"
     if request.page_size == 10 and query_text and total_hits > 0:
@@ -364,9 +379,9 @@ async def execute_search(request: SearchRequest):
 
     final_response = {
         "total_results": total_hits, "total_pages": total_pages, 
-        "current_page": request.page, "pagination_html": build_pagination_html(total_pages, request.page), 
-        "results": results, "facets": facets, 
-        "ai_message": ai_chat_message
+        "current_page": request.page, 
+        "pagination_html": build_pagination_html(total_pages, request.page), 
+        "results": results, "facets": facets, "ai_message": ai_chat_message
     }
     
     try: await redis_client.set(cache_key, json.dumps(final_response), ex=300)
@@ -374,7 +389,8 @@ async def execute_search(request: SearchRequest):
     return final_response
 
 # =========================================================================
-# 🔎 AUTOCOMPLETE ROUTE (Typeahead dropdown in search bar)
+# 🔎 SECTION 5: AUTOCOMPLETE ROUTE (Typeahead Dropdown)
+# Powers the fast drop-down suggestions when typing in the main bar
 # =========================================================================
 async def execute_autocomplete(query_string: str):
     clean_query = query_string.strip()
@@ -407,8 +423,8 @@ async def execute_autocomplete(query_string: str):
     return final_response
 
 # =========================================================================
-# 🌐 HTML MEGA MENU ROUTE
-# Generates the full HTML/CSS layout for the instant pop-up dropdown
+# 🌐 SECTION 6: HTML MEGA MENU ROUTE
+# Generates the entire HTML popup widget that drops down when you click Search
 # =========================================================================
 async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     clean_query = query_string.strip().lower()
