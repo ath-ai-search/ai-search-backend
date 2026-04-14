@@ -23,7 +23,6 @@ async def root():
 async def autocomplete(q: str = Query(..., min_length=1)):
     return await execute_autocomplete(q)
 
-# ✅ RESTORED: The HTML Mega Menu Endpoint
 @app.get("/widget/autocomplete")
 async def mega_menu_endpoint(
     q: str = Query("", description="The search query"),
