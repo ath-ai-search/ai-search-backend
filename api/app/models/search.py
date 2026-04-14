@@ -4,6 +4,10 @@ from typing import List, Optional, Any, Dict
 # ==========================================
 # 📥 REQUEST MODELS (What the UI sends to us)
 # ==========================================
+# ✅ ADDED: The model for your sir's new /ai-search endpoint
+class AIQuery(BaseModel):
+    query: str
+
 class PriceFilter(BaseModel):
     min: Optional[float] = None
     max: Optional[float] = None
@@ -18,8 +22,8 @@ class SearchRequest(BaseModel):
     query: str
     
     # 🔥 PAGINATION CONTROLS 🔥
-    page: int = 1         # The UI changes this to 2, 3, 4, etc.
-    page_size: int = 25   # Keeps the grid looking nice (4 columns x 6 rows = 24)
+    page: int = 1        # The UI changes this to 2, 3, 4, etc.
+    page_size: int = 25  # Keeps the grid looking nice
     
     filters: Optional[Filters] = None
     sort: str = "relevance"
@@ -34,8 +38,6 @@ class SearchResponse(BaseModel):
     total_pages: int
     current_page: int
     
-    # 👇 THIS IS THE CRITICAL LINE YOU MISSED! 👇
-    # It tells FastAPI that it is allowed to send the HTML to the frontend
     pagination_html: Optional[str] = ""
     
     # The actual products and filters

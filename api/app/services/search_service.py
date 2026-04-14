@@ -61,9 +61,6 @@ def get_smart_brand(source):
             
     return "UNKNOWN"
 
-# ==========================================
-# 📄 SERVER-SIDE HTML GENERATION
-# ==========================================
 def build_pagination_html(total_pages: int, current_page: int) -> str:
     if total_pages <= 1: return ""
     start = max(1, current_page - 2)
@@ -103,6 +100,12 @@ async def execute_search(request: SearchRequest):
     query_text = request.query.strip() if request.query else ""
     vector = None
 
+    # 🕵️ SMART INTENT EXTRACTION
+    smart_max_price = None
+    price_match = re.search(r'(?:under|less than)\s*\$?\s*(\d+)', query_text.lower())
+    if price_match:
+        smart_max_price = float(price_match.group(1))
+
     # 1️⃣ AI STEP: Convert Text to 1536-Dimension Vector Embeddings
     if query_text:
         try:
@@ -116,8 +119,12 @@ async def execute_search(request: SearchRequest):
         except Exception as e:
             logger.error(f"❌ OpenAI Embedding Failed: {e}")
 
-    # 2️⃣ EXACT MATH FILTERS: Collect all strict rules (Price, Category, Brand)
-    filters = [{"term": {"in_stock": {"value": True, "boost": 2.0}}}]
+    # 2️⃣ EXACT MATH FILTERS
+    filters = [{"term": {"in_stock": True}}]
+    
+    if smart_max_price:
+        filters.append({"range": {"price": {"lte": smart_max_price}}})
+
     if request.filters:
         if request.filters.brand: filters.append({"terms": {"brand": request.filters.brand}})
         if request.filters.category: filters.append({"terms": {"category": request.filters.category}})
@@ -134,20 +141,27 @@ async def execute_search(request: SearchRequest):
     else:
         sort_query = [{"price": "asc"}] if request.sort == "price_asc" else [{"price": "desc"}] if request.sort == "price_desc" else [{"_score": "desc"}]
 
-    # 3️⃣ HYBRID QUERY ASSEMBLY
+    # 3️⃣ HYBRID QUERY ASSEMBLY (✅ NMSLIB CRASH FIX)
     if vector:
-        main_query = {
-            "knn": {
-                "embedding": {
-                    "vector": vector,
-                    "k": 50
+        # Increase K because NMSLIB filters AFTER finding the nearest neighbors
+        k_val = max(200, from_val + request.page_size + 100)
+        query_body = {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "knn": {
+                                "embedding": {
+                                    "vector": vector,
+                                    "k": k_val
+                                }
+                            }
+                        }
+                    ],
+                    "filter": filters
                 }
             }
         }
-        if filters:
-            main_query["knn"]["embedding"]["filter"] = {"bool": {"must": filters}}
-        
-        query_body = {"query": main_query}
     else:
         query_body = {
             "query": {
@@ -182,7 +196,6 @@ async def execute_search(request: SearchRequest):
         source = hit.get("_source", {})
         brand_display = get_smart_brand(source)
         
-        # ✅ BULLETPROOF CATEGORY PARSER: Safely strips out brackets and quotes
         raw_cats = source.get("category", [])
         clean_cats = []
         if isinstance(raw_cats, str):
@@ -238,7 +251,6 @@ async def execute_autocomplete(query_string: str):
         if cached_result: return json.loads(cached_result)
     except Exception: pass
 
-    # Autocomplete remains keyword-based for lightning-fast keystroke prediction
     os_query = {"size": 10, "_source": ["name", "images"], "query": {"match_phrase_prefix": {"name": {"query": clean_query, "max_expansions": 50}}}}
     try: response = os_client.search(index=INDEX_NAME, body=os_query)
     except Exception: return {"suggestions": []}
@@ -261,195 +273,86 @@ async def execute_autocomplete(query_string: str):
     return final_response
 
 # =================================================================
-# 🎨 MEGA MENU HTML GENERATOR (AI Powered + No Guide)
+# 🧠 JSON AI-SEARCH (Groups products by Category for the Mega Menu)
 # =================================================================
-async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
+async def execute_ai_search(query_string: str):
+    """ ✅ This is the exact endpoint your Sir requested """
     clean_query = query_string.strip().lower()
     
-    if not clean_query:
-        os_query = {
-            "size": 4, "query": {"match_all": {}}, "sort": [{"_score": {"order": "desc"}}],
-            "track_total_hits": True, 
-            "aggs": {"top_categories": {"terms": {"field": "category", "size": 3}}}
-        }
-    else:
-        # AI MEGA MENU VECTORIZATION
-        vector = None
+    vector = None
+    if clean_query:
         try:
             resp = await openai_client.embeddings.create(input=clean_query, model="text-embedding-3-small")
             vector = resp.data[0].embedding
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"OpenAI error in ai_search: {e}")
 
-        if vector:
-            os_query = {
-                "size": 4,
-                "query": {"knn": {"embedding": {"vector": vector, "k": 10}}},
-                "track_total_hits": True, 
-                "aggs": {"top_categories": {"terms": {"field": "category", "size": 3}}}
+    if vector:
+        # ✅ NMSLIB CRASH FIX applied here as well
+        os_query = {
+            "size": 12, 
+            "query": {
+                "bool": {
+                    "must": [
+                        {"knn": {"embedding": {"vector": vector, "k": 50}}}
+                    ],
+                    "filter": [{"term": {"in_stock": True}}]
+                }
             }
-        else:
-            os_query = {
-                "size": 4,
-                "query": {
-                    "bool": {
-                        "should": [
-                            {"multi_match": {"query": clean_query, "fields": ["name^10", "description^2"], "fuzziness": "AUTO", "minimum_should_match": "60%"}},
-                            {"match_phrase_prefix": {"name": {"query": clean_query, "boost": 10.0}}}
-                        ],
-                        "minimum_should_match": 1
-                    }
-                },
-                "sort": [{"_score": {"order": "desc"}}],
-                "track_total_hits": True, 
-                "aggs": {"top_categories": {"terms": {"field": "category", "size": 3}}}
-            }
+        }
+    else:
+        os_query = {
+            "size": 12,
+            "query": {
+                "bool": {
+                    "must": [{"match_all": {}}],
+                    "filter": [{"term": {"in_stock": True}}]
+                }
+            },
+            "sort": [{"_score": {"order": "desc"}}]
+        }
 
     try:
         response = os_client.search(index=INDEX_NAME, body=os_query)
         hits = response.get("hits", {}).get("hits", [])
-        total_products = response.get("hits", {}).get("total", {}).get("value", 0)
-
-        cats_agg = response.get("aggregations", {}).get("top_categories", {}).get("buckets", [])
-        dynamic_cats = [str(c.get("key")) for c in cats_agg if str(c.get("key")).lower() != "none"]
-
     except Exception as e:
-        logger.error(f"❌ OpenSearch Mega Menu Error: {e}")
-        hits = []
-        total_products = 0
-        dynamic_cats = []
+        logger.error(f"❌ OpenSearch AI Search Error: {e}")
+        return {"categories": []}
 
-    products_html = ""
-    dynamic_brands_set = set()
+    category_map = {}
+    cat_id_counter = 1
     
-    if not hits:
-        products_html = "<div style='padding: 20px; color: #666;'>No products found.</div>"
-    else:
-        for hit in hits:
-            source = hit.get("_source", {})
-            name = source.get("name", "Unknown Product")
-            
-            brand_display = get_smart_brand(source)
-            if brand_display != "UNKNOWN BRAND" and brand_display != "UNKNOWN":
-                dynamic_brands_set.add(brand_display)
-            
-            price = float(source.get("price", 0.0))
-            raw_sale = source.get("sale_price")
-            sale_price = float(raw_sale) if raw_sale is not None else 0.0
-            
-            images = source.get("images", [])
-            img_url = images[0] if isinstance(images, list) and images else "https://placehold.co/100x100?text=No+Image"
-
-            if sale_price > 0 and sale_price < price:
-                badge_html = '<div style="position: absolute; top: -6px; right: -6px; background: #CC0000; color: white; font-size: 9px; font-weight: bold; padding: 2px 6px; border-radius: 3px; z-index: 10; text-transform: uppercase; letter-spacing: 0.5px;">Sale</div>'
-                price_html = f'<div class="ath-prod-price"><span style="color: #CC0000; font-weight: 800;">${sale_price:.2f}</span> <del style="color: #888; font-size: 13px; font-weight: 600; margin-left: 4px;">${price:.2f}</del></div>'
-            else:
-                badge_html = ""
-                price_html = f'<div class="ath-prod-price">${price:.2f}</div>'
-
-            products_html += f"""
-            <div class="ath-prod-row" onclick="window.location.href='/search.php?search_query={name}'">
-                <div class="ath-prod-img" style="position: relative;">
-                    {badge_html}
-                    <img src="{img_url}" alt="{name}">
-                </div>
-                <div class="ath-prod-info">
-                    <div class="ath-prod-brand">{brand_display}</div>
-                    <div class="ath-prod-title" title="{name}">{name}</div>
-                    {price_html}
-                </div>
-            </div>
-            """
-
-    sidebar_html = ""
-    
-    if clean_query:
-        sidebar_html += f"""
-        <div id='ai-toggle' class='ath-assistant-box'>
-            <div class='ath-assistant-left'>
-                <i class='fas fa-magic ath-assistant-icon'></i>
-                <div class='ath-assistant-text'>Open "<span>{clean_query}</span>"<br>in Assistant</div>
-            </div>
-            <i class='fas fa-arrow-right' style='font-size: 14px; color: #111;'></i>
-        </div>
-        """
-    
-    if recent_searches:
-        recent_list = recent_searches.split("||")[:3]
-        if recent_list and recent_list[0]:
-            sidebar_html += "<div class='ath-side-title'>RECENT SEARCHES</div>"
-            for r in recent_list:
-                sidebar_html += f"""
-                <div class='ath-side-item' onclick='document.getElementById("search_query").value="{r}"; document.getElementById("search_query").dispatchEvent(new Event("input"));'>
-                    <div style="display:flex; align-items:center; gap:12px;"><i class='far fa-clock'></i> <span>{r}</span></div>
-                    <div style="display:flex; gap:8px; color:#999;"><i class="fas fa-times" style="font-size:10px;"></i><i class="fas fa-arrow-up" style="transform: rotate(45deg); font-size:10px;"></i></div>
-                </div>"""
-
-    dynamic_brands = list(dynamic_brands_set)
-    if dynamic_brands:
-        sidebar_html += "<div class='ath-side-title' style='margin-top:24px;'>BRAND</div>"
-        for b in dynamic_brands[:4]:
-            sidebar_html += f"<div class='ath-side-item'><div style='display:flex; align-items:center; gap:12px;'><i class='fas fa-filter'></i> <span>{b}</span></div></div>"
-
-    if dynamic_cats:
-        sidebar_html += "<div class='ath-side-title' style='margin-top:24px;'>POPULAR SEARCHES</div>"
-        for c in dynamic_cats[:3]:
-            sidebar_html += f"""
-            <div class='ath-side-item' onclick='window.location.href="/search.php?search_query={c}"'>
-                <div style='display:flex; align-items:center; gap:12px;'><i class='fas fa-search'></i> <span>{c}</span></div>
-                <i class="fas fa-arrow-up" style="transform: rotate(45deg); font-size:10px; color:#999;"></i>
-            </div>
-            """
-            
-    # Show dynamic count cleanly with commas
-    see_all_text = ""
-    if total_products > 0:
-        see_all_text = f"<span onclick='window.location.href=\"/search.php?search_query={clean_query}\"'>See all {total_products:,} results &rarr;</span>"
-
-    master_html = f"""
-    <style>
-        .ath-mega-menu {{ display: flex; width: 100%; max-width: 900px; height: 500px; background: white; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.15); font-family: 'Inter', sans-serif; text-align: left; overflow: hidden; border: 1px solid #e5e7eb; }}
-        .ath-left-col {{ width: 320px; background: #fdfdfd; padding: 24px; border-right: 1px solid #f0f0f0; overflow-y: auto; }}
+    for hit in hits:
+        source = hit.get("_source", {})
         
-        .ath-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }}
-        .ath-assistant-box:hover {{ border-color: #d1d5db; box-shadow: 0 4px 6px rgba(0,0,0,0.05); background: #fdfdfd; }}
-        .ath-assistant-left {{ display: flex; align-items: center; gap: 12px; }}
-        .ath-assistant-icon {{ font-size: 16px; color: #111; }}
-        .ath-assistant-text {{ font-size: 13px; font-weight: 500; color: #111; line-height: 1.4; }}
-        .ath-assistant-text span {{ font-style: italic; font-weight: 700; }}
-        
-        .ath-side-title {{ font-size: 12px; font-weight: 700; color: #111; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }}
-        .ath-side-item {{ font-size: 14px; color: #111; padding: 10px 0; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: background 0.2s; }}
-        .ath-side-item i {{ color: #111; font-size: 14px; }}
-        .ath-side-item:hover {{ background: #f5f5f5; border-radius: 4px; }}
-        
-        .ath-right-col {{ flex: 1; padding: 24px 32px; background: white; overflow-y: auto; }}
-        .ath-prod-header {{ display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px; }}
-        .ath-prod-header h3 {{ font-size: 14px; font-weight: 700; color: #111; text-transform: uppercase; letter-spacing: 0.5px; margin: 0; }}
-        .ath-prod-header span {{ font-size: 13px; color: #111; cursor: pointer; font-weight: 500; }}
-        .ath-prod-header span:hover {{ text-decoration: underline; }}
-        .ath-prod-row {{ display: flex; align-items: flex-start; gap: 20px; padding: 16px 0; border-bottom: 1px solid #f5f5f5; cursor: pointer; transition: 0.2s; }}
-        .ath-prod-row:hover {{ background: #fafafa; }}
-        .ath-prod-row:last-child {{ border-bottom: none; }}
-        .ath-prod-img {{ width: 60px; height: 60px; background: white; display: flex; align-items: center; justify-content: center; }}
-        .ath-prod-img img {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
-        .ath-prod-info {{ flex: 1; overflow: hidden; }}
-        .ath-prod-brand {{ font-size: 13px; font-weight: 800; color: #000; text-transform: uppercase; margin-bottom: 4px; letter-spacing: 0.5px; }}
-        .ath-prod-title {{ font-size: 14px; color: #444; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-        .ath-prod-price {{ font-size: 14px; font-weight: 700; color: #111; }}
-    </style>
+        raw_cats = source.get("category", [])
+        clean_cats = []
+        if isinstance(raw_cats, str):
+            cleaned_str = re.sub(r"[\[\]'\"]", "", raw_cats)
+            clean_cats = [c.strip() for c in cleaned_str.split(",") if c.strip()]
+        elif isinstance(raw_cats, list):
+            clean_cats = [str(c).strip() for c in raw_cats if c and str(c).strip()]
+            
+        primary_cat = clean_cats[0] if clean_cats and clean_cats[0] != "None" else "Top Suggestions"
 
-    <div class="ath-mega-menu">
-        <div class="ath-left-col">
-            {sidebar_html}
-        </div>
-        <div class="ath-right-col">
-            <div class="ath-prod-header">
-                <h3>PRODUCTS</h3>
-                {see_all_text}
-            </div>
-            {products_html}
-        </div>
-    </div>
-    """
-    return {"html": master_html}
+        if primary_cat not in category_map:
+            category_map[primary_cat] = {
+                "id": cat_id_counter,
+                "name": primary_cat,
+                "products": []
+            }
+            cat_id_counter += 1
+            
+        images = source.get("images", [])
+        img_url = images[0] if isinstance(images, list) and images else "https://placehold.co/150x150?text=No+Image"
+        
+        category_map[primary_cat]["products"].append({
+            "name": source.get("name", "Unknown Product"),
+            "price": float(source.get("price", 0.0)),
+            "primary_image": img_url,
+            "url": source.get("url", "#")
+        })
+
+    return {
+        "categories": list(category_map.values())
+    }
