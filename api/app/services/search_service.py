@@ -3,7 +3,7 @@ import hashlib
 import time
 import logging
 import re
-from app.config import os_client, INDEX_NAME, redis_client
+from app.config import os_client, INDEX_NAME, redis_client, openai_client
 from app.models.search import SearchRequest
 
 # ==========================================
@@ -15,15 +15,13 @@ logger = logging.getLogger(__name__)
 MAX_OS_WINDOW = 10000 
 
 # =================================================================
-# 🧠 AI SMART BRAND EXTRACTOR (Ultimate Brain Version)
+# 🧠 AI SMART BRAND EXTRACTOR
 # =================================================================
 def get_smart_brand(source):
-    # 1. Try to get the official Brand from the Database
     raw_brand = source.get("brand", "")
     if raw_brand and str(raw_brand).strip().lower() not in ["none", "", "null", "other brands", "unknown"]:
         return str(raw_brand).strip().upper()
         
-    # 2. Try to get the Brand from the "Supplier" Attribute!
     attrs = source.get("attributes", {})
     if isinstance(attrs, dict):
         supplier = attrs.get("supplier", "")
@@ -33,7 +31,6 @@ def get_smart_brand(source):
     title = str(source.get("name", "")).strip()
     title_lower = title.lower()
     
-    # 3. Product Line strict mappings
     brand_mappings = {
         "iphone": "APPLE", "ipad": "APPLE", "macbook": "APPLE", "airpods": "APPLE", "imac": "APPLE",
         "galaxy": "SAMSUNG", "s20": "SAMSUNG", "s21": "SAMSUNG", "s22": "SAMSUNG", "s23": "SAMSUNG", "s24": "SAMSUNG",
@@ -49,7 +46,6 @@ def get_smart_brand(source):
         if re.search(rf'\b{keyword}\b', title_lower):
             return mapped_brand
             
-    # 4. Known Brands check
     known_brands = [
         "nike", "adidas", "puma", "reebok", "sony", "dell", "asus", "acer", "lenovo", "hp", "microsoft", "apple", "samsung", "viking", "u-line"
     ]
@@ -57,7 +53,6 @@ def get_smart_brand(source):
         if re.search(rf'\b{b}\b', title_lower):
             return b.upper()
             
-    # 5. Ultimate Fallback: The First Word of the Title
     words = title.split()
     if words:
         first_word = words[0].strip('",\'()[]{}!@#$%-').upper()
@@ -83,11 +78,14 @@ def build_pagination_html(total_pages: int, current_page: int) -> str:
     if end < total_pages: html += f'<span style="align-self:center;">...</span><button class="page-btn" data-page="{total_pages}">{total_pages}</button>'
     return html
 
+# =================================================================
+# 🚀 CORE SEARCH: LLM VECTOR + KNN + EXACT FILTERS (HYBRID)
+# =================================================================
 async def execute_search(request: SearchRequest):
     request.page_size = 25
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         start_time = time.time()
@@ -97,61 +95,72 @@ async def execute_search(request: SearchRequest):
             logger.info(f"🚀 CACHE HIT: [{latency:.2f}ms] Key: {cache_key}")
             return json.loads(cached_result)
     except Exception as e:
-        logger.warning(f"⚠️ Redis read error (bypassing cache): {e}")
+        logger.warning(f"⚠️ Redis read error: {e}")
 
     from_val = (request.page - 1) * request.page_size
     if from_val + request.page_size > MAX_OS_WINDOW: from_val = MAX_OS_WINDOW - request.page_size 
 
-    bool_query = {"must": [], "should": [], "filter": [], "minimum_should_match": 0}
     query_text = request.query.strip() if request.query else ""
-    
+    vector = None
+
+    # 1️⃣ AI STEP: Convert Text to 1536-Dimension Vector Embeddings
     if query_text:
-        bool_query["minimum_should_match"] = 1
-        bool_query["should"].append({
-            "multi_match": {
-                "query": query_text,
-                "fields": ["name^10", "description"], 
-                "fuzziness": "AUTO",           
-                "minimum_should_match": "70%",
-                "analyzer": "standard",
-                "boost": 1.0 
-            }
-        })
-        bool_query["should"].append({"match_phrase": {"name": {"query": query_text, "boost": 50.0}}})
-    else:
-        bool_query["must"].append({"match_all": {}})
+        try:
+            ai_start = time.time()
+            resp = await openai_client.embeddings.create(
+                input=query_text,
+                model="text-embedding-3-small"
+            )
+            vector = resp.data[0].embedding
+            logger.info(f"🧠 OPENAI VECTORIZED: [{(time.time() - ai_start) * 1000:.2f}ms]")
+        except Exception as e:
+            logger.error(f"❌ OpenAI Embedding Failed: {e}")
 
-    bool_query["should"].append({"term": {"in_stock": {"value": True, "boost": 2.0}}})
-
+    # 2️⃣ EXACT MATH FILTERS: Collect all strict rules (Price, Category, Brand)
+    filters = [{"term": {"in_stock": {"value": True, "boost": 2.0}}}]
     if request.filters:
-        if request.filters.brand: bool_query["filter"].append({"terms": {"brand": request.filters.brand}})
-        if request.filters.category: bool_query["filter"].append({"terms": {"category": request.filters.category}})
-        if request.filters.in_stock is not None: bool_query["filter"].append({"term": {"in_stock": request.filters.in_stock}})
+        if request.filters.brand: filters.append({"terms": {"brand": request.filters.brand}})
+        if request.filters.category: filters.append({"terms": {"category": request.filters.category}})
+        if request.filters.in_stock is not None: filters.append({"term": {"in_stock": request.filters.in_stock}})
         if request.filters.price:
             price_range = {}
             if request.filters.price.min is not None: price_range["gte"] = request.filters.price.min
             if request.filters.price.max is not None: price_range["lte"] = request.filters.price.max
-            if price_range: bool_query["filter"].append({"range": {"price": price_range}})
+            if price_range: filters.append({"range": {"price": price_range}})
 
-    # 🔥 On Sale Filter
     if request.sort == "on_sale":
-        bool_query["filter"].append({"range": {"sale_price": {"gt": 0}}})
+        filters.append({"range": {"sale_price": {"gt": 0}}})
         sort_query = [{"_score": "desc"}] 
     else:
         sort_query = [{"price": "asc"}] if request.sort == "price_asc" else [{"price": "desc"}] if request.sort == "price_desc" else [{"_score": "desc"}]
 
+    # 3️⃣ HYBRID QUERY ASSEMBLY
+    if vector:
+        main_query = {
+            "knn": {
+                "embedding": {
+                    "vector": vector,
+                    "k": 50
+                }
+            }
+        }
+        if filters:
+            main_query["knn"]["embedding"]["filter"] = {"bool": {"must": filters}}
+        
+        query_body = {"query": main_query}
+    else:
+        query_body = {
+            "query": {
+                "bool": {
+                    "must": [{"match_all": {}}],
+                    "filter": filters
+                }
+            }
+        }
+
     os_query = {
         "from": from_val, "size": request.page_size,
-        "query": {
-            "function_score": {
-                "query": {"bool": bool_query},
-                "functions": [
-                    {"field_value_factor": {"field": "rating", "factor": 1.5, "missing": 1.0}},
-                    {"field_value_factor": {"field": "sales_count", "modifier": "log1p", "factor": 0.5, "missing": 0}}
-                ],
-                "boost_mode": "multiply", "score_mode": "sum"
-            }
-        },
+        **query_body,
         "sort": sort_query, "track_total_hits": True,
         "aggs": {"brands": {"terms": {"field": "brand", "size": 25}}, "categories": {"terms": {"field": "category", "size": 25}}}
     }
@@ -159,7 +168,7 @@ async def execute_search(request: SearchRequest):
     try:
         os_start = time.time()
         response = os_client.search(index=INDEX_NAME, body=os_query)
-        logger.info(f"🔍 DB SEARCH: [{(time.time() - os_start) * 1000:.2f}ms]")
+        logger.info(f"🔍 DB VECTOR SEARCH: [{(time.time() - os_start) * 1000:.2f}ms]")
     except Exception as e:
         logger.error(f"❌ OpenSearch Error: {str(e)}")
         return {"error": "Search service unavailable", "results": [], "total_results": 0}
@@ -171,15 +180,19 @@ async def execute_search(request: SearchRequest):
     results = []
     for hit in hits.get("hits", []):
         source = hit.get("_source", {})
-        
         brand_display = get_smart_brand(source)
         
-        # ✅ FIX: Load categories safely as strings from the database
+        # ✅ BULLETPROOF CATEGORY PARSER: Safely strips out brackets and quotes
         raw_cats = source.get("category", [])
+        clean_cats = []
         if isinstance(raw_cats, str):
-            clean_cats = [c.strip() for c in raw_cats.split(",")]
-        else:
-            clean_cats = [str(c).strip() for c in raw_cats if c]
+            cleaned_str = re.sub(r"[\[\]'\"]", "", raw_cats)
+            clean_cats = [c.strip() for c in cleaned_str.split(",") if c.strip()]
+        elif isinstance(raw_cats, list):
+            clean_cats = [str(c).strip() for c in raw_cats if c and str(c).strip()]
+            
+        if not clean_cats or clean_cats == ["None"]:
+            clean_cats = ["Uncategorized"]
 
         images = source.get("images", [])
         primary_image = images[0] if isinstance(images, list) and len(images) > 0 else None
@@ -225,6 +238,7 @@ async def execute_autocomplete(query_string: str):
         if cached_result: return json.loads(cached_result)
     except Exception: pass
 
+    # Autocomplete remains keyword-based for lightning-fast keystroke prediction
     os_query = {"size": 10, "_source": ["name", "images"], "query": {"match_phrase_prefix": {"name": {"query": clean_query, "max_expansions": 50}}}}
     try: response = os_client.search(index=INDEX_NAME, body=os_query)
     except Exception: return {"suggestions": []}
@@ -247,7 +261,7 @@ async def execute_autocomplete(query_string: str):
     return final_response
 
 # =================================================================
-# 🎨 MEGA MENU HTML GENERATOR
+# 🎨 MEGA MENU HTML GENERATOR (AI Powered + No Guide)
 # =================================================================
 async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     clean_query = query_string.strip().lower()
@@ -255,23 +269,41 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     if not clean_query:
         os_query = {
             "size": 4, "query": {"match_all": {}}, "sort": [{"_score": {"order": "desc"}}],
+            "track_total_hits": True, 
             "aggs": {"top_categories": {"terms": {"field": "category", "size": 3}}}
         }
     else:
-        os_query = {
-            "size": 4,
-            "query": {
-                "bool": {
-                    "should": [
-                        {"multi_match": {"query": clean_query, "fields": ["name^10", "description^2"], "fuzziness": "AUTO", "minimum_should_match": "60%"}},
-                        {"match_phrase_prefix": {"name": {"query": clean_query, "boost": 10.0}}}
-                    ],
-                    "minimum_should_match": 1
-                }
-            },
-            "sort": [{"_score": {"order": "desc"}}],
-            "aggs": {"top_categories": {"terms": {"field": "category", "size": 3}}}
-        }
+        # AI MEGA MENU VECTORIZATION
+        vector = None
+        try:
+            resp = await openai_client.embeddings.create(input=clean_query, model="text-embedding-3-small")
+            vector = resp.data[0].embedding
+        except Exception:
+            pass
+
+        if vector:
+            os_query = {
+                "size": 4,
+                "query": {"knn": {"embedding": {"vector": vector, "k": 10}}},
+                "track_total_hits": True, 
+                "aggs": {"top_categories": {"terms": {"field": "category", "size": 3}}}
+            }
+        else:
+            os_query = {
+                "size": 4,
+                "query": {
+                    "bool": {
+                        "should": [
+                            {"multi_match": {"query": clean_query, "fields": ["name^10", "description^2"], "fuzziness": "AUTO", "minimum_should_match": "60%"}},
+                            {"match_phrase_prefix": {"name": {"query": clean_query, "boost": 10.0}}}
+                        ],
+                        "minimum_should_match": 1
+                    }
+                },
+                "sort": [{"_score": {"order": "desc"}}],
+                "track_total_hits": True, 
+                "aggs": {"top_categories": {"terms": {"field": "category", "size": 3}}}
+            }
 
     try:
         response = os_client.search(index=INDEX_NAME, body=os_query)
@@ -331,7 +363,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 
     sidebar_html = ""
     
-# 🔥 NEW: AI Assistant Box (Only shows if they typed something)
     if clean_query:
         sidebar_html += f"""
         <div id='ai-toggle' class='ath-assistant-box'>
@@ -369,13 +400,17 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                 <i class="fas fa-arrow-up" style="transform: rotate(45deg); font-size:10px; color:#999;"></i>
             </div>
             """
+            
+    # Show dynamic count cleanly with commas
+    see_all_text = ""
+    if total_products > 0:
+        see_all_text = f"<span onclick='window.location.href=\"/search.php?search_query={clean_query}\"'>See all {total_products:,} results &rarr;</span>"
 
     master_html = f"""
     <style>
         .ath-mega-menu {{ display: flex; width: 100%; max-width: 900px; height: 500px; background: white; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.15); font-family: 'Inter', sans-serif; text-align: left; overflow: hidden; border: 1px solid #e5e7eb; }}
         .ath-left-col {{ width: 320px; background: #fdfdfd; padding: 24px; border-right: 1px solid #f0f0f0; overflow-y: auto; }}
         
-        /* 🔥 NEW: Styles for the AI Assistant Box */
         .ath-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }}
         .ath-assistant-box:hover {{ border-color: #d1d5db; box-shadow: 0 4px 6px rgba(0,0,0,0.05); background: #fdfdfd; }}
         .ath-assistant-left {{ display: flex; align-items: center; gap: 12px; }}
@@ -387,14 +422,8 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         .ath-side-item {{ font-size: 14px; color: #111; padding: 10px 0; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: background 0.2s; }}
         .ath-side-item i {{ color: #111; font-size: 14px; }}
         .ath-side-item:hover {{ background: #f5f5f5; border-radius: 4px; }}
+        
         .ath-right-col {{ flex: 1; padding: 24px 32px; background: white; overflow-y: auto; }}
-        .ath-guide-title {{ font-size: 14px; font-weight: 700; color: #111; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }}
-        .ath-guide-card {{ display: flex; align-items: center; gap: 20px; background: #f9fafb; padding: 16px; border-radius: 12px; margin-bottom: 32px; cursor: pointer; transition: 0.2s; }}
-        .ath-guide-card:hover {{ background: #f3f4f6; }}
-        .ath-guide-img {{ width: 80px; height: 80px; background: white; border-radius: 8px; display: flex; align-items: center; justify-content: center; overflow: hidden; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }}
-        .ath-guide-img img {{ width: 100%; height: 100%; object-fit: contain; }}
-        .ath-guide-text h4 {{ font-size: 14px; font-weight: 600; color: #111; margin-bottom: 6px; }}
-        .ath-guide-text p {{ font-size: 12px; color: #666; line-height: 1.4; }}
         .ath-prod-header {{ display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px; }}
         .ath-prod-header h3 {{ font-size: 14px; font-weight: 700; color: #111; text-transform: uppercase; letter-spacing: 0.5px; margin: 0; }}
         .ath-prod-header span {{ font-size: 13px; color: #111; cursor: pointer; font-weight: 500; }}
@@ -415,20 +444,9 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             {sidebar_html}
         </div>
         <div class="ath-right-col">
-            <div class="ath-guide-title">SHOPPING GUIDES</div>
-            <div class="ath-guide-card">
-                <div class="ath-guide-img">
-                    <img src="https://placehold.co/80x80?text=Guide" alt="Guide">
-                </div>
-                <div class="ath-guide-text">
-                    <h4>Choosing The Right Product For Your Style</h4>
-                    <p>Explore different styles to find what suits you best. From casual to formal, understanding shapes and sizes can elevate your look.</p>
-                </div>
-            </div>
-
             <div class="ath-prod-header">
                 <h3>PRODUCTS</h3>
-                <span onclick='window.location.href="/search.php?search_query={clean_query}"'>See {total_products} more products &rarr;</span>
+                {see_all_text}
             </div>
             {products_html}
         </div>

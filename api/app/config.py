@@ -3,11 +3,18 @@ import boto3
 import redis.asyncio as redis
 from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
 from dotenv import load_dotenv
+import openai
 
-# ✅ FIX 1: Match the path where Terraform saves the .env file
+# Match the path where Terraform saves the .env file
 load_dotenv("/opt/pipeline/api/.env")
 
-# --- OpenSearch Setup ---
+# --- OpenAI Setup (THE AI BRAIN) ---
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+if not OPENAI_API_KEY:
+    print("⚠️ WARNING: OPENAI_API_KEY is missing! Semantic search will fail.")
+openai_client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
+
+# --- OpenSearch Setup (THE VECTOR DATABASE) ---
 def get_opensearch_client():
     region = os.getenv("OPENSEARCH_REGION", "us-west-2")
     credentials = boto3.Session().get_credentials()
@@ -28,14 +35,14 @@ def get_opensearch_client():
 os_client = get_opensearch_client()
 INDEX_NAME = os.getenv("OPENSEARCH_INDEX", "products")
 
-# --- Redis Setup ---
+# --- Redis Setup (THE HIGH-SPEED MEMORY) ---
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
-# ✅ FIX 2: Added timeouts to prevent the API from hanging if Redis is busy
+# Timeouts prevent the API from hanging if Redis is busy
 redis_client = redis.from_url(
     REDIS_URL, 
     decode_responses=True, 
     encoding="utf-8",
     socket_connect_timeout=5,  # Time to establish connection
-    socket_timeout=5          # Time to wait for a response
+    socket_timeout=5           # Time to wait for a response
 )
