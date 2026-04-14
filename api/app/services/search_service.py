@@ -110,7 +110,8 @@ async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v3:{hashlib.md5(request_str.encode()).hexdigest()}"
+    # v4 Cache Key to force fresh results with the new logic
+    cache_key = f"search:ai:v4:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         start_time = time.time()
@@ -161,16 +162,27 @@ async def execute_search(request: SearchRequest):
     if vector:
         k_val = max(200, from_val + request.page_size + 100)
         
+        # 🚀 FIX: Fuzzy 'AND' Matching to stop "Silk Milk" and fix "Slik" typos
         semantic_shoulds = [
-            {"match_phrase": {"category": {"query": query_text, "boost": 10.0}}},
+            {"match_phrase": {"category": {"query": query_text, "boost": 8.0}}},
             {"match_phrase": {"name": {"query": query_text, "boost": 5.0}}},
-            {"multi_match": {"query": query_text, "fields": ["name^2", "brand^2"]}}
+            {
+                "multi_match": {
+                    "query": query_text, 
+                    "fields": ["name^4", "category^3", "brand^2"],
+                    "operator": "and",          # Demands all words match! (No Silk Milk)
+                    "fuzziness": "AUTO",        # Fixes typos! (slik -> silk)
+                    "boost": 4.0
+                }
+            },
+            {"multi_match": {"query": query_text, "fields": ["name", "brand"]}}
         ]
         
-        for p in matrix["personas"]: semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^4", "category^3", "description^2"]}})
-        for o in matrix["occasions"]: semantic_shoulds.append({"multi_match": {"query": o, "fields": ["name^3", "attributes^3", "description^2"]}})
-        for v in matrix["visuals"]: semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^5", "attributes^4", "description^2"]}})
-        if matrix["size"]: semantic_shoulds.append({"multi_match": {"query": matrix["size"], "fields": ["name^6", "attributes^5"]}})
+        # Reduced dimension boosts so colors don't overpower the actual item
+        for p in matrix["personas"]: semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^1.5", "category^1.5"]}})
+        for o in matrix["occasions"]: semantic_shoulds.append({"multi_match": {"query": o, "fields": ["name^1.5", "attributes^1.5"]}})
+        for v in matrix["visuals"]: semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^1.5", "attributes^1.5"]}})
+        if matrix["size"]: semantic_shoulds.append({"multi_match": {"query": matrix["size"], "fields": ["name^3", "attributes^2"]}})
 
         query_body = {
             "query": {
@@ -249,9 +261,6 @@ async def execute_search(request: SearchRequest):
         "categories": [{"value": str(c.get("key")).strip(), "label": str(c.get("key")).strip(), "count": c.get("doc_count", 0)} for c in aggregations.get("categories", {}).get("buckets", []) if c.get("key")]
     }
 
-    # =========================================================================
-    # 🤖 AI CHAT GENERATOR (Only runs when requested by the Chat Assistant)
-    # =========================================================================
     ai_chat_message = "Here are some great options I found for you:"
     if request.page_size == 10 and query_text and total_hits > 0:
         try:
@@ -345,14 +354,24 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             filters.append({"range": {"price": price_range}})
 
         if vector:
+            # 🚀 FIX: Apply the same Fuzzy AND logic to the mega menu preview!
             semantic_shoulds = [
-                {"match_phrase": {"category": {"query": clean_query, "boost": 10.0}}},
-                {"match_phrase": {"name": {"query": clean_query, "boost": 5.0}}}
+                {"match_phrase": {"category": {"query": clean_query, "boost": 8.0}}},
+                {"match_phrase": {"name": {"query": clean_query, "boost": 5.0}}},
+                {
+                    "multi_match": {
+                        "query": clean_query, 
+                        "fields": ["name^4", "category^3", "brand^2"],
+                        "operator": "and",
+                        "fuzziness": "AUTO",
+                        "boost": 4.0
+                    }
+                },
             ]
-            for p in matrix["personas"]: semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^4", "category^3"]}})
-            for o in matrix["occasions"]: semantic_shoulds.append({"multi_match": {"query": o, "fields": ["name^3", "attributes^3"]}})
-            for v in matrix["visuals"]: semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^5", "attributes^4"]}})
-            if matrix["size"]: semantic_shoulds.append({"multi_match": {"query": matrix["size"], "fields": ["name^6", "attributes^5"]}})
+            for p in matrix["personas"]: semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^1.5", "category^1.5"]}})
+            for o in matrix["occasions"]: semantic_shoulds.append({"multi_match": {"query": o, "fields": ["name^1.5", "attributes^1.5"]}})
+            for v in matrix["visuals"]: semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^1.5", "attributes^1.5"]}})
+            if matrix["size"]: semantic_shoulds.append({"multi_match": {"query": matrix["size"], "fields": ["name^3", "attributes^2"]}})
 
             os_query = {
                 "size": 4,
