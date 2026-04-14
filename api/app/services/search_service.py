@@ -79,8 +79,6 @@ async def execute_search(request: SearchRequest):
         start_time = time.time()
         cached_result = await redis_client.get(cache_key)
         if cached_result:
-            latency = (time.time() - start_time) * 1000
-            logger.info(f"🚀 CACHE HIT: [{latency:.2f}ms] Key: {cache_key}")
             return json.loads(cached_result)
     except Exception as e:
         logger.warning(f"⚠️ Redis read error: {e}")
@@ -91,14 +89,36 @@ async def execute_search(request: SearchRequest):
     query_text = request.query.strip() if request.query else ""
     vector = None
 
+    # =========================================================================
+    # 🧠 AI PART 1: NLP / NLQ (Natural Language Processing)
+    # Extracts complex human intents like "between $50 to $80" or "under 100"
+    # =========================================================================
+    smart_min_price = None
     smart_max_price = None
-    price_match = re.search(r'(?:under|less than)\s*\$?\s*(\d+)', query_text.lower())
-    if price_match:
-        smart_max_price = float(price_match.group(1))
+    query_lower = query_text.lower()
 
+    # 1a. Match Range: "between $50 and $80", "from 50 to 80", "50-80"
+    range_match = re.search(r'(?:between|from)?\s*\$?\s*(\d+)\s*(?:to|and|-)\s*\$?\s*(\d+)', query_lower)
+    if range_match:
+        smart_min_price = float(range_match.group(1))
+        smart_max_price = float(range_match.group(2))
+    else:
+        # 1b. Match Maximums: "under 50", "less than 100", "below 80"
+        max_match = re.search(r'(?:under|less than|below|<)\s*\$?\s*(\d+)', query_lower)
+        if max_match:
+            smart_max_price = float(max_match.group(1))
+        
+        # 1c. Match Minimums: "over 50", "more than 100", "above 80"
+        min_match = re.search(r'(?:over|more than|above|>)\s*\$?\s*(\d+)', query_lower)
+        if min_match:
+            smart_min_price = float(min_match.group(1))
+
+    # =========================================================================
+    # 🧠 AI PART 2: LLM (Large Language Model) - Generating Vectors
+    # Understands the "meaning" of the user's sentence and converts to Math
+    # =========================================================================
     if query_text:
         try:
-            ai_start = time.time()
             resp = await openai_client.embeddings.create(
                 input=query_text,
                 model="text-embedding-3-small"
@@ -107,9 +127,15 @@ async def execute_search(request: SearchRequest):
         except Exception as e:
             logger.error(f"❌ OpenAI Embedding Failed: {e}")
 
+    # Build the strict hard-data filters (NLP outputs + UI Checkboxes)
     filters = [{"term": {"in_stock": True}}]
-    if smart_max_price:
-        filters.append({"range": {"price": {"lte": smart_max_price}}})
+    
+    # Apply NLP Extracted Prices
+    if smart_min_price is not None or smart_max_price is not None:
+        price_range = {}
+        if smart_min_price is not None: price_range["gte"] = smart_min_price
+        if smart_max_price is not None: price_range["lte"] = smart_max_price
+        filters.append({"range": {"price": price_range}})
 
     if request.filters:
         if request.filters.brand: filters.append({"terms": {"brand": request.filters.brand}})
@@ -121,15 +147,28 @@ async def execute_search(request: SearchRequest):
             if request.filters.price.max is not None: price_range["lte"] = request.filters.price.max
             if price_range: filters.append({"range": {"price": price_range}})
 
-    sort_query = [{"_score": "desc"}] if request.sort == "on_sale" else [{"price": "asc"}] if request.sort == "price_asc" else [{"price": "desc"}] if request.sort == "price_desc" else [{"_score": "desc"}]
+    sort_query = [{"_score": "desc"}] if request.sort in ["weighted", "relevance"] else [{"price": "asc"}] if request.sort == "price_asc" else [{"price": "desc"}] if request.sort == "price_desc" else [{"_score": "desc"}]
 
+    # =========================================================================
+    # 🧠 AI PART 3: k-NN (k-Nearest Neighbors) & HYBRID SEARCH BOOSTER
+    # Combines fuzzy AI Meaning with Strict Exact Keywords to fix "too smart" bug
+    # =========================================================================
     if vector:
         k_val = max(200, from_val + request.page_size + 100)
         query_body = {
             "query": {
                 "bool": {
+                    # 3a. k-NN Vector Search (Finds the meaning/vibe)
                     "must": [{"knn": {"embedding": {"vector": vector, "k": k_val}}}],
-                    "filter": filters
+                    
+                    # 3b. Keyword Booster (Forces exact matches to the very top!)
+                    "should": [
+                        {"match_phrase": {"category": {"query": query_text, "boost": 10.0}}}, # 10x Boost!
+                        {"match_phrase": {"name": {"query": query_text, "boost": 5.0}}},      # 5x Boost!
+                        {"multi_match": {"query": query_text, "fields": ["name^2", "brand^2"]}}
+                    ],
+                    "filter": filters,
+                    "minimum_should_match": 0
                 }
             }
         }
@@ -139,7 +178,9 @@ async def execute_search(request: SearchRequest):
     os_query = {
         "from": from_val, "size": request.page_size,
         **query_body,
-        "sort": sort_query, "track_total_hits": True,
+        "sort": sort_query, 
+        "track_total_hits": True,
+        "track_scores": True, # 🔥 Required to calculate max_score for UI percentages
         "aggs": {"brands": {"terms": {"field": "brand", "size": 25}}, "categories": {"terms": {"field": "category", "size": 25}}}
     }
 
@@ -152,6 +193,15 @@ async def execute_search(request: SearchRequest):
     hits = response.get("hits", {})
     total_hits = hits.get("total", {}).get("value", 0)
     total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
+
+    # =========================================================================
+    # 📈 AI PART 4: SCORING NORMALIZATION
+    # Converts OpenSearch math scores into clean 0 to 1 percentages
+    # =========================================================================
+    max_score = hits.get("max_score")
+    if not max_score and len(hits.get("hits", [])) > 0:
+        max_score = hits["hits"][0].get("_score", 1.0)
+    if not max_score or max_score == 0: max_score = 1.0
 
     results = []
     for hit in hits.get("hits", []):
@@ -174,6 +224,9 @@ async def execute_search(request: SearchRequest):
         _demo_rating = 4.0 + (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 10) / 10.0
         _demo_sales = (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 800) + 150
 
+        raw_score = hit.get("_score", 0) or 0
+        normalized_score = min(1.0, raw_score / max_score)
+
         results.append({
             "id": source.get("product_id"), "name": source.get("name", "Unknown Product"),
             "description": source.get("description", ""), "brand": brand_display, 
@@ -182,7 +235,7 @@ async def execute_search(request: SearchRequest):
             "sku": source.get("sku", ""), "url": source.get("url", ""),
             "primary_image": primary_image, "rating": source.get("rating") if source.get("rating", 0) > 0 else _demo_rating,
             "sales_count": source.get("sales_count") if source.get("sales_count", 0) > 0 else _demo_sales,
-            "score": round(hit.get("_score", 0) or 0, 2)
+            "score": round(normalized_score, 2)
         })
 
     aggregations = response.get("aggregations", {})
@@ -229,7 +282,6 @@ async def execute_autocomplete(query_string: str):
     except Exception: pass
     return final_response
 
-# ✅ RESTORED: HTML Mega Menu
 async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     clean_query = query_string.strip().lower()
     
@@ -246,13 +298,38 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             vector = resp.data[0].embedding
         except Exception: pass
 
+        # NLP logic added to mega menu too
+        smart_min_price = None
+        smart_max_price = None
+        range_match = re.search(r'(?:between|from)?\s*\$?\s*(\d+)\s*(?:to|and|-)\s*\$?\s*(\d+)', clean_query)
+        if range_match:
+            smart_min_price = float(range_match.group(1))
+            smart_max_price = float(range_match.group(2))
+        else:
+            max_match = re.search(r'(?:under|less than|below|<)\s*\$?\s*(\d+)', clean_query)
+            if max_match: smart_max_price = float(max_match.group(1))
+            min_match = re.search(r'(?:over|more than|above|>)\s*\$?\s*(\d+)', clean_query)
+            if min_match: smart_min_price = float(min_match.group(1))
+            
+        filters = [{"term": {"in_stock": True}}]
+        if smart_min_price is not None or smart_max_price is not None:
+            price_range = {}
+            if smart_min_price is not None: price_range["gte"] = smart_min_price
+            if smart_max_price is not None: price_range["lte"] = smart_max_price
+            filters.append({"range": {"price": price_range}})
+
         if vector:
             os_query = {
                 "size": 4,
                 "query": {
                     "bool": {
                         "must": [{"knn": {"embedding": {"vector": vector, "k": 50}}}],
-                        "filter": [{"term": {"in_stock": True}}]
+                        "should": [
+                            {"match_phrase": {"category": {"query": clean_query, "boost": 10.0}}},
+                            {"match_phrase": {"name": {"query": clean_query, "boost": 5.0}}}
+                        ],
+                        "filter": filters,
+                        "minimum_should_match": 0
                     }
                 },
                 "track_total_hits": True, 
@@ -264,7 +341,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                 "query": {
                     "bool": {
                         "must": [{"match_all": {}}],
-                        "filter": [{"term": {"in_stock": True}}]
+                        "filter": filters
                     }
                 },
                 "sort": [{"_score": {"order": "desc"}}],
