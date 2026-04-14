@@ -160,8 +160,8 @@ async def execute_search(request: SearchRequest):
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
     
-    # ⚡ Redis Cache (v12)
-    cache_key = f"search:ai:v12:{hashlib.md5(request_str.encode()).hexdigest()}"
+    # ⚡ Redis Cache
+    cache_key = f"search:ai:v14:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         start_time = time.time()
@@ -181,7 +181,10 @@ async def execute_search(request: SearchRequest):
     matrix = extract_semantic_matrix(query_text)
     core_query = matrix["core_query"]
 
-    # Step 4.2: Get the OpenAI Embedding Vector
+    # =========================================================================
+    # 🧠 AI PART 2: LLM (LARGE LANGUAGE MODEL) EMBEDDINGS
+    # Translates the search sentence into a 1,536-dimensional math vector
+    # =========================================================================
     if query_text:
         try:
             resp = await openai_client.embeddings.create(input=query_text, model="text-embedding-3-small")
@@ -299,6 +302,7 @@ async def execute_search(request: SearchRequest):
     total_hits = hits.get("total", {}).get("value", 0)
     total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
 
+    # 📈 Score Normalization
     max_score = hits.get("max_score")
     if not max_score and len(hits.get("hits", [])) > 0:
         max_score = hits["hits"][0].get("_score", 1.0)
@@ -338,6 +342,7 @@ async def execute_search(request: SearchRequest):
             "score": round(normalized_score, 2)
         })
 
+    # Format Facets for Sidebar
     aggregations = response.get("aggregations", {})
     facets = {
         "brands": [{"label": str(b.get("key", "")).strip(), "value": b.get("key"), "count": b.get("doc_count", 0)} for b in aggregations.get("brands", {}).get("buckets", []) if b.get("key")],
@@ -348,8 +353,9 @@ async def execute_search(request: SearchRequest):
     }
 
     # =========================================================================
-    # 💬 SECTION 4.6: GENERATIVE AI CHAT RESPONSE
-    # Uses OpenAI GPT-3.5 to talk to the user in the right sidebar.
+    # 🤖 SECTION 4.6: GENERATIVE AI CHAT RESPONSE
+    # Uses OpenAI to write a custom sentence based on the fetched products.
+    # ONLY triggers when the sidebar assistant calls it (page_size == 10).
     # =========================================================================
     ai_chat_message = "Here are some great options I found for you:"
     if request.page_size == 10 and query_text and total_hits > 0:
