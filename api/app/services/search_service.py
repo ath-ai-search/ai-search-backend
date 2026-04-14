@@ -69,17 +69,12 @@ def build_pagination_html(total_pages: int, current_page: int) -> str:
     if end < total_pages: html += f'<span style="align-self:center;">...</span><button class="page-btn" data-page="{total_pages}">{total_pages}</button>'
     return html
 
-# =========================================================================
-# 🧠 CORE AI: MULTI-DIMENSIONAL INTENT EXTRACTION
-# =========================================================================
 def extract_semantic_matrix(query_string):
     query_lower = query_string.lower()
     
-    # 1. Advanced Math & Numbers (Prices, Sizes, Discounts)
     smart_min_price, smart_max_price, smart_size, smart_discount = None, None, None, None
     is_sale_intent = False
 
-    # Ranges & Prices
     range_match = re.search(r'(?:between|from)?\s*\$?\s*(\d+)\s*(?:to|and|-)\s*\$?\s*(\d+)', query_lower)
     if range_match:
         smart_min_price, smart_max_price = float(range_match.group(1)), float(range_match.group(2))
@@ -89,21 +84,16 @@ def extract_semantic_matrix(query_string):
         min_match = re.search(r'(?:over|more than|above|>)\s*\$?\s*(\d+)', query_lower)
         if min_match: smart_min_price = float(min_match.group(1))
 
-    # Sizes (e.g., "size 10", "size 9.5")
     size_match = re.search(r'size\s*(\d+(?:\.\d+)?)', query_lower)
     if size_match: smart_size = str(size_match.group(1))
 
-    # Discounts (e.g., "20% off", "sale", "clearance")
     disc_match = re.search(r'(\d+)%\s*(?:off|discount)', query_lower)
     if disc_match: smart_discount = int(disc_match.group(1))
     if "sale" in query_lower or "clearance" in query_lower or smart_discount:
         is_sale_intent = True
 
-    # 2. PersonaOccasion & OccasionIntent
     personas_dict = ["men", "mens", "women", "womens", "kids", "boys", "girls", "baby", "unisex"]
     occasions_dict = ["wedding", "party", "gym", "running", "casual", "formal", "summer", "winter", "fall", "spring", "outdoor", "indoor", "beach"]
-    
-    # 3. Visual intentSemantic & Visual intentContext
     visuals_dict = ["red", "blue", "black", "white", "green", "yellow", "pink", "purple", "brown", "leather", "suede", "canvas", "cotton", "striped", "solid", "floral", "minimalist", "vintage", "shiny", "matte"]
 
     extracted_personas = [p for p in personas_dict if re.search(rf'\b{p}\b', query_lower)]
@@ -117,10 +107,10 @@ def extract_semantic_matrix(query_string):
     }
 
 async def execute_search(request: SearchRequest):
-    request.page_size = 25
+    request.page_size = 25 if request.page_size != 10 else 10
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v2:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v3:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         start_time = time.time()
@@ -136,10 +126,8 @@ async def execute_search(request: SearchRequest):
     query_text = request.query.strip() if request.query else ""
     vector = None
 
-    # 🧠 Run the Semantic Matrix
     matrix = extract_semantic_matrix(query_text)
 
-    # Generate LLM Vector
     if query_text:
         try:
             resp = await openai_client.embeddings.create(input=query_text, model="text-embedding-3-small")
@@ -147,7 +135,6 @@ async def execute_search(request: SearchRequest):
         except Exception as e:
             logger.error(f"❌ OpenAI Embedding Failed: {e}")
 
-    # Build Strict Filters (Math/Numbers/Status)
     filters = [{"term": {"in_stock": True}}]
     
     if matrix["min_price"] is not None or matrix["max_price"] is not None:
@@ -156,7 +143,6 @@ async def execute_search(request: SearchRequest):
         if matrix["max_price"] is not None: price_range["lte"] = matrix["max_price"]
         filters.append({"range": {"price": price_range}})
 
-    # Apply UI filters
     if request.filters:
         if request.filters.brand: filters.append({"terms": {"brand": request.filters.brand}})
         if request.filters.category: filters.append({"terms": {"category": request.filters.category}})
@@ -167,36 +153,24 @@ async def execute_search(request: SearchRequest):
             if request.filters.price.max is not None: p_range["lte"] = request.filters.price.max
             if p_range: filters.append({"range": {"price": p_range}})
 
-    # Handle UI Sorting OR AI Sale Intent
     sort_query = [{"_score": "desc"}]
     if request.sort == "price_asc": sort_query = [{"price": "asc"}]
     elif request.sort == "price_desc": sort_query = [{"price": "desc"}]
     elif request.sort == "on_sale" or matrix["is_sale"]: sort_query = [{"_score": "desc"}] 
 
-    # 🚀 BUILD THE SEMANTIC OPEN SEARCH QUERY
     if vector:
         k_val = max(200, from_val + request.page_size + 100)
         
-        # Base exact matches
         semantic_shoulds = [
             {"match_phrase": {"category": {"query": query_text, "boost": 10.0}}},
             {"match_phrase": {"name": {"query": query_text, "boost": 5.0}}},
             {"multi_match": {"query": query_text, "fields": ["name^2", "brand^2"]}}
         ]
         
-        # Apply PersonaOccasion / OccasionIntent Boosts
-        for p in matrix["personas"]:
-            semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^4", "category^3", "description^2"]}})
-        for o in matrix["occasions"]:
-            semantic_shoulds.append({"multi_match": {"query": o, "fields": ["name^3", "attributes^3", "description^2"]}})
-            
-        # Apply Visual intentSemantic Boosts
-        for v in matrix["visuals"]:
-            semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^5", "attributes^4", "description^2"]}})
-            
-        # Apply Math/Size Boosts
-        if matrix["size"]:
-            semantic_shoulds.append({"multi_match": {"query": matrix["size"], "fields": ["name^6", "attributes^5"]}})
+        for p in matrix["personas"]: semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^4", "category^3", "description^2"]}})
+        for o in matrix["occasions"]: semantic_shoulds.append({"multi_match": {"query": o, "fields": ["name^3", "attributes^3", "description^2"]}})
+        for v in matrix["visuals"]: semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^5", "attributes^4", "description^2"]}})
+        if matrix["size"]: semantic_shoulds.append({"multi_match": {"query": matrix["size"], "fields": ["name^6", "attributes^5"]}})
 
         query_body = {
             "query": {
@@ -275,7 +249,42 @@ async def execute_search(request: SearchRequest):
         "categories": [{"value": str(c.get("key")).strip(), "label": str(c.get("key")).strip(), "count": c.get("doc_count", 0)} for c in aggregations.get("categories", {}).get("buckets", []) if c.get("key")]
     }
 
-    final_response = {"total_results": total_hits, "total_pages": total_pages, "current_page": request.page, "pagination_html": build_pagination_html(total_pages, request.page), "results": results, "facets": facets}
+    # =========================================================================
+    # 🤖 AI CHAT GENERATOR (Only runs when requested by the Chat Assistant)
+    # =========================================================================
+    ai_chat_message = "Here are some great options I found for you:"
+    if request.page_size == 10 and query_text and total_hits > 0:
+        try:
+            top_brands = [b["label"] for b in facets["brands"][:3]]
+            top_cats = [c["label"] for c in facets["categories"][:3]]
+            b_str = ", ".join(top_brands) if top_brands else "our top brands"
+            c_str = ", ".join(top_cats) if top_cats else "related categories"
+            
+            sys_msg = "You are ATHERA, a helpful, stylish AI shopping assistant. Write exactly 1 short, friendly sentence to introduce the products the user searched for. Mention the top brands or categories provided."
+            user_msg = f"User searched: '{query_text}'. We found {total_hits} matches. Top Brands: {b_str}. Categories: {c_str}."
+            
+            chat_resp = await openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": sys_msg},
+                    {"role": "user", "content": user_msg}
+                ],
+                max_tokens=60,
+                temperature=0.7
+            )
+            ai_chat_message = chat_resp.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"OpenAI Chat Error: {e}")
+    elif request.page_size == 10 and total_hits == 0:
+        ai_chat_message = f"I couldn't find any exact matches for '{query_text}'. Try adjusting your search keywords!"
+
+    final_response = {
+        "total_results": total_hits, "total_pages": total_pages, 
+        "current_page": request.page, "pagination_html": build_pagination_html(total_pages, request.page), 
+        "results": results, "facets": facets, 
+        "ai_message": ai_chat_message
+    }
+    
     try: await redis_client.set(cache_key, json.dumps(final_response), ex=300)
     except Exception: pass
     return final_response
@@ -326,7 +335,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             vector = resp.data[0].embedding
         except Exception: pass
 
-        # 🧠 Run Semantic Matrix for Mega Menu
         matrix = extract_semantic_matrix(clean_query)
             
         filters = [{"term": {"in_stock": True}}]
