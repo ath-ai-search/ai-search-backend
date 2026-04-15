@@ -126,9 +126,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
+    # ⚡ V24 Redis Key: Flushes "etc" from cache
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v23:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v24:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -146,6 +147,9 @@ async def execute_search(request: SearchRequest):
     matrix = extract_semantic_matrix(query_text)
     core_query = matrix["core_query"]
 
+    # =========================================================================
+    # 🧠 AI PART 2: LLM EMBEDDINGS
+    # =========================================================================
     if query_text:
         try:
             resp = await openai_client.embeddings.create(input=query_text, model="text-embedding-3-small")
@@ -153,6 +157,9 @@ async def execute_search(request: SearchRequest):
         except Exception as e:
             logger.error(f"❌ OpenAI Embedding Failed: {e}")
 
+    # =========================================================================
+    # 🛡️ HARD FILTERS
+    # =========================================================================
     filters = [{"term": {"in_stock": True}}]
     must_nots = []
     
@@ -166,11 +173,18 @@ async def execute_search(request: SearchRequest):
         filters.append({"range": {"sale_price": {"gt": 0}}})
 
     if request.filters:
-        if getattr(request.filters, "brand", None): filters.append({"terms": {"brand": request.filters.brand}})
-        if getattr(request.filters, "category", None): filters.append({"terms": {"category": request.filters.category}})
-        if getattr(request.filters, "in_stock", None) is not None: filters.append({"term": {"in_stock": request.filters.in_stock}})
+        # Prevent more than 5 brand/category clauses to avoid nested limits
+        if getattr(request.filters, "brand", None): 
+            filters.append({"terms": {"brand": request.filters.brand[:5]}})
+        if getattr(request.filters, "category", None): 
+            filters.append({"terms": {"category": request.filters.category[:5]}})
+            
+        if getattr(request.filters, "in_stock", None) is not None: 
+            filters.append({"term": {"in_stock": request.filters.in_stock}})
+            
         if getattr(request.filters, "color", None):
-            filters.append({"bool": {"should": [{"multi_match": {"query": c, "type": "phrase", "fields": ["color", "attributes*", "name"]}} for c in request.filters.color], "minimum_should_match": 1}})
+            filters.append({"bool": {"should": [{"multi_match": {"query": c, "type": "phrase", "fields": ["color", "attributes*", "name"]}} for c in request.filters.color[:5]], "minimum_should_match": 1}})
+        
         if getattr(request.filters, "price", None):
             p_range = {}
             if getattr(request.filters.price, "min", None) is not None: p_range["gte"] = request.filters.price.min
@@ -181,27 +195,30 @@ async def execute_search(request: SearchRequest):
     if request.sort == "price_asc": sort_query = [{"price": "asc"}]
     elif request.sort == "price_desc": sort_query = [{"price": "desc"}]
 
+    # =========================================================================
+    # ⚖️ AI PART 3: HYBRID SCORING
+    # =========================================================================
     semantic_shoulds = []
     
     if vector:
         k_val = max(200, from_val + request.page_size + 100)
         semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": k_val}}})
         
-    if core_query:
-        semantic_shoulds.extend([
-            {
-                "multi_match": {
-                    "query": core_query, 
-                    "fields": ["name^5", "brand^4", "category^3"],
-                    "fuzziness": "1",          # 🟢 FIX: Stops max_clause_count crash
-                    "max_expansions": 10,      # 🟢 FIX: Strictly limits OpenSearch fuzzy trees
-                    "boost": 2.0
-                }
-            },
-            {"match_phrase": {"brand": {"query": core_query, "boost": 5000.0}}},    
-            {"match": {"category": {"query": core_query, "boost": 3000.0}}},        
-            {"match_phrase": {"name": {"query": core_query, "boost": 500.0}}}       
-        ])
+    semantic_shoulds.extend([
+        {
+            "multi_match": {
+                "query": core_query, 
+                "fields": ["name^5", "brand^4", "category^3"],
+                "fuzziness": "AUTO",
+                "prefix_length": 2, # 🟢 FIX: Forces OS to only guess typos AFTER 2 correct letters (STOPS CRASHES)
+                "max_expansions": 10,
+                "boost": 2.0
+            }
+        },
+        {"match_phrase": {"brand": {"query": core_query, "boost": 5000.0}}},    
+        {"match": {"category": {"query": core_query, "boost": 3000.0}}},        
+        {"match_phrase": {"name": {"query": core_query, "boost": 500.0}}}       
+    ])
 
     score_functions = []
     
@@ -250,7 +267,6 @@ async def execute_search(request: SearchRequest):
         response = os_client.search(index=INDEX_NAME, body=os_query)
     except Exception as e:
         logger.error(f"❌ OpenSearch Error: {str(e)}")
-        # 🟢 FIX: This fallback now perfectly matches Pydantic to stop 500 validation crashes!
         return {
             "error": "Search service unavailable", 
             "results": [], 
@@ -340,6 +356,7 @@ async def execute_search(request: SearchRequest):
 async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     current_filters = current_state.filters.model_dump() if current_state.filters else {}
     
+    # 🟢 THE FIX: Removed 'etc' from the prompt to stop it hallucinating fake brands
     system_prompt = f"""
     You are ATHERA, an intelligent e-commerce AI shopping assistant.
     
@@ -354,17 +371,20 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     1. REFINE the current search (e.g. they typed "red" or "under $100").
     2. Start a NEW SEARCH (e.g. they typed "bags", or a phrase like "nike shoes red between $100 to $200").
 
-    Output ONLY a valid JSON object matching this structure:
+    Output ONLY a valid JSON object matching this exact structure:
     {{
         "intent": "refine" | "new_search",
         "search_query": "The core product noun ONLY (e.g., 'shoes', 'bags'). NEVER include colors or brands in this field.",
         "filters": {{
             "color": ["black", "white", "blue", "red", "green", "brown"], 
-            "brand": ["nike", "apple", "samsung", etc],
+            "brand": ["nike", "apple"],
             "price": {{"min": number or null, "max": number or null}}
         }},
         "ai_message": "Friendly 1-sentence reply. E.g. 'Searching for red Nike shoes between $100 and $200!'"
     }}
+    
+    CRITICAL RULES:
+    - NEVER output placeholder words like 'etc', 'any', or 'example' in the arrays. Only output actual valid brand or color names mentioned by the user.
     """
 
     try:
@@ -390,7 +410,6 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         extracted_filters = parsed_intent.get("filters", {})
         new_filters_obj = Filters()
         
-        # Explicit empty arrays to prevent frontend sticking
         new_filters_obj.color = []
         new_filters_obj.brand = []
         new_filters_obj.category = []
@@ -402,10 +421,16 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             new_filters_obj.price = current_state.filters.price
             new_filters_obj.in_stock = current_state.filters.in_stock
 
-        if extracted_filters.get("color"): 
-            new_filters_obj.color = list(set(new_filters_obj.color + extracted_filters["color"]))
+        # 🟢 ANTI-ETC LOGIC: Purges hallucinated filler words from OpenAI before hitting your DB
+        bad_words = ["etc", "example", "any", "none"]
+
+        if extracted_filters.get("color"):
+            colors = [str(c).lower() for c in extracted_filters["color"] if str(c).lower() not in bad_words]
+            new_filters_obj.color = list(set(new_filters_obj.color + colors))
+            
         if extracted_filters.get("brand"): 
-            new_filters_obj.brand = list(set(new_filters_obj.brand + extracted_filters["brand"]))
+            brands = [str(b).lower() for b in extracted_filters["brand"] if str(b).lower() not in bad_words]
+            new_filters_obj.brand = list(set(new_filters_obj.brand + brands))
             
         if extracted_filters.get("price"):
             p_data = extracted_filters["price"]
@@ -416,7 +441,6 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
 
         final_results_dict = await execute_search(updated_request)
         
-        # 🟢 FIX: Guarantee no dual-key crashes
         if "ai_message" in final_results_dict:
             del final_results_dict["ai_message"]
         
@@ -514,8 +538,8 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                         "query": core_query, 
                         "fields": ["name^5", "brand^4", "category^3"],
                         "operator": "and",
-                        "fuzziness": "1",          # 🟢 FIX: Mega menu optimization
-                        "max_expansions": 10,      # 🟢 FIX: Mega menu optimization
+                        "fuzziness": "1",          
+                        "max_expansions": 10,      
                         "boost": 5.0
                     }
                 })
