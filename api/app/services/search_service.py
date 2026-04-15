@@ -781,13 +781,18 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     sidebar_html = ""
     if clean_query:
         sidebar_html += f"""
-        <div id='ai-toggle' class='ath-assistant-box'>
-            <div class='ath-assistant-left'>
-                <i class='fas fa-magic ath-assistant-icon'></i>
-                <div class='ath-assistant-text'>Open "<span>{clean_query}</span>"<br>in Assistant</div>
-            </div>
-            <i class='fas fa-arrow-right' style='font-size: 14px; color: #111;'></i>
+       <button id="ai-toggle" type="button" class="ath-assistant-box">
+
+    <div class="ath-assistant-left">
+        <i class="fas fa-magic ath-assistant-icon"></i>
+        <div class="ath-assistant-text">
+            Open "<span>shoes</span>"<br>in Assistant
         </div>
+    </div>
+
+    <i class="fas fa-arrow-right" style="font-size: 14px; color: #111;"></i>
+
+</button>
         """
 
     if recent_searches:
