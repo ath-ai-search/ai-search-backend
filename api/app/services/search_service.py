@@ -75,9 +75,6 @@ def build_pagination_html(total_pages: int, current_page: int) -> str:
     if end < total_pages: html += f'<span style="align-self:center;">...</span><button class="page-btn" data-page="{total_pages}">{total_pages}</button>'
     return html
 
-# =========================================================================
-# 🧠 AI PART 1: ADVANCED NLP MATRIX
-# =========================================================================
 def extract_semantic_matrix(query_string):
     query_lower = query_string.lower()
     core_query = query_lower
@@ -129,10 +126,9 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V22 Redis Key
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v22:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v23:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -150,9 +146,6 @@ async def execute_search(request: SearchRequest):
     matrix = extract_semantic_matrix(query_text)
     core_query = matrix["core_query"]
 
-    # =========================================================================
-    # 🧠 AI PART 2: LLM EMBEDDINGS
-    # =========================================================================
     if query_text:
         try:
             resp = await openai_client.embeddings.create(input=query_text, model="text-embedding-3-small")
@@ -160,9 +153,6 @@ async def execute_search(request: SearchRequest):
         except Exception as e:
             logger.error(f"❌ OpenAI Embedding Failed: {e}")
 
-    # =========================================================================
-    # 🛡️ HARD FILTERS
-    # =========================================================================
     filters = [{"term": {"in_stock": True}}]
     must_nots = []
     
@@ -179,10 +169,8 @@ async def execute_search(request: SearchRequest):
         if getattr(request.filters, "brand", None): filters.append({"terms": {"brand": request.filters.brand}})
         if getattr(request.filters, "category", None): filters.append({"terms": {"category": request.filters.category}})
         if getattr(request.filters, "in_stock", None) is not None: filters.append({"term": {"in_stock": request.filters.in_stock}})
-        
         if getattr(request.filters, "color", None):
             filters.append({"bool": {"should": [{"multi_match": {"query": c, "type": "phrase", "fields": ["color", "attributes*", "name"]}} for c in request.filters.color], "minimum_should_match": 1}})
-        
         if getattr(request.filters, "price", None):
             p_range = {}
             if getattr(request.filters.price, "min", None) is not None: p_range["gte"] = request.filters.price.min
@@ -193,29 +181,27 @@ async def execute_search(request: SearchRequest):
     if request.sort == "price_asc": sort_query = [{"price": "asc"}]
     elif request.sort == "price_desc": sort_query = [{"price": "desc"}]
 
-    # =========================================================================
-    # ⚖️ AI PART 3: THE "NUCLEAR OVERRIDES" FOR HYBRID SCORING
-    # =========================================================================
     semantic_shoulds = []
     
     if vector:
         k_val = max(200, from_val + request.page_size + 100)
         semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": k_val}}})
         
-    semantic_shoulds.extend([
-        {
-            "multi_match": {
-                "query": core_query, 
-                "fields": ["name^5", "brand^4", "category^3"],
-                "fuzziness": "AUTO",
-                "max_expansions": 50, # 🟢 FIX: Prevents max_clause_count crash on generic searches
-                "boost": 2.0
-            }
-        },
-        {"match_phrase": {"brand": {"query": core_query, "boost": 5000.0}}},    
-        {"match": {"category": {"query": core_query, "boost": 3000.0}}},        
-        {"match_phrase": {"name": {"query": core_query, "boost": 500.0}}}       
-    ])
+    if core_query:
+        semantic_shoulds.extend([
+            {
+                "multi_match": {
+                    "query": core_query, 
+                    "fields": ["name^5", "brand^4", "category^3"],
+                    "fuzziness": "1",          # 🟢 FIX: Stops max_clause_count crash
+                    "max_expansions": 10,      # 🟢 FIX: Strictly limits OpenSearch fuzzy trees
+                    "boost": 2.0
+                }
+            },
+            {"match_phrase": {"brand": {"query": core_query, "boost": 5000.0}}},    
+            {"match": {"category": {"query": core_query, "boost": 3000.0}}},        
+            {"match_phrase": {"name": {"query": core_query, "boost": 500.0}}}       
+        ])
 
     score_functions = []
     
@@ -264,7 +250,16 @@ async def execute_search(request: SearchRequest):
         response = os_client.search(index=INDEX_NAME, body=os_query)
     except Exception as e:
         logger.error(f"❌ OpenSearch Error: {str(e)}")
-        return {"error": "Search service unavailable", "results": [], "total_results": 0}
+        # 🟢 FIX: This fallback now perfectly matches Pydantic to stop 500 validation crashes!
+        return {
+            "error": "Search service unavailable", 
+            "results": [], 
+            "total_results": 0,
+            "total_pages": 0,
+            "current_page": request.page,
+            "pagination_html": "",
+            "facets": {"brands": [], "categories": []}
+        }
     
     hits = response.get("hits", {})
     total_hits = hits.get("total", {}).get("value", 0)
@@ -300,18 +295,14 @@ async def execute_search(request: SearchRequest):
         cat_lower = " ".join(clean_cats).lower()
         is_item_accessory = any(acc in name_lower for acc in matrix["accessory_keywords"])
         
-        if core_query == brand_lower:
-            display_score = 0.99
-        elif core_query in cat_lower:
-            display_score = 0.98
+        if core_query == brand_lower: display_score = 0.99
+        elif core_query in cat_lower: display_score = 0.98
         elif core_query in name_lower and not matrix["has_accessory_intent"] and not is_item_accessory:
             display_score = 0.95 + (normalized_score * 0.03) 
         elif is_item_accessory and not matrix["has_accessory_intent"]:
             display_score = 0.40 + (normalized_score * 0.15) 
-        elif core_query in name_lower:
-            display_score = 0.85 + (normalized_score * 0.09)
-        else:
-            display_score = 0.60 + (normalized_score * 0.20)
+        elif core_query in name_lower: display_score = 0.85 + (normalized_score * 0.09)
+        else: display_score = 0.60 + (normalized_score * 0.20)
 
         results.append({
             "id": source.get("product_id"), "name": source.get("name", "Unknown Product"),
@@ -336,17 +327,15 @@ async def execute_search(request: SearchRequest):
     final_response = {
         "total_results": total_hits, "total_pages": total_pages, 
         "current_page": request.page, "pagination_html": build_pagination_html(total_pages, request.page), 
-        "results": results, "facets": facets, 
-        "ai_message": ""
+        "results": results, "facets": facets
     }
     
     try: await redis_client.set(cache_key, json.dumps(final_response), ex=300)
     except Exception: pass
     return final_response
 
-
 # =========================================================================
-# ✨ NEW DYNAMIC AI METHOD: Intent & Context Shifting ✨
+# ✨ AI ASSISTANT CHAT LOGIC (DYNAMIC SHIFTING) ✨
 # =========================================================================
 async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     current_filters = current_state.filters.model_dump() if current_state.filters else {}
@@ -355,31 +344,27 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     You are ATHERA, an intelligent e-commerce AI shopping assistant.
     
     CURRENT CONTEXT:
-    - User is currently searching for: "{current_state.query}"
+    - User is searching for: "{current_state.query}"
     - Active UI Sidebar Filters applied: {json.dumps(current_filters)}
 
     NEW USER MESSAGE: "{chat_message}"
 
     YOUR TASK:
-    Analyze the new user message. You must decide if the user wants to:
-    1. REFINE the current search (e.g. they typed "red" or "nike" while looking at "shoes").
-    2. Start a NEW SEARCH (e.g. they typed "bags" or "iphone" while looking at "shoes").
+    Analyze the message. Decide if the user wants to:
+    1. REFINE the current search (e.g. they typed "red" or "under $100").
+    2. Start a NEW SEARCH (e.g. they typed "bags", or a phrase like "nike shoes red between $100 to $200").
 
     Output ONLY a valid JSON object matching this structure:
     {{
         "intent": "refine" | "new_search",
-        "search_query": "The core product noun ONLY (e.g., 'shoes', 'bags', 'dress'). NEVER include colors or brands in this field.",
+        "search_query": "The core product noun ONLY (e.g., 'shoes', 'bags'). NEVER include colors or brands in this field.",
         "filters": {{
             "color": ["black", "white", "blue", "red", "green", "brown"], 
             "brand": ["nike", "apple", "samsung", etc],
-            "category": ["electronics", "footwear", etc]
+            "price": {{"min": number or null, "max": number or null}}
         }},
-        "ai_message": "A friendly 1-sentence reply in the style of a stylish assistant. E.g., 'Filtering your shoes to show only red Nike ones!' or 'Sure, let's explore some stylish bags!'"
+        "ai_message": "Friendly 1-sentence reply. E.g. 'Searching for red Nike shoes between $100 and $200!'"
     }}
-    
-    CRITICAL DECISION RULE:
-    If the current search is 'shoes' and the new message is 'bags', this is 'new_search'.
-    If the current search is 'shoes' and the new message is 'red nike', this is 'refine'.
     """
 
     try:
@@ -405,6 +390,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         extracted_filters = parsed_intent.get("filters", {})
         new_filters_obj = Filters()
         
+        # Explicit empty arrays to prevent frontend sticking
         new_filters_obj.color = []
         new_filters_obj.brand = []
         new_filters_obj.category = []
@@ -420,15 +406,17 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             new_filters_obj.color = list(set(new_filters_obj.color + extracted_filters["color"]))
         if extracted_filters.get("brand"): 
             new_filters_obj.brand = list(set(new_filters_obj.brand + extracted_filters["brand"]))
-        if extracted_filters.get("category"): 
-            new_filters_obj.category = list(set(new_filters_obj.category + extracted_filters["category"]))
-        
+            
+        if extracted_filters.get("price"):
+            p_data = extracted_filters["price"]
+            if p_data.get("min") is not None or p_data.get("max") is not None:
+                new_filters_obj.price = PriceFilter(min=p_data.get("min"), max=p_data.get("max"))
+
         updated_request.filters = new_filters_obj
 
         final_results_dict = await execute_search(updated_request)
         
-        # 🟢 THE FIX: We must completely remove the blank `ai_message` key
-        # returned by execute_search so we don't pass it twice to AIAssistantResponse
+        # 🟢 FIX: Guarantee no dual-key crashes
         if "ai_message" in final_results_dict:
             del final_results_dict["ai_message"]
         
@@ -442,11 +430,9 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     except Exception as e:
         logger.error(f"❌ AI Assistant Processing Error: {e}")
         fail_results = await execute_search(current_state)
-        
         if "ai_message" in fail_results:
             del fail_results["ai_message"]
-            
-        return AIAssistantResponse(**fail_results, ai_message="Here are the best matches I found:")
+        return AIAssistantResponse(**fail_results, ai_message="Sorry, I encountered an error. Please try adjusting your search terms!")
 
 
 # =========================================================================
@@ -520,30 +506,25 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             semantic_shoulds = [
                 {"match_phrase": {"brand": {"query": core_query, "boost": 5000.0}}},
                 {"match": {"category": {"query": core_query, "boost": 3000.0}}},
-                {"match_phrase": {"name": {"query": core_query, "boost": 500.0}}},
-                {
+                {"match_phrase": {"name": {"query": core_query, "boost": 500.0}}}
+            ]
+            if core_query:
+                semantic_shoulds.append({
                     "multi_match": {
                         "query": core_query, 
                         "fields": ["name^5", "brand^4", "category^3"],
                         "operator": "and",
-                        "fuzziness": "AUTO",
-                        "max_expansions": 50, # Prevents crash here too
+                        "fuzziness": "1",          # 🟢 FIX: Mega menu optimization
+                        "max_expansions": 10,      # 🟢 FIX: Mega menu optimization
                         "boost": 5.0
                     }
-                }
-            ]
+                })
             
             score_functions = []
             if not matrix["has_accessory_intent"]:
                 for acc in matrix["accessory_keywords"]:
-                    score_functions.append({
-                        "filter": {"match": {"name": acc}},
-                        "weight": 0.001 
-                    })
-                    score_functions.append({
-                        "filter": {"match": {"category": acc}},
-                        "weight": 0.001 
-                    })
+                    score_functions.append({"filter": {"match": {"name": acc}}, "weight": 0.001})
+                    score_functions.append({"filter": {"match": {"category": acc}}, "weight": 0.001})
 
             os_query = {
                 "size": 4,
@@ -681,19 +662,16 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     <style>
         .ath-mega-menu {{ display: flex; width: 100%; max-width: 900px; height: 500px; background: white; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.15); font-family: 'Inter', sans-serif; text-align: left; overflow: hidden; border: 1px solid #e5e7eb; }}
         .ath-left-col {{ width: 320px; background: #fdfdfd; padding: 24px; border-right: 1px solid #f0f0f0; overflow-y: auto; }}
-        
         .ath-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); width: 100%; text-align: left; font-family: inherit; }}
         .ath-assistant-box:hover {{ border-color: #d1d5db; box-shadow: 0 4px 6px rgba(0,0,0,0.05); background: #fdfdfd; }}
         .ath-assistant-left {{ display: flex; align-items: center; gap: 12px; }}
         .ath-assistant-icon {{ font-size: 16px; color: #111; }}
         .ath-assistant-text {{ font-size: 13px; font-weight: 500; color: #111; line-height: 1.4; }}
         .ath-assistant-text span {{ font-style: italic; font-weight: 700; }}
-        
         .ath-side-title {{ font-size: 12px; font-weight: 700; color: #111; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }}
         .ath-side-item {{ font-size: 14px; color: #111; padding: 10px 0; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: background 0.2s; }}
         .ath-side-item i {{ color: #111; font-size: 14px; }}
         .ath-side-item:hover {{ background: #f5f5f5; border-radius: 4px; }}
-        
         .ath-right-col {{ flex: 1; padding: 24px 32px; background: white; overflow-y: auto; }}
         .ath-prod-header {{ display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px; }}
         .ath-prod-header h3 {{ font-size: 14px; font-weight: 700; color: #111; text-transform: uppercase; letter-spacing: 0.5px; margin: 0; }}
