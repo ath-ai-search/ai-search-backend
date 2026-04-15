@@ -76,7 +76,7 @@ def build_pagination_html(total_pages: int, current_page: int) -> str:
     return html
 
 # =========================================================================
-# 🧠 AI PART 1: NLP MATRIX
+# 🧠 AI PART 1: ADVANCED NLP MATRIX
 # =========================================================================
 def extract_semantic_matrix(query_string):
     query_lower = query_string.lower()
@@ -117,10 +117,15 @@ def extract_semantic_matrix(query_string):
     if not core_query:
         core_query = query_lower 
 
+    # 🛑 ANTI-ACCESSORY DETECTOR
+    accessory_keywords = ["case", "cover", "charger", "cable", "bag", "protector", "accessories", "strap", "band"]
+    has_accessory_intent = any(acc in query_lower for acc in accessory_keywords)
+
     return {
         "core_query": core_query,
         "min_price": smart_min_price, "max_price": smart_max_price, 
-        "size": smart_size, "discount": smart_discount, "is_sale": is_sale_intent
+        "size": smart_size, "discount": smart_discount, "is_sale": is_sale_intent,
+        "has_accessory_intent": has_accessory_intent
     }
 
 # =========================================================================
@@ -129,10 +134,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V12 Redis Key: Completely flushes old results and applies new scoring
+    # ⚡ V13 Redis Key: Flushes out old errors and caches new advanced logic
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v12:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v13:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -161,9 +166,10 @@ async def execute_search(request: SearchRequest):
             logger.error(f"❌ OpenAI Embedding Failed: {e}")
 
     # =========================================================================
-    # 🛡️ STRICT FILTERS
+    # 🛡️ HARD FILTERS & STRICT ISOLATION
     # =========================================================================
     filters = [{"term": {"in_stock": True}}]
+    must_nots = []
     
     if matrix["min_price"] is not None or matrix["max_price"] is not None:
         price_range = {}
@@ -183,7 +189,17 @@ async def execute_search(request: SearchRequest):
             filters.append({"bool": {"should": [{"multi_match": {"query": c, "type": "phrase", "fields": ["color", "attributes*", "name"]}} for c in request.filters.color], "minimum_should_match": 1}})
             
         if request.filters.gender:
-            filters.append({"bool": {"should": [{"multi_match": {"query": g, "type": "phrase", "fields": ["gender", "attributes*", "name", "category"]}} for g in request.filters.gender], "minimum_should_match": 1}})
+            genders = [g.lower() for g in request.filters.gender]
+            filters.append({"bool": {"should": [{"multi_match": {"query": g, "type": "phrase", "fields": ["gender", "attributes*", "name", "category"]}} for g in genders], "minimum_should_match": 1}})
+            
+            # 🛑 STRICT ISOLATION: Prevent "Womens" from matching "Men"
+            if "men" in genders and "women" not in genders:
+                must_nots.extend([
+                    {"match_phrase": {"name": "women"}},
+                    {"match_phrase": {"name": "womens"}},
+                    {"match_phrase": {"name": "women's"}},
+                    {"match_phrase": {"category": "women"}}
+                ])
             
         if request.filters.size:
             filters.append({"bool": {"should": [{"multi_match": {"query": s, "type": "phrase", "fields": ["size", "attributes*", "name"]}} for s in request.filters.size], "minimum_should_match": 1}})
@@ -199,43 +215,56 @@ async def execute_search(request: SearchRequest):
     elif request.sort == "price_desc": sort_query = [{"price": "desc"}]
 
     # =========================================================================
-    # 🧠 AI PART 3: TRUE HYBRID SCORING WITH MASSIVE LEXICAL BOOSTS
+    # 🧠 AI PART 3: ADVANCED FUZZY HYBRID SCORING
     # =========================================================================
     if vector:
         k_val = max(200, from_val + request.page_size + 100)
         
         semantic_shoulds = [
-            # 1. Vector Search (Catches the broad semantic meaning)
+            # 1. Base AI Vector Search
             {"knn": {"embedding": {"vector": vector, "k": k_val}}},
             
-            # 2. General Keyword Match
+            # 2. MEGA TYPO TOLERANCE (Solves "iphoe 16" bug)
             {
                 "multi_match": {
                     "query": core_query, 
-                    "fields": ["name^5", "brand^4", "category^3", "attributes^2"],
+                    "fields": ["name^6", "brand^5", "category^4"],
+                    "operator": "and",
                     "fuzziness": "AUTO",
-                    "boost": 10.0
+                    "boost": 100.0  # Massive boost for typo-corrected matches
                 }
             },
             
-            # 3. THE FIX: Massive Super-Boosts for EXACT phrase matches
-            # This forces actual iPhones above cases, and actual shoes above shoe bags
-            {"match_phrase": {"name": {"query": core_query, "boost": 100.0}}}, 
-            {"match_phrase": {"category": {"query": core_query, "boost": 80.0}}},
-            {"match_phrase": {"brand": {"query": core_query, "boost": 50.0}}}
+            # 3. EXACT PHRASE BOOSTS
+            {"match_phrase": {"name": {"query": core_query, "boost": 200.0}}}, 
+            {"match_phrase": {"category": {"query": core_query, "boost": 150.0}}},
+            {"match_phrase": {"brand": {"query": core_query, "boost": 80.0}}}
         ]
+
+        # 🛑 ANTI-ACCESSORY LOGIC (Solves Phone Case & Shoe Bag bug)
+        if not matrix["has_accessory_intent"]:
+            # Give an 80x boost to items that do NOT have accessory words in their title
+            semantic_shoulds.append({
+                "bool": {
+                    "must_not": [
+                        {"multi_match": {"query": "case cover charger cable bag protector strap accessories", "fields": ["name", "category"]}}
+                    ],
+                    "boost": 80.0
+                }
+            })
         
         query_body = {
             "query": {
                 "bool": {
                     "should": semantic_shoulds,
+                    "must_not": must_nots,
                     "minimum_should_match": 1,
                     "filter": filters
                 }
             }
         }
     else:
-        query_body = {"query": {"bool": {"must": [{"match_all": {}}], "filter": filters}}}
+        query_body = {"query": {"bool": {"must": [{"match_all": {}}], "filter": filters, "must_not": must_nots}}}
 
     os_query = {
         "from": from_val, "size": request.page_size,
@@ -257,7 +286,7 @@ async def execute_search(request: SearchRequest):
     total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
 
     # =========================================================================
-    # 📈 AI PART 4: DETERMINISTIC SCORE NORMALIZATION (Fixes 0% Bug)
+    # 📈 AI PART 4: REALISTIC MATCH PERCENTAGE
     # =========================================================================
     max_score = hits.get("max_score")
     if not max_score or max_score == 0: max_score = 1.0
@@ -282,21 +311,15 @@ async def execute_search(request: SearchRequest):
         _demo_sales = (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 800) + 150
 
         raw_score = hit.get("_score", 0) or 0
+        normalized_score = min(1.0, raw_score / max_score) if max_score > 0 else 0
         
+        # Determine strictness of match for UI display
         name_lower = str(source.get("name", "")).lower()
-        cat_lower = " ".join(clean_cats).lower()
-        brand_lower = brand_display.lower()
         
-        # 🟢 SMART SCORING LOGIC: Assigns realistic UI percentages based on exact relevance
-        if core_query and core_query == name_lower:
-            display_score = 0.99
-        elif core_query and core_query in name_lower:
-            display_score = 0.90 + (min(1.0, raw_score / max_score) * 0.08)
-        elif core_query and (core_query in cat_lower or core_query in brand_lower):
-            display_score = 0.80 + (min(1.0, raw_score / max_score) * 0.09)
+        if core_query in name_lower:
+            display_score = 0.94 + (normalized_score * 0.05) # 94% to 99%
         else:
-            # Semantic fallback for purely vector-related items
-            display_score = 0.40 + (min(1.0, raw_score / max_score) * 0.35)
+            display_score = 0.60 + (normalized_score * 0.30) # 60% to 90%
 
         results.append({
             "id": source.get("product_id"), "name": source.get("name", "Unknown Product"),
@@ -412,6 +435,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         core_query = matrix["core_query"]
             
         filters = [{"term": {"in_stock": True}}]
+        must_nots = []
         
         if matrix["min_price"] is not None or matrix["max_price"] is not None:
             price_range = {}
@@ -437,6 +461,16 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                 }
             ]
             
+            if not matrix["has_accessory_intent"]:
+                semantic_shoulds.append({
+                    "bool": {
+                        "must_not": [
+                            {"multi_match": {"query": "case cover charger cable bag protector strap accessories", "fields": ["name", "category"]}}
+                        ],
+                        "boost": 8.0
+                    }
+                })
+
             os_query = {
                 "size": 4,
                 "query": {
@@ -444,6 +478,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                         "must": [{"knn": {"embedding": {"vector": vector, "k": 50}}}],
                         "should": semantic_shoulds,
                         "filter": filters,
+                        "must_not": must_nots,
                         "minimum_should_match": 0
                     }
                 },
@@ -456,7 +491,8 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                 "query": {
                     "bool": {
                         "must": [{"match_all": {}}],
-                        "filter": filters
+                        "filter": filters,
+                        "must_not": must_nots
                     }
                 },
                 "sort": [{"_score": {"order": "desc"}}],
