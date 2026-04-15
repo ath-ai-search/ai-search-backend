@@ -138,10 +138,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V10 Redis Key to clear old 0-result cache
+    # ⚡ V11 Redis Key: Clears old caches and forces the new strict algorithm
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v10:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v11:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -170,7 +170,7 @@ async def execute_search(request: SearchRequest):
             logger.error(f"❌ OpenAI Embedding Failed: {e}")
 
     # =========================================================================
-    # 🛡️ BULLETPROOF FILTERS (Solves the "0 Products Found" bug)
+    # 🛡️ STRICT FILTERS (Solves the "Cuban Link Chain" passing for "Dress")
     # =========================================================================
     filters = [{"term": {"in_stock": True}}]
     
@@ -188,10 +188,11 @@ async def execute_search(request: SearchRequest):
         if request.filters.category: filters.append({"terms": {"category": request.filters.category}})
         if request.filters.in_stock is not None: filters.append({"term": {"in_stock": request.filters.in_stock}})
         
+        # 🟢 STRICT PHRASE MATCHING: Ensures partial words don't sneak through
         if request.filters.color:
             filters.append({
                 "bool": {
-                    "should": [{"multi_match": {"query": c, "fields": ["color", "attributes*", "name"]}} for c in request.filters.color],
+                    "should": [{"multi_match": {"query": c, "type": "phrase", "fields": ["color", "attributes*", "name"]}} for c in request.filters.color],
                     "minimum_should_match": 1
                 }
             })
@@ -199,7 +200,7 @@ async def execute_search(request: SearchRequest):
         if request.filters.gender:
             filters.append({
                 "bool": {
-                    "should": [{"multi_match": {"query": g, "fields": ["gender", "attributes*", "name", "category"]}} for g in request.filters.gender],
+                    "should": [{"multi_match": {"query": g, "type": "phrase", "fields": ["gender", "attributes*", "name", "category"]}} for g in request.filters.gender],
                     "minimum_should_match": 1
                 }
             })
@@ -207,7 +208,7 @@ async def execute_search(request: SearchRequest):
         if request.filters.size:
             filters.append({
                 "bool": {
-                    "should": [{"multi_match": {"query": s, "fields": ["size", "attributes*", "name"]}} for s in request.filters.size],
+                    "should": [{"multi_match": {"query": s, "type": "phrase", "fields": ["size", "attributes*", "name"]}} for s in request.filters.size],
                     "minimum_should_match": 1
                 }
             })
@@ -223,15 +224,16 @@ async def execute_search(request: SearchRequest):
     elif request.sort == "price_desc": sort_query = [{"price": "desc"}]
 
     # =========================================================================
-    # 🧠 AI PART 3: k-NN HYBRID SCORING
+    # 🧠 AI PART 3: TRUE HYBRID SCORING (Solves the "Shoe Bag" issue)
     # =========================================================================
     if vector:
         k_val = max(200, from_val + request.page_size + 100)
         
+        # We heavily boost matching categories to bury accessories/irrelevant items
         semantic_shoulds = [
+            {"match_phrase": {"category": {"query": core_query, "boost": 25.0}}}, # MASSIVE category boost
             {"match_phrase": {"name": {"query": core_query, "boost": 10.0}}}, 
             {"match_phrase": {"brand": {"query": core_query, "boost": 8.0}}},
-            {"match_phrase": {"category": {"query": core_query, "boost": 5.0}}},
             {
                 "multi_match": {
                     "query": core_query, 
@@ -281,7 +283,7 @@ async def execute_search(request: SearchRequest):
     total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
 
     # =========================================================================
-    # 📈 AI PART 4: SCORE NORMALIZATION
+    # 📈 AI PART 4: REALISTIC MATCH PERCENTAGE
     # =========================================================================
     max_score = hits.get("max_score")
     if not max_score and len(hits.get("hits", [])) > 0:
@@ -307,8 +309,18 @@ async def execute_search(request: SearchRequest):
         _demo_rating = 4.0 + (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 10) / 10.0
         _demo_sales = (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 800) + 150
 
+        # Create a realistic Confidence Score (Instead of always 100%)
         raw_score = hit.get("_score", 0) or 0
-        normalized_score = min(1.0, raw_score / max_score)
+        normalized_score = min(1.0, raw_score / max_score) if max_score > 0 else 0
+        
+        # Base realistic score between 40% and 95%
+        display_score = 0.40 + (normalized_score * 0.55) 
+        
+        # Boost confidence to 90%+ ONLY if the exact search word is in the name or category
+        name_lower = str(source.get("name", "")).lower()
+        cat_lower = " ".join(clean_cats).lower()
+        if core_query and (core_query in name_lower or core_query in cat_lower):
+            display_score = min(0.99, display_score + 0.15) # Cap at 99%
 
         results.append({
             "id": source.get("product_id"), "name": source.get("name", "Unknown Product"),
@@ -318,7 +330,7 @@ async def execute_search(request: SearchRequest):
             "sku": source.get("sku", ""), "url": source.get("url", ""),
             "primary_image": primary_image, "rating": source.get("rating") if source.get("rating", 0) > 0 else _demo_rating,
             "sales_count": source.get("sales_count") if source.get("sales_count", 0) > 0 else _demo_sales,
-            "score": round(normalized_score, 2)
+            "score": round(display_score, 2)
         })
 
     aggregations = response.get("aggregations", {})
@@ -328,7 +340,7 @@ async def execute_search(request: SearchRequest):
     }
 
     # =========================================================================
-    # 🤖 AI PART 5: GENERATIVE CHAT RESPONSE (RESTORED!)
+    # 🤖 AI PART 5: GENERATIVE CHAT RESPONSE (STAYS ACTIVE)
     # =========================================================================
     ai_chat_message = ""
     if request.page_size == 10 and query_text and total_hits > 0:
