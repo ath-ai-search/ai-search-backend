@@ -36,8 +36,6 @@ class Filters(BaseModel):
     
     # 🟢 Dynamic Filters extracted from UI static checkboxes or AI semantic intent
     color: Optional[List[str]] = None      # e.g., ["black", "red"]
-    gender: Optional[List[str]] = None     # e.g., ["men", "women"]
-
 class SearchRequest(BaseModel):
     """
     The master payload for the main search API (/search).

@@ -4,7 +4,7 @@ import time
 import logging
 import re
 from app.config import os_client, INDEX_NAME, redis_client, openai_client
-from app.models.search import SearchRequest, Filters # Added Filters import
+from app.models.search import SearchRequest, Filters, PriceFilter
 
 # =========================================================================
 # ⚙️ SYSTEM SETUP & CONFIGURATION
@@ -129,9 +129,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
+    # ⚡ V20 Redis Key: Flushes cache to apply gender removal
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v18:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v20:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -181,23 +182,11 @@ async def execute_search(request: SearchRequest):
         
         if getattr(request.filters, "color", None):
             filters.append({"bool": {"should": [{"multi_match": {"query": c, "type": "phrase", "fields": ["color", "attributes*", "name"]}} for c in request.filters.color], "minimum_should_match": 1}})
-            
-        if getattr(request.filters, "gender", None):
-            genders = [g.lower() for g in request.filters.gender]
-            filters.append({"bool": {"should": [{"multi_match": {"query": g, "type": "phrase", "fields": ["gender", "attributes*", "name", "category"]}} for g in genders], "minimum_should_match": 1}})
-            
-            if "men" in genders and "women" not in genders:
-                must_nots.extend([
-                    {"match_phrase": {"name": "women"}},
-                    {"match_phrase": {"name": "womens"}},
-                    {"match_phrase": {"name": "women's"}},
-                    {"match_phrase": {"category": "women"}}
-                ])
         
         if getattr(request.filters, "price", None):
             p_range = {}
-            if request.filters.price.min is not None: p_range["gte"] = request.filters.price.min
-            if request.filters.price.max is not None: p_range["lte"] = request.filters.price.max
+            if getattr(request.filters.price, "min", None) is not None: p_range["gte"] = request.filters.price.min
+            if getattr(request.filters.price, "max", None) is not None: p_range["lte"] = request.filters.price.max
             if p_range: filters.append({"range": {"price": p_range}})
 
     sort_query = [{"_score": "desc"}]
@@ -347,46 +336,17 @@ async def execute_search(request: SearchRequest):
         "categories": [{"value": str(c.get("key")).strip(), "label": str(c.get("key")).strip(), "count": c.get("doc_count", 0)} for c in aggregations.get("categories", {}).get("buckets", []) if c.get("key")]
     }
 
-    # =========================================================================
-    # 🤖 AI PART 5: GENERATIVE CHAT RESPONSE 
-    # =========================================================================
-    ai_chat_message = ""
-    if request.page_size == 10 and query_text and total_hits > 0:
-        try:
-            top_brands = [b["label"] for b in facets["brands"][:3]]
-            top_cats = [c["label"] for c in facets["categories"][:3]]
-            b_str = ", ".join(top_brands) if top_brands else "our top brands"
-            c_str = ", ".join(top_cats) if top_cats else "related categories"
-            
-            sys_msg = "You are ATHERA, a helpful, stylish AI shopping assistant. Write exactly 1 short, friendly sentence to introduce the products the user searched for. Mention the top brands or categories provided."
-            user_msg = f"User searched: '{query_text}'. We found {total_hits} matches. Top Brands: {b_str}. Categories: {c_str}."
-            
-            chat_resp = await openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": sys_msg},
-                    {"role": "user", "content": user_msg}
-                ],
-                max_tokens=60,
-                temperature=0.7
-            )
-            ai_chat_message = chat_resp.choices[0].message.content.strip()
-        except Exception as e:
-            logger.error(f"OpenAI Chat Error: {e}")
-            ai_chat_message = "Here are some great options I found for you:"
-    elif request.page_size == 10 and total_hits == 0:
-        ai_chat_message = f"I couldn't find any exact matches for '{query_text}'. Try adjusting your search keywords!"
-
     final_response = {
         "total_results": total_hits, "total_pages": total_pages, 
         "current_page": request.page, "pagination_html": build_pagination_html(total_pages, request.page), 
         "results": results, "facets": facets, 
-        "ai_message": ai_chat_message
+        "ai_message": ""
     }
     
     try: await redis_client.set(cache_key, json.dumps(final_response), ex=300)
     except Exception: pass
     return final_response
+
 
 # =========================================================================
 # 🤖 NEW: AI ASSISTANT CHAT LOGIC (DYNAMIC SHIFTING)
@@ -398,28 +358,31 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     You are ATHERA, an intelligent e-commerce AI shopping assistant.
     
     CURRENT CONTEXT:
-    - User is currently looking at: "{current_state.query}"
-    - Current Active Filters: {json.dumps(current_filters)}
+    - User is looking at: "{current_state.query}"
+    - Active Filters: {json.dumps(current_filters)}
 
     NEW USER MESSAGE: "{chat_message}"
 
     YOUR TASK:
-    Analyze the new user message. You must decide if the user wants to:
-    1. REFINE the current search (e.g. they typed "red" while looking at "shoes").
-    2. Start a NEW SEARCH (e.g. they typed "bags" or "iphone" while looking at "shoes").
+    Analyze the message. Decide if the user wants to:
+    1. REFINE the current search (e.g. they typed "red" or "under $100").
+    2. Start a NEW SEARCH (e.g. they typed "bags", or a full phrase like "nike shoes red color between $100 to $200").
 
-    Output ONLY a valid JSON object matching this structure:
+    Output ONLY a valid JSON object matching this exact structure:
     {{
         "intent": "refine" | "new_search",
-        "search_query": "The core product name. If 'new_search', this is the new item (e.g., 'bags'). If 'refine', keep the current query.",
+        "search_query": "The core product noun ONLY (e.g., 'shoes', 'bags', 'dress'). NEVER include colors or brands in this field.",
         "filters": {{
-            "color": ["colors mentioned in the NEW message"],
-            "gender": ["genders mentioned in the NEW message"],
-            "brand": ["brands mentioned in the NEW message"],
-            "category": ["categories mentioned in the NEW message"]
+            "color": ["black", "white", "blue", "red", "green", "brown"], 
+            "brand": ["nike", "apple", "samsung", etc],
+            "price": {{"min": number or null, "max": number or null}}
         }},
-        "ai_message": "A friendly 1-sentence reply. E.g., 'Filtering your shoes to show only red ones!' or 'Starting a new search for bags!'"
+        "ai_message": "Friendly 1-sentence reply. E.g. 'Searching for red Nike shoes between $100 and $200!'"
     }}
+    
+    CRITICAL RULES:
+    - Extract ALL attributes (brands, colors, price ranges) into the "filters" object. 
+    - The "search_query" must ONLY be the base item (e.g., 'shoes' not 'nike shoes').
     """
 
     try:
@@ -442,34 +405,42 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             sort="relevance"
         )
         
-        # 🟢 SMART FILTER WIPING LOGIC
         extracted_filters = parsed_intent.get("filters", {})
         new_filters_obj = Filters()
         
-        # If it is a REFINEMENT, we carry over the old filters first
+        new_filters_obj.color = []
+        new_filters_obj.brand = []
+        new_filters_obj.category = []
+        new_filters_obj.price = None
+        
         if parsed_intent.get("intent") == "refine" and current_state.filters:
-            new_filters_obj.brand = current_state.filters.brand
-            new_filters_obj.category = current_state.filters.category
-            new_filters_obj.color = current_state.filters.color
-            new_filters_obj.gender = current_state.filters.gender
+            new_filters_obj.brand = current_state.filters.brand or []
+            new_filters_obj.category = current_state.filters.category or []
+            new_filters_obj.color = current_state.filters.color or []
             new_filters_obj.price = current_state.filters.price
             new_filters_obj.in_stock = current_state.filters.in_stock
 
-        # If it is a NEW_SEARCH, the old filters are intentionally left blank (wiped!)
-        # Now, we apply whatever new filters the AI extracted from the latest chat message
-        if extracted_filters.get("color"): new_filters_obj.color = extracted_filters["color"]
-        if extracted_filters.get("gender"): new_filters_obj.gender = extracted_filters["gender"]
-        if extracted_filters.get("brand"): new_filters_obj.brand = extracted_filters["brand"]
-        if extracted_filters.get("category"): new_filters_obj.category = extracted_filters["category"]
-        
+        if extracted_filters.get("color"): 
+            new_filters_obj.color = list(set(new_filters_obj.color + extracted_filters["color"]))
+        if extracted_filters.get("brand"): 
+            new_filters_obj.brand = list(set(new_filters_obj.brand + extracted_filters["brand"]))
+            
+        if extracted_filters.get("price"):
+            p_data = extracted_filters["price"]
+            if p_data.get("min") is not None or p_data.get("max") is not None:
+                new_filters_obj.price = PriceFilter(min=p_data.get("min"), max=p_data.get("max"))
+
         updated_request.filters = new_filters_obj
 
         final_results = await execute_search(updated_request)
         final_results["ai_message"] = parsed_intent.get("ai_message", "Here is what I found for you.")
         final_results["updated_query"] = updated_request.query
         
-        # Pass back the wiped/updated filters so the UI unchecks the old boxes automatically
-        final_results["updated_filters"] = new_filters_obj.model_dump()
+        final_results["updated_filters"] = {
+            "color": new_filters_obj.color,
+            "brand": new_filters_obj.brand,
+            "category": new_filters_obj.category
+        }
         
         return final_results
 
