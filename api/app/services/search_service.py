@@ -487,7 +487,7 @@ async def execute_search(request: SearchRequest):
     elif request.page_size == 10 and total_hits == 0:
         ai_chat_message = f"I couldn't find any exact matches for '{query_text}'. Try adjusting your search keywords!"
 
-final_response = {
+    final_response = {
         "total_results":   total_hits,
         "total_pages":     total_pages,
         "current_page":    request.page,
@@ -497,6 +497,7 @@ final_response = {
         "sidebar_html":    sidebar_html,  # 🚀 Added this line to send to UI!
         "ai_message":      ai_chat_message
     }
+
     try:
         await redis_client.set(cache_key, json.dumps(final_response), ex=300)
     except Exception:
