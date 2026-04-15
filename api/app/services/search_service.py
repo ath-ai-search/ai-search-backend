@@ -8,7 +8,6 @@ from app.models.search import SearchRequest
 
 # =========================================================================
 # ⚙️ SECTION 1: SYSTEM SETUP & CONFIGURATION
-# Sets up the server logs and safety limits for OpenSearch
 # =========================================================================
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -17,13 +16,8 @@ MAX_OS_WINDOW = 10000
 
 # =========================================================================
 # 🛠️ SECTION 2: UTILITY FUNCTIONS
-# Helper functions to clean data and build HTML elements
 # =========================================================================
 def get_smart_brand(source):
-    """
-    Cleans up messy brand names from the database and intelligently maps 
-    product models (like 'macbook' or 's20') to their parent brand (APPLE, SAMSUNG).
-    """
     raw_brand = source.get("brand", "")
     if raw_brand and str(raw_brand).strip().lower() not in ["none", "", "null", "other brands", "unknown"]:
         return str(raw_brand).strip().upper()
@@ -40,24 +34,11 @@ def get_smart_brand(source):
     brand_mappings = {
         "iphone": "APPLE", "ipad": "APPLE", "macbook": "APPLE", "airpods": "APPLE", "imac": "APPLE",
         "galaxy": "SAMSUNG", "s20": "SAMSUNG", "s21": "SAMSUNG", "s22": "SAMSUNG", "s23": "SAMSUNG", "s24": "SAMSUNG",
-        "thinkpad": "LENOVO", "yoga": "LENOVO", "ideapad": "LENOVO",
-        "predator": "ACER", "aspire": "ACER",
-        "pavilion": "HP", "envy": "HP", "omen": "HP", "spectre": "HP",
-        "rog": "ASUS", "zenbook": "ASUS", "vivobook": "ASUS",
-        "playstation": "SONY", "bravia": "SONY",
-        "xbox": "MICROSOFT", "surface": "MICROSOFT",
-        "pixel": "GOOGLE", "kindle": "AMAZON", "echo": "AMAZON"
+        "thinkpad": "LENOVO", "yoga": "LENOVO", "ideapad": "LENOVO"
     }
     for keyword, mapped_brand in brand_mappings.items():
         if re.search(rf'\b{keyword}\b', title_lower):
             return mapped_brand
-            
-    known_brands = [
-        "nike", "adidas", "puma", "reebok", "sony", "dell", "asus", "acer", "lenovo", "hp", "microsoft", "apple", "samsung", "viking", "u-line"
-    ]
-    for b in known_brands:
-        if re.search(rf'\b{b}\b', title_lower):
-            return b.upper()
             
     words = title.split()
     if words:
@@ -68,9 +49,6 @@ def get_smart_brand(source):
     return "UNKNOWN"
 
 def build_pagination_html(total_pages: int, current_page: int) -> str:
-    """
-    Generates the clickable HTML pagination buttons (1, 2, 3...) for the frontend grid.
-    """
     if total_pages <= 1: return ""
     start = max(1, current_page - 2)
     end = min(total_pages, start + 4)
@@ -86,8 +64,6 @@ def build_pagination_html(total_pages: int, current_page: int) -> str:
 
 # =========================================================================
 # 🧠 SECTION 3: AI NLP (NATURAL LANGUAGE PROCESSING) MATRIX
-# This is the "Brain" that rips apart the user's sentence to find prices, 
-# sizes, colors, genders, and sales, leaving only the "core" item behind.
 # =========================================================================
 def extract_semantic_matrix(query_string):
     query_lower = query_string.lower()
@@ -96,13 +72,11 @@ def extract_semantic_matrix(query_string):
     smart_min_price, smart_max_price, smart_size, smart_discount = None, None, None, None
     is_sale_intent = False
 
-    # Extractor: Price Ranges ("between $40 to $100")
     range_match = re.search(r'(?:between|from)?\s*\$?\s*(\d+)\s*(?:to|and|-)\s*\$?\s*(\d+)', query_lower)
     if range_match:
         smart_min_price, smart_max_price = float(range_match.group(1)), float(range_match.group(2))
         core_query = core_query.replace(range_match.group(0), '')
     else:
-        # Extractor: Price Limits ("under 100", "over 50")
         max_match = re.search(r'(?:under|less than|below|<)\s*\$?\s*(\d+)', query_lower)
         if max_match: 
             smart_max_price = float(max_match.group(1))
@@ -112,13 +86,11 @@ def extract_semantic_matrix(query_string):
             smart_min_price = float(min_match.group(1))
             core_query = core_query.replace(min_match.group(0), '')
 
-    # Extractor: Sizes ("size 10.5")
     size_match = re.search(r'size\s*(\d+(?:\.\d+)?)', query_lower)
     if size_match: 
         smart_size = str(size_match.group(1))
         core_query = core_query.replace(size_match.group(0), '')
 
-    # Extractor: Sales and Discounts ("20% off", "clearance")
     disc_match = re.search(r'(\d+)%\s*(?:off|discount|sale)', query_lower)
     if disc_match: 
         smart_discount = int(disc_match.group(1))
@@ -128,391 +100,33 @@ def extract_semantic_matrix(query_string):
         is_sale_intent = True
         core_query = re.sub(r'\b(?:with\s+sale|on\s+sale|sale|clearance|discount)\b', '', core_query)
 
-    # Clean the Core Query (Removes double spaces)
-    core_query = re.sub(r'\s+', ' ', core_query).strip()
-    if not core_query:
-        core_query = query_lower 
-
-    # Dimension Dictionaries
+    colors_dict = ["red", "blue", "black", "white", "green", "yellow", "pink", "purple", "brown", "grey", "silver", "gold", "beige"]
     personas_dict = ["men", "mens", "women", "womens", "kids", "boys", "girls", "baby", "unisex"]
     occasions_dict = ["wedding", "party", "gym", "running", "casual", "formal", "summer", "winter", "fall", "spring", "outdoor", "indoor", "beach"]
-    visuals_dict = ["red", "blue", "black", "white", "green", "yellow", "pink", "purple", "brown", "leather", "suede", "canvas", "cotton", "striped", "solid", "floral", "minimalist", "vintage", "shiny", "matte"]
-
-    # Extractor: Dimension Matching
+    
+    extracted_colors = [c for c in colors_dict if re.search(rf'\b{c}\b', query_lower)]
     extracted_personas = [p for p in personas_dict if re.search(rf'\b{p}\b', query_lower)]
     extracted_occasions = [o for o in occasions_dict if re.search(rf'\b{o}\b', query_lower)]
-    extracted_visuals = [v for v in visuals_dict if re.search(rf'\b{v}\b', query_lower)]
+
+    for c in extracted_colors: core_query = re.sub(rf'\b{c}\b', '', core_query)
+    core_query = re.sub(r'\s+', ' ', core_query).strip()
+    if not core_query: core_query = query_lower 
 
     return {
         "core_query": core_query,
         "min_price": smart_min_price, "max_price": smart_max_price, 
         "size": smart_size, "discount": smart_discount, "is_sale": is_sale_intent,
-        "personas": extracted_personas, "occasions": extracted_occasions, "visuals": extracted_visuals
+        "personas": extracted_personas, "colors": extracted_colors, "occasions": extracted_occasions
     }
 
 # =========================================================================
-# 🔧 HELPER: BUILD DYNAMIC FACET AGGREGATIONS
-# =========================================================================
-def build_facet_aggregations() -> dict:
-    """
-    Returns the OpenSearch aggregations block that powers ALL filter panels.
-    Each aggregation becomes one filter section in the frontend sidebar.
-    """
-    return {
-        "brands": {
-            "terms": {"field": "brand.keyword", "size": 25}
-        },
-        "categories": {
-            "terms": {"field": "category.keyword", "size": 25}
-        },
-        "sizes": {
-            "terms": {"field": "attributes.size.keyword", "size": 30}
-        },
-        "genders": {
-            "terms": {"field": "attributes.gender.keyword", "size": 10}
-        },
-        "colors": {
-            "terms": {"field": "attributes.color.keyword", "size": 20}
-        },
-        "price_stats": {
-            "stats": {"field": "price"}
-        }
-    }
-
-# =========================================================================
-# 🔧 HELPER: PROCESS RAW AGGREGATIONS → CLEAN FACETS DICT
-# =========================================================================
-def process_aggregations_to_facets(aggregations: dict) -> dict:
-    """
-    Converts raw OpenSearch aggregation buckets into a clean, frontend-ready
-    facets dictionary.  Every key here becomes a filter section in the UI.
-    """
-
-    brands_facet = [
-        {
-            "label": str(b.get("key", "")).strip() or "Other Brands",
-            "value": b.get("key"),
-            "count": b.get("doc_count", 0)
-        }
-        for b in aggregations.get("brands", {}).get("buckets", [])
-        if b.get("key")
-    ]
-
-    categories_facet = [
-        {
-            "label": str(c.get("key", "")).strip(),
-            "value": str(c.get("key", "")).strip(),
-            "count": c.get("doc_count", 0)
-        }
-        for c in aggregations.get("categories", {}).get("buckets", [])
-        if c.get("key") and str(c.get("key")).strip().lower() not in ["none", "null", ""]
-    ]
-
-    sizes_facet = [
-        {
-            "label": str(s.get("key", "")).strip(),
-            "value": str(s.get("key", "")).strip(),
-            "count": s.get("doc_count", 0)
-        }
-        for s in aggregations.get("sizes", {}).get("buckets", [])
-        if s.get("key") and str(s.get("key")).strip().lower() not in ["none", "null", ""]
-    ]
-
-    genders_facet = [
-        {
-            "label": str(g.get("key", "")).strip().title(),
-            "value": str(g.get("key", "")).strip().lower(),
-            "count": g.get("doc_count", 0)
-        }
-        for g in aggregations.get("genders", {}).get("buckets", [])
-        if g.get("key") and str(g.get("key")).strip().lower() not in ["none", "null", ""]
-    ]
-
-    colors_facet = [
-        {
-            "label": str(col.get("key", "")).strip().title(),
-            "value": str(col.get("key", "")).strip().lower(),
-            "count": col.get("doc_count", 0)
-        }
-        for col in aggregations.get("colors", {}).get("buckets", [])
-        if col.get("key") and str(col.get("key")).strip().lower() not in ["none", "null", ""]
-    ]
-
-    raw_stats = aggregations.get("price_stats", {})
-    price_min = round(float(raw_stats.get("min") or 0), 2)
-    price_max = round(float(raw_stats.get("max") or 9999), 2)
-    price_range_facet = {
-        "min": price_min,
-        "max": price_max
-    }
-
-    return {
-        "brands":      brands_facet,
-        "categories":  categories_facet,
-        "sizes":       sizes_facet,
-        "genders":     genders_facet,
-        "colors":      colors_facet,
-        "price_range": price_range_facet,
-    }
-
-
-# =========================================================================
-# 👑 SECTION 4: MAIN SEARCH ROUTE
-# This handles the big product grid, the sidebar filters, and AI Chat
-# =========================================================================
-async def execute_search(request: SearchRequest):
-    request.page_size = 25 if request.page_size != 10 else 10
-    request_data = request.model_dump()
-    request_str = json.dumps(request_data, sort_keys=True)
-    
-    # ⚡ Redis Cache (v15)
-    cache_key = f"search:ai:v15:{hashlib.md5(request_str.encode()).hexdigest()}"
-
-    try:
-        start_time = time.time()
-        cached_result = await redis_client.get(cache_key)
-        if cached_result:
-            return json.loads(cached_result)
-    except Exception as e:
-        logger.warning(f"⚠️ Redis read error: {e}")
-
-    from_val = (request.page - 1) * request.page_size
-    if from_val + request.page_size > MAX_OS_WINDOW:
-        from_val = MAX_OS_WINDOW - request.page_size
-
-    query_text = request.query.strip() if request.query else ""
-    vector = None
-
-    # Step 4.1: Run the NLP Matrix
-    matrix = extract_semantic_matrix(query_text)
-    core_query = matrix["core_query"]
-
-    # =========================================================================
-    # 🧠 AI PART 2: LLM (LARGE LANGUAGE MODEL) EMBEDDINGS
-    # Translates the search sentence into a 1,536-dimensional math vector
-    # =========================================================================
-    if query_text:
-        try:
-            resp = await openai_client.embeddings.create(input=query_text, model="text-embedding-3-small")
-            vector = resp.data[0].embedding
-        except Exception as e:
-            logger.error(f"❌ OpenAI Embedding Failed: {e}")
-
-    # =========================================================================
-    # 🛡️ SECTION 4.3: STRICT FILTERING (Backend & UI Sidebar)
-    # Automatically applies NLP math rules AND listens to user clicks on the UI
-    # =========================================================================
-    filters = [{"term": {"in_stock": True}}]
-
-    if matrix["min_price"] is not None or matrix["max_price"] is not None:
-        price_range = {}
-        if matrix["min_price"] is not None: price_range["gte"] = matrix["min_price"]
-        if matrix["max_price"] is not None: price_range["lte"] = matrix["max_price"]
-        filters.append({"range": {"price": price_range}})
-
-    if matrix["is_sale"] or request.sort == "on_sale":
-        filters.append({"range": {"sale_price": {"gt": 0}}})
-
-    if request.filters:
-        if request.filters.brand:
-            filters.append({"terms": {"brand": request.filters.brand}})
-        if request.filters.category:
-            filters.append({"terms": {"category": request.filters.category}})
-        if request.filters.in_stock is not None:
-            filters.append({"term": {"in_stock": request.filters.in_stock}})
-        if request.filters.price:
-            p_range = {}
-            if request.filters.price.min is not None: p_range["gte"] = request.filters.price.min
-            if request.filters.price.max is not None: p_range["lte"] = request.filters.price.max
-            if p_range: filters.append({"range": {"price": p_range}})
-
-        # New Attributes
-        if hasattr(request.filters, "size") and request.filters.size:
-            filters.append({"terms": {"attributes.size.keyword": request.filters.size}})
-        if hasattr(request.filters, "gender") and request.filters.gender:
-            filters.append({"terms": {"attributes.gender.keyword": request.filters.gender}})
-        if hasattr(request.filters, "color") and request.filters.color:
-            filters.append({"terms": {"attributes.color.keyword": request.filters.color}})
-
-    sort_query = [{"_score": "desc"}]
-    if request.sort == "price_asc":  sort_query = [{"price": "asc"}]
-    elif request.sort == "price_desc": sort_query = [{"price": "desc"}]
-
-    # =========================================================================
-    # ⚖️ SECTION 4.4: WEIGHTED HYBRID SCORING (k-NN + Lexical)
-    # Balances AI Meaning with Exact Text Matching to prevent Hallucinations
-    # =========================================================================
-    if vector:
-        k_val = max(200, from_val + request.page_size + 100)
-
-        semantic_shoulds = [
-            {"match_phrase": {"name":     {"query": core_query, "boost": 10.0}}},
-            {"match_phrase": {"brand":    {"query": core_query, "boost": 8.0}}},
-            {"match_phrase": {"category": {"query": core_query, "boost": 5.0}}},
-            {
-                "multi_match": {
-                    "query": core_query,
-                    "fields": ["name^4", "brand^3", "category^2"],
-                    "operator": "and",
-                    "fuzziness": "AUTO",
-                    "boost": 5.0
-                }
-            }
-        ]
-
-        for p in matrix["personas"]:  semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^2", "category^2"], "boost": 3.0}})
-        for o in matrix["occasions"]: semantic_shoulds.append({"multi_match": {"query": o, "fields": ["name^2", "attributes^2"], "boost": 3.0}})
-        for v in matrix["visuals"]:   semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^2", "attributes^2"], "boost": 3.0}})
-        if matrix["size"]:            semantic_shoulds.append({"multi_match": {"query": matrix["size"], "fields": ["name^4", "attributes^3"], "boost": 6.0}})
-
-        query_body = {
-            "query": {
-                "bool": {
-                    "must":   [{"knn": {"embedding": {"vector": vector, "k": k_val}}}],
-                    "should": semantic_shoulds,
-                    "filter": filters,
-                    "minimum_should_match": 0
-                }
-            }
-        }
-    else:
-        query_body = {"query": {"bool": {"must": [{"match_all": {}}], "filter": filters}}}
-
-    # =========================================================================
-    # 📊 SECTION 4.5: DYNAMIC AGGREGATION (Building the UI Sidebar)
-    # Automatically counts every brand, category, color, size, and gender
-    # =========================================================================
-    os_query = {
-        "from": from_val,
-        "size": request.page_size,
-        **query_body,
-        "sort": sort_query,
-        "track_total_hits": True,
-        "track_scores": True,
-        "aggs": build_facet_aggregations()
-    }
-
-    try:
-        response = os_client.search(index=INDEX_NAME, body=os_query)
-    except Exception as e:
-        logger.error(f"❌ OpenSearch Error: {str(e)}")
-        return {"error": "Search service unavailable", "results": [], "total_results": 0}
-
-    hits = response.get("hits", {})
-    total_hits  = hits.get("total", {}).get("value", 0)
-    total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
-
-    max_score = hits.get("max_score")
-    if not max_score and len(hits.get("hits", [])) > 0:
-        max_score = hits["hits"][0].get("_score", 1.0)
-    if not max_score or max_score == 0:
-        max_score = 1.0
-
-    results = []
-    for hit in hits.get("hits", []):
-        source = hit.get("_source", {})
-        brand_display = get_smart_brand(source)
-
-        raw_cats = source.get("category", [])
-        clean_cats = []
-        if isinstance(raw_cats, str):
-            clean_cats = [c.strip() for c in re.sub(r"[\[\]'\"]", "", raw_cats).split(",") if c.strip()]
-        elif isinstance(raw_cats, list):
-            clean_cats = [str(c).strip() for c in raw_cats if c and str(c).strip()]
-        if not clean_cats or clean_cats == ["None"]:
-            clean_cats = ["Uncategorized"]
-
-        images = source.get("images", [])
-        primary_image = images[0] if isinstance(images, list) and len(images) > 0 else None
-        _pid = str(source.get("product_id", "123"))
-
-        _demo_rating = 4.0 + (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 10) / 10.0
-        _demo_sales  = (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 800) + 150
-
-        raw_score        = hit.get("_score", 0) or 0
-        normalized_score = min(1.0, raw_score / max_score)
-
-        results.append({
-            "id":           source.get("product_id"),
-            "name":         source.get("name", "Unknown Product"),
-            "description":  source.get("description", ""),
-            "brand":        brand_display,
-            "category":     clean_cats,
-            "price":        source.get("price", 0.0),
-            "sale_price":   source.get("sale_price"),
-            "in_stock":     source.get("in_stock", False),
-            "sku":          source.get("sku", ""),
-            "url":          source.get("url", ""),
-            "primary_image": primary_image,
-            "rating":       source.get("rating") if source.get("rating", 0) > 0 else _demo_rating,
-            "sales_count":  source.get("sales_count") if source.get("sales_count", 0) > 0 else _demo_sales,
-            "score":        round(normalized_score, 2)
-        })
-
-# Get Processed Facets
-    aggregations = response.get("aggregations", {})
-    facets = process_aggregations_to_facets(aggregations)
-
-    # 🚀 GENERATE THE SIDEBAR HTML!
-    sidebar_html = build_sidebar_html(facets, active_state)
-
-    # =========================================================================
-    # 🤖 AI PART 5: GENERATIVE CHAT RESPONSE
-    # Uses OpenAI to write a custom sentence based on the fetched products.
-    # ONLY triggers when the sidebar assistant calls it (page_size == 10).
-    # =========================================================================
-    ai_chat_message = "Here are some great options I found for you:"
-    if request.page_size == 10 and query_text and total_hits > 0:
-        try:
-            top_brands = [b["label"] for b in facets["brands"][:3]]
-            top_cats   = [c["label"] for c in facets["categories"][:3]]
-            b_str = ", ".join(top_brands) if top_brands else "our top brands"
-            c_str = ", ".join(top_cats)   if top_cats   else "related categories"
-
-            sys_msg  = "You are ATHERA, a helpful, stylish AI shopping assistant. Write exactly 1 short, friendly sentence to introduce the products the user searched for. Mention the top brands or categories provided."
-            user_msg = f"User searched: '{query_text}'. We found {total_hits} matches. Top Brands: {b_str}. Categories: {c_str}."
-
-            chat_resp = await openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": sys_msg},
-                    {"role": "user",   "content": user_msg}
-                ],
-                max_tokens=60,
-                temperature=0.7
-            )
-            ai_chat_message = chat_resp.choices[0].message.content.strip()
-        except Exception as e:
-            logger.error(f"OpenAI Chat Error: {e}")
-    elif request.page_size == 10 and total_hits == 0:
-        ai_chat_message = f"I couldn't find any exact matches for '{query_text}'. Try adjusting your search keywords!"
-
-    final_response = {
-        "total_results":   total_hits,
-        "total_pages":     total_pages,
-        "current_page":    request.page,
-        "pagination_html": build_pagination_html(total_pages, request.page),
-        "results":         results,
-        "facets":          facets,
-        "sidebar_html":    sidebar_html,  # 🚀 Added this line to send to UI!
-        "ai_message":      ai_chat_message
-    }
-
-    try:
-        await redis_client.set(cache_key, json.dumps(final_response), ex=300)
-    except Exception:
-        pass
-    return final_response
-
-# =========================================================================
-# 🎨 BACKEND HTML SIDEBAR GENERATOR (Updated with Color Swatches & Layout)
+# 🎨 SECTION 4: BACKEND HTML SIDEBAR GENERATOR 
 # =========================================================================
 def build_sidebar_html(facets, active_state):
     min_p = active_state.get('min_price') or ""
     max_p = active_state.get('max_price') or ""
     in_stock_chk = "checked" if active_state.get('in_stock') else ""
 
-    # 1. Header & Price Range (Matching the Red Button Mockup)
     html = f'''
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
         <div style="font-weight: 800; font-size: 0.85rem; color:#111; text-transform: uppercase;">Refine By</div>
@@ -540,7 +154,6 @@ def build_sidebar_html(facets, active_state):
     </div>
     '''
 
-    # 2. Standard Checkbox Sections (Categories, Brands, Sizes, Genders)
     def make_section(title, key, css_class):
         items = facets.get(key, [])
         if not items: return ""
@@ -573,7 +186,6 @@ def build_sidebar_html(facets, active_state):
     html += make_section('Size', 'sizes', 'size-filter')
     html += make_section('Gender', 'genders', 'gender-filter')
 
-    # 3. Custom Color Swatch Section
     colors = facets.get('colors', [])
     if colors:
         active_colors = [str(x).lower() for x in active_state.get('colors', [])]
@@ -584,18 +196,15 @@ def build_sidebar_html(facets, active_state):
             val = str(c.get('value', ''))
             label = str(c.get('label') or val).title()
             
-            # CSS Magic for Color Swatches
             css_color = val.lower().replace(" ", "")
             if css_color == "multi" or css_color == "multicolor": 
                 bg_style = "background: linear-gradient(45deg, red, blue, green);"
             else:
                 bg_style = f"background-color: {css_color};"
             
-            # Highlight if selected
             is_active = val.lower() in active_colors
             checked_style = "border: 2px solid #111; transform: scale(1.15); box-shadow: 0 0 5px rgba(0,0,0,0.3);" if is_active else "border: 1px solid #d1d5db;"
             
-            # Render Swatch
             html += f'''
             <div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">
                 <div class="color-filter-swatch" data-value="{val}" 
@@ -608,59 +217,226 @@ def build_sidebar_html(facets, active_state):
         html += '</div></div>'
 
     return html
+
 # =========================================================================
-# 🔎 AUTOCOMPLETE ROUTE (Typeahead Dropdown)
+# 👑 SECTION 5: MAIN SEARCH ROUTE
+# =========================================================================
+async def execute_search(request: SearchRequest):
+    request.page_size = 25 if request.page_size != 10 else 10
+    request_data = request.model_dump()
+    req_filters = request_data.get("filters", {}) or {}
+    
+    query_text = request.query.strip() if request.query else ""
+    vector = None
+
+    matrix = extract_semantic_matrix(query_text)
+    core_query = matrix["core_query"]
+
+    if query_text:
+        try:
+            resp = await openai_client.embeddings.create(input=query_text, model="text-embedding-3-small")
+            vector = resp.data[0].embedding
+        except Exception as e:
+            logger.error(f"❌ OpenAI Embedding Failed: {e}")
+
+    # 🚀 DEFINING ACTIVE_STATE SO THE HTML BUILDER DOESN'T CRASH!
+    active_colors = list(set(req_filters.get("colors", []) + matrix.get("colors", [])))
+    active_sizes = list(set(req_filters.get("sizes", []) + ([matrix.get("size")] if matrix.get("size") else [])))
+    active_genders = list(set(req_filters.get("genders", []) + matrix.get("personas", [])))
+
+    active_state = {
+        "min_price": req_filters.get("price", {}).get("min") if req_filters.get("price") else matrix.get("min_price"),
+        "max_price": req_filters.get("price", {}).get("max") if req_filters.get("price") else matrix.get("max_price"),
+        "in_stock": req_filters.get("in_stock", False),
+        "colors": active_colors,
+        "sizes": active_sizes,
+        "genders": active_genders,
+        "brands": req_filters.get("brand", []),
+        "categories": req_filters.get("category", [])
+    }
+
+    # 🛡️ HARD FILTERS
+    filters = [{"term": {"in_stock": True}}] if active_state["in_stock"] else []
+    
+    if active_state["min_price"] is not None or active_state["max_price"] is not None:
+        p_range = {}
+        if active_state["min_price"] is not None: p_range["gte"] = active_state["min_price"]
+        if active_state["max_price"] is not None: p_range["lte"] = active_state["max_price"]
+        filters.append({"range": {"price": p_range}})
+
+    if matrix["is_sale"] or request.sort == "on_sale": filters.append({"range": {"sale_price": {"gt": 0}}})
+    
+    if active_state["brands"]: filters.append({"terms": {"brand.keyword": active_state["brands"]}})
+    if active_state["categories"]: filters.append({"terms": {"category.keyword": active_state["categories"]}})
+    if active_state["colors"]: filters.append({"terms": {"attributes.color.keyword": active_state["colors"]}})
+    if active_state["sizes"]: filters.append({"terms": {"attributes.size.keyword": active_state["sizes"]}})
+    if active_state["genders"]: filters.append({"terms": {"attributes.gender.keyword": active_state["genders"]}})
+
+    sort_query = [{"_score": "desc"}]
+    if request.sort == "price_asc": sort_query = [{"price": "asc"}]
+    elif request.sort == "price_desc": sort_query = [{"price": "desc"}]
+    
+    from_val = (request.page - 1) * request.page_size
+    if from_val + request.page_size > MAX_OS_WINDOW: from_val = MAX_OS_WINDOW - request.page_size 
+
+    if vector:
+        k_val = max(200, from_val + request.page_size + 100)
+        semantic_shoulds = [
+            {"match_phrase": {"name": {"query": core_query, "boost": 10.0}}},      
+            {"match_phrase": {"brand": {"query": core_query, "boost": 8.0}}},       
+            {"match_phrase": {"category": {"query": core_query, "boost": 5.0}}},    
+            {
+                "multi_match": {
+                    "query": core_query, 
+                    "fields": ["name^4", "brand^3", "category^2"],
+                    "operator": "and",     
+                    "fuzziness": "AUTO",   
+                    "boost": 5.0
+                }
+            }
+        ]
+        query_body = {"query": {"bool": {"must": [{"knn": {"embedding": {"vector": vector, "k": k_val}}}], "should": semantic_shoulds, "filter": filters, "minimum_should_match": 0}}}
+    else:
+        query_body = {"query": {"bool": {"must": [{"match_all": {}}], "filter": filters}}}
+
+    # 🚀 DYNAMIC AGGREGATIONS WITH .KEYWORD FOR OPENSEARCH
+    os_query = {
+        "from": from_val, "size": request.page_size,
+        **query_body, "sort": sort_query, "track_total_hits": True, "track_scores": True, 
+        "aggs": {
+            "brands": {"terms": {"field": "brand.keyword", "size": 15}}, 
+            "categories": {"terms": {"field": "category.keyword", "size": 15}},
+            "colors": {"terms": {"field": "attributes.color.keyword", "size": 15}},
+            "sizes": {"terms": {"field": "attributes.size.keyword", "size": 15}},
+            "genders": {"terms": {"field": "attributes.gender.keyword", "size": 10}}
+        }
+    }
+
+    try:
+        response = os_client.search(index=INDEX_NAME, body=os_query)
+    except Exception as e:
+        logger.error(f"❌ OpenSearch Error: {str(e)}")
+        return {"error": "Search service unavailable", "results": [], "total_results": 0}
+    
+    hits = response.get("hits", {})
+    total_hits = hits.get("total", {}).get("value", 0)
+    total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
+
+    max_score = hits.get("max_score")
+    if not max_score and len(hits.get("hits", [])) > 0: max_score = hits["hits"][0].get("_score", 1.0)
+    if not max_score or max_score == 0: max_score = 1.0
+
+    results = []
+    for hit in hits.get("hits", []):
+        source = hit.get("_source", {})
+        brand_display = get_smart_brand(source)
+        
+        raw_cats = source.get("category", [])
+        clean_cats = []
+        if isinstance(raw_cats, str): clean_cats = [c.strip() for c in re.sub(r"[\[\]'\"]", "", raw_cats).split(",") if c.strip()]
+        elif isinstance(raw_cats, list): clean_cats = [str(c).strip() for c in raw_cats if c and str(c).strip()]
+        if not clean_cats or clean_cats == ["None"]: clean_cats = ["Uncategorized"]
+
+        images = source.get("images", [])
+        primary_image = images[0] if isinstance(images, list) and len(images) > 0 else None
+        _pid = str(source.get("product_id", "123"))
+        _demo_rating = 4.0 + (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 10) / 10.0
+        _demo_sales = (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 800) + 150
+
+        raw_score = hit.get("_score", 0) or 0
+        normalized_score = min(1.0, raw_score / max_score)
+
+        results.append({
+            "id": source.get("product_id"), "name": source.get("name", "Unknown Product"),
+            "description": source.get("description", ""), "brand": brand_display, 
+            "category": clean_cats, "price": source.get("price", 0.0),
+            "sale_price": source.get("sale_price"), "in_stock": source.get("in_stock", False),
+            "sku": source.get("sku", ""), "url": source.get("url", ""),
+            "primary_image": primary_image, "rating": source.get("rating") if source.get("rating", 0) > 0 else _demo_rating,
+            "sales_count": source.get("sales_count") if source.get("sales_count", 0) > 0 else _demo_sales,
+            "score": round(normalized_score, 2)
+        })
+
+    aggregations = response.get("aggregations", {})
+    facets = {
+        "brands": [{"label": str(b.get("key", "")).strip(), "value": b.get("key"), "count": b.get("doc_count", 0)} for b in aggregations.get("brands", {}).get("buckets", []) if b.get("key")],
+        "categories": [{"value": str(c.get("key")).strip(), "label": str(c.get("key")).strip(), "count": c.get("doc_count", 0)} for c in aggregations.get("categories", {}).get("buckets", []) if c.get("key")],
+        "colors": [{"value": str(c.get("key")).strip(), "label": str(c.get("key")).strip(), "count": c.get("doc_count", 0)} for c in aggregations.get("colors", {}).get("buckets", []) if c.get("key")],
+        "sizes": [{"value": str(s.get("key")).strip(), "label": str(s.get("key")).strip(), "count": s.get("doc_count", 0)} for s in aggregations.get("sizes", {}).get("buckets", []) if s.get("key")],
+        "genders": [{"value": str(g.get("key")).strip(), "label": str(g.get("key")).strip(), "count": g.get("doc_count", 0)} for g in aggregations.get("genders", {}).get("buckets", []) if g.get("key")]
+    }
+
+    # 🚀 GENERATE THE SIDEBAR HTML!
+    sidebar_html = build_sidebar_html(facets, active_state)
+
+    # 🤖 AI CHAT GENERATOR
+    ai_chat_message = "Here are some great options I found for you:"
+    if request.page_size == 10 and query_text and total_hits > 0:
+        try:
+            top_brands = [b["label"] for b in facets["brands"][:3]]
+            top_cats = [c["label"] for c in facets["categories"][:3]]
+            b_str = ", ".join(top_brands) if top_brands else "our top brands"
+            c_str = ", ".join(top_cats) if top_cats else "related categories"
+            
+            sys_msg = "You are ATHERA, a helpful, stylish AI shopping assistant. Write exactly 1 short, friendly sentence to introduce the products the user searched for. Mention the top brands or categories provided."
+            user_msg = f"User searched: '{query_text}'. We found {total_hits} matches. Top Brands: {b_str}. Categories: {c_str}."
+            
+            chat_resp = await openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "system", "content": sys_msg}, {"role": "user", "content": user_msg}],
+                max_tokens=60, temperature=0.7
+            )
+            ai_chat_message = chat_resp.choices[0].message.content.strip()
+        except Exception as e:
+            pass
+    elif request.page_size == 10 and total_hits == 0:
+        ai_chat_message = f"I couldn't find any exact matches for '{query_text}'. Try adjusting your search keywords!"
+
+    # 🚀 SEND SIDEBAR HTML TO THE FRONTEND
+    final_response = {
+        "total_results": total_hits, "total_pages": total_pages, 
+        "current_page": request.page, "pagination_html": build_pagination_html(total_pages, request.page), 
+        "results": results, "facets": facets, 
+        "sidebar_html": sidebar_html, 
+        "ai_message": ai_chat_message
+    }
+    
+    return final_response
+
+# =========================================================================
+# 🔎 SECTION 6: AUTOCOMPLETE ROUTE (Main Bar Suggestions)
 # =========================================================================
 async def execute_autocomplete(query_string: str):
     clean_query = query_string.strip()
     if not clean_query: return {"suggestions": []}
-    cache_key = f"auto:{hashlib.md5(clean_query.encode()).hexdigest()}"
-    try:
-        cached_result = await redis_client.get(cache_key)
-        if cached_result: return json.loads(cached_result)
-    except Exception: pass
+    os_query = {"size": 10, "_source": ["name", "images"], "query": {"match_phrase_prefix": {"name": {"query": clean_query, "max_expansions": 50}}}}
+    try: response = os_client.search(index=INDEX_NAME, body=os_query)
+    except Exception: return {"suggestions": []}
 
-    os_query = {
-        "size": 10,
-        "_source": ["name", "images"],
-        "query": {"match_phrase_prefix": {"name": {"query": clean_query, "max_expansions": 50}}}
-    }
-    try:
-        response = os_client.search(index=INDEX_NAME, body=os_query)
-    except Exception:
-        return {"suggestions": []}
-
-    seen_names  = set()
+    seen_names = set()
     suggestions = []
     for hit in response.get("hits", {}).get("hits", []):
-        source          = hit.get("_source", {})
-        name            = source.get("name", "")
+        source = hit.get("_source", {})
+        name = source.get("name", "")
         normalized_name = str(name).strip().lower()
         if normalized_name and normalized_name not in seen_names:
             seen_names.add(normalized_name)
-            images    = source.get("images", [])
+            images = source.get("images", [])
             thumbnail = images[0] if isinstance(images, list) and len(images) > 0 else None
             suggestions.append({"text": name, "thumbnail": thumbnail})
 
-    final_response = {"suggestions": suggestions}
-    try:
-        await redis_client.set(cache_key, json.dumps(final_response), ex=3600)
-    except Exception:
-        pass
-    return final_response
-
+    return {"suggestions": suggestions}
 
 # =========================================================================
-# 🌐 HTML MEGA MENU ROUTE
-# Generates the entire HTML popup widget that drops down when you click Search
+# 🌐 SECTION 7: MEGA MENU ROUTE (Dropdown Interface)
 # =========================================================================
 async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     clean_query = query_string.strip().lower()
-
+    
     if not clean_query:
         os_query = {
             "size": 4, "query": {"match_all": {}}, "sort": [{"_score": {"order": "desc"}}],
-            "track_total_hits": True,
+            "track_total_hits": True, 
             "aggs": {"top_categories": {"terms": {"field": "category", "size": 3}}}
         }
     else:
@@ -670,11 +446,11 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             vector = resp.data[0].embedding
         except Exception: pass
 
-        matrix     = extract_semantic_matrix(clean_query)
+        matrix = extract_semantic_matrix(clean_query)
         core_query = matrix["core_query"]
-
+            
         filters = [{"term": {"in_stock": True}}]
-
+        
         if matrix["min_price"] is not None or matrix["max_price"] is not None:
             price_range = {}
             if matrix["min_price"] is not None: price_range["gte"] = matrix["min_price"]
@@ -686,11 +462,11 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 
         if vector:
             semantic_shoulds = [
-                {"match_phrase": {"name":     {"query": core_query, "boost": 10.0}}},
+                {"match_phrase": {"name": {"query": core_query, "boost": 10.0}}},
                 {"match_phrase": {"category": {"query": core_query, "boost": 8.0}}},
                 {
                     "multi_match": {
-                        "query": core_query,
+                        "query": core_query, 
                         "fields": ["name^4", "category^3", "brand^2"],
                         "operator": "and",
                         "fuzziness": "AUTO",
@@ -698,22 +474,22 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                     }
                 }
             ]
-            for p in matrix["personas"]:  semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^1.5", "category^1.5"]}})
+            for p in matrix["personas"]: semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^1.5", "category^1.5"]}})
             for o in matrix["occasions"]: semantic_shoulds.append({"multi_match": {"query": o, "fields": ["name^1.5", "attributes^1.5"]}})
-            for v in matrix["visuals"]:   semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^1.5", "attributes^1.5"]}})
-            if matrix["size"]:            semantic_shoulds.append({"multi_match": {"query": matrix["size"], "fields": ["name^3", "attributes^2"]}})
+            for v in matrix["visuals"]: semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^1.5", "attributes^1.5"]}})
+            if matrix["size"]: semantic_shoulds.append({"multi_match": {"query": matrix["size"], "fields": ["name^3", "attributes^2"]}})
 
             os_query = {
                 "size": 4,
                 "query": {
                     "bool": {
-                        "must":   [{"knn": {"embedding": {"vector": vector, "k": 50}}}],
+                        "must": [{"knn": {"embedding": {"vector": vector, "k": 50}}}],
                         "should": semantic_shoulds,
                         "filter": filters,
                         "minimum_should_match": 0
                     }
                 },
-                "track_total_hits": True,
+                "track_total_hits": True, 
                 "aggs": {"top_categories": {"terms": {"field": "category", "size": 3}}}
             }
         else:
@@ -721,44 +497,43 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                 "size": 4,
                 "query": {
                     "bool": {
-                        "must":   [{"match_all": {}}],
+                        "must": [{"match_all": {}}],
                         "filter": filters
                     }
                 },
-                "sort":            [{"_score": {"order": "desc"}}],
-                "track_total_hits": True,
-                "aggs":            {"top_categories": {"terms": {"field": "category", "size": 3}}}
+                "sort": [{"_score": {"order": "desc"}}],
+                "track_total_hits": True, 
+                "aggs": {"top_categories": {"terms": {"field": "category", "size": 3}}}
             }
 
     try:
-        response        = os_client.search(index=INDEX_NAME, body=os_query)
-        hits            = response.get("hits", {}).get("hits", [])
-        total_products  = response.get("hits", {}).get("total", {}).get("value", 0)
-        cats_agg        = response.get("aggregations", {}).get("top_categories", {}).get("buckets", [])
-        dynamic_cats    = [str(c.get("key")) for c in cats_agg if str(c.get("key")).lower() != "none"]
+        response = os_client.search(index=INDEX_NAME, body=os_query)
+        hits = response.get("hits", {}).get("hits", [])
+        total_products = response.get("hits", {}).get("total", {}).get("value", 0)
+
+        cats_agg = response.get("aggregations", {}).get("top_categories", {}).get("buckets", [])
+        dynamic_cats = [str(c.get("key")) for c in cats_agg if str(c.get("key")).lower() != "none"]
     except Exception as e:
-        logger.error(f"❌ OpenSearch Mega Menu Error: {e}")
-        hits           = []
+        hits = []
         total_products = 0
-        dynamic_cats   = []
+        dynamic_cats = []
 
-    products_html      = ""
+    products_html = ""
     dynamic_brands_set = set()
-
+    
     if not hits:
         products_html = "<div style='padding: 20px; color: #666;'>No products found.</div>"
     else:
         for hit in hits:
-            source        = hit.get("_source", {})
-            name          = source.get("name", "Unknown Product")
+            source = hit.get("_source", {})
+            name = source.get("name", "Unknown Product")
             brand_display = get_smart_brand(source)
-            if brand_display not in ("UNKNOWN BRAND", "UNKNOWN"):
-                dynamic_brands_set.add(brand_display)
-            price    = float(source.get("price", 0.0))
+            if brand_display != "UNKNOWN BRAND" and brand_display != "UNKNOWN": dynamic_brands_set.add(brand_display)
+            price = float(source.get("price", 0.0))
             raw_sale = source.get("sale_price")
             sale_price = float(raw_sale) if raw_sale is not None else 0.0
-            images   = source.get("images", [])
-            img_url  = images[0] if isinstance(images, list) and images else "https://placehold.co/100x100?text=No+Image"
+            images = source.get("images", [])
+            img_url = images[0] if isinstance(images, list) and images else "https://placehold.co/100x100?text=No+Image"
 
             if sale_price > 0 and sale_price < price:
                 badge_html = '<div style="position: absolute; top: -6px; right: -6px; background: #CC0000; color: white; font-size: 9px; font-weight: bold; padding: 2px 6px; border-radius: 3px; z-index: 10; text-transform: uppercase; letter-spacing: 0.5px;">Sale</div>'
@@ -782,10 +557,9 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             """
 
     sidebar_html = ""
-    # 🚀 FIX: Perfectly indented dynamic button with the correct clean_query string applied
     if clean_query:
         sidebar_html += f"""
-        <button id="ai-toggle" type="button" class="ath-assistant-box">
+        <button id="ai-toggle" type="button" class="ath-assistant-box" onclick="document.getElementById('ai-panel').style.display='flex';">
             <div class="ath-assistant-left">
                 <i class="fas fa-magic ath-assistant-icon"></i>
                 <div class="ath-assistant-text">
@@ -795,7 +569,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             <i class="fas fa-arrow-right" style="font-size: 14px; color: #111;"></i>
         </button>
         """
-
+    
     if recent_searches:
         recent_list = recent_searches.split("||")[:3]
         if recent_list and recent_list[0]:
@@ -822,7 +596,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                 <i class="fas fa-arrow-up" style="transform: rotate(45deg); font-size:10px; color:#999;"></i>
             </div>
             """
-
+            
     see_all_text = ""
     if total_products > 0:
         see_all_text = f"<span onclick='document.getElementById(\"search_query\").value=\"{clean_query}\"; document.getElementById(\"searchBtn\").click();'>See all {total_products:,} results &rarr;</span>"
