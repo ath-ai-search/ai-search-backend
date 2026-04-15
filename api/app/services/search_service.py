@@ -160,35 +160,24 @@ def build_facet_aggregations() -> dict:
     """
     return {
         "brands": {
-            "terms": {"field": "brand", "size": 25}
+            "terms": {"field": "brand.keyword", "size": 25}
         },
         "categories": {
-            "terms": {"field": "category", "size": 25}
+            "terms": {"field": "category.keyword", "size": 25}
         },
         "sizes": {
-            "terms": {
-                "field": "attributes.size.keyword",
-                "size": 30,
-                "order": {"_key": "asc"}
-            }
+            "terms": {"field": "attributes.size.keyword", "size": 30}
         },
         "genders": {
-            "terms": {
-                "field": "attributes.gender.keyword",
-                "size": 10
-            }
+            "terms": {"field": "attributes.gender.keyword", "size": 10}
         },
         "colors": {
-            "terms": {
-                "field": "attributes.color.keyword",
-                "size": 20
-            }
+            "terms": {"field": "attributes.color.keyword", "size": 20}
         },
         "price_stats": {
             "stats": {"field": "price"}
         }
     }
-
 
 # =========================================================================
 # 🔧 HELPER: PROCESS RAW AGGREGATIONS → CLEAN FACETS DICT
@@ -511,7 +500,110 @@ async def execute_search(request: SearchRequest):
         pass
     return final_response
 
+# =========================================================================
+# 🎨 BACKEND HTML SIDEBAR GENERATOR (Updated with Color Swatches & Layout)
+# =========================================================================
+def build_sidebar_html(facets, active_state):
+    min_p = active_state.get('min_price') or ""
+    max_p = active_state.get('max_price') or ""
+    in_stock_chk = "checked" if active_state.get('in_stock') else ""
 
+    # 1. Header & Price Range (Matching the Red Button Mockup)
+    html = f'''
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <div style="font-weight: 800; font-size: 0.85rem; color:#111; text-transform: uppercase;">Refine By</div>
+        <div id="globalResetFilters" style="font-size: 0.8rem; color: #4f46e5; text-decoration: underline; cursor: pointer; font-weight: 600;">Clear all</div>
+    </div>
+    
+    <div class="filter-group" style="padding-bottom: 1.5rem; border-bottom: 1px solid #f0f2f5; margin-bottom: 1.5rem;">
+        <h3 style="font-size: 0.85rem; text-transform: uppercase; font-weight: 800; color: #111; margin-bottom: 1rem; display: flex; justify-content: space-between;">Price Range <span style="color:#ccc;">-</span></h3>
+        <div class="price-inputs" style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <input type="number" id="priceMin" placeholder="Min $" value="{min_p}" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid #e5e7eb; outline: none; font-size: 0.85rem;">
+            <span style="color:#9ca3af;">-</span>
+            <input type="number" id="priceMax" placeholder="Max $" value="{max_p}" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid #e5e7eb; outline: none; font-size: 0.85rem;">
+        </div>
+        <button id="applyStaticFilters" class="update-btn" style="background: #a8203c; color: white; border: none; padding: 10px 15px; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 0.8rem; width: 100%; text-transform: uppercase; transition: 0.2s;">Update</button>
+    </div>
+    
+    <div class="filter-group" style="padding-bottom: 1.5rem; border-bottom: 1px solid #f0f2f5; margin-bottom: 1.5rem;">
+        <h3 style="font-size: 0.85rem; text-transform: uppercase; font-weight: 800; color: #111; margin-bottom: 1rem; display: flex; justify-content: space-between;">Availability <span style="color:#ccc;">-</span></h3>
+        <div class="check-item" style="padding: 6px 0;">
+            <label style="cursor: pointer; display: flex; align-items: center; gap: 10px; font-weight: 500; color: #111; font-size: 0.85rem;">
+                <input type="checkbox" id="inStockOnly" {in_stock_chk} style="accent-color: #111; width: 16px; height: 16px;"> 
+                <span>In Stock Only</span>
+            </label>
+        </div>
+    </div>
+    '''
+
+    # 2. Standard Checkbox Sections (Categories, Brands, Sizes, Genders)
+    def make_section(title, key, css_class):
+        items = facets.get(key, [])
+        if not items: return ""
+        active_list = [str(x).lower() for x in active_state.get(key, [])]
+        
+        sec_html = f'<div class="filter-group" style="padding-bottom: 1.5rem; border-bottom: 1px solid #f0f2f5; margin-bottom: 1.5rem;">'
+        sec_html += f'<h3 style="font-size: 0.85rem; text-transform: uppercase; font-weight: 800; color: #111; margin-bottom: 1rem; display: flex; justify-content: space-between;">{title} <span style="color:#ccc;">-</span></h3>'
+        sec_html += f'<div class="filter-scroll" style="max-height: 200px; overflow-y: auto;">'
+        
+        for item in items[:15]:
+            val = str(item.get('value', ''))
+            label = str(item.get('label') or val).title()
+            count = item.get('count', 0)
+            checked = "checked" if val.lower() in active_list else ""
+            
+            sec_html += f'''
+            <div class="check-item" style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0;">
+                <label style="cursor: pointer; display: flex; align-items: center; gap: 10px; font-weight: 500; font-size: 0.85rem; color: #444;">
+                    <input type="checkbox" class="{css_class}" value="{val}" {checked} style="accent-color: #111; width: 16px; height: 16px;">
+                    <span>{label}</span>
+                </label>
+                <span class="count-badge" style="background: #f3f4f6; padding: 2px 8px; border-radius: 40px; font-size: 0.7rem; font-weight: 600; color: #6b7280;">{count}</span>
+            </div>
+            '''
+        sec_html += '</div></div>'
+        return sec_html
+
+    html += make_section('Category', 'categories', 'cat-filter')
+    html += make_section('Brand', 'brands', 'brand-filter')
+    html += make_section('Size', 'sizes', 'size-filter')
+    html += make_section('Gender', 'genders', 'gender-filter')
+
+    # 3. Custom Color Swatch Section
+    colors = facets.get('colors', [])
+    if colors:
+        active_colors = [str(x).lower() for x in active_state.get('colors', [])]
+        html += f'<div class="filter-group" style="padding-bottom: 1.5rem; border-bottom: 1px solid #f0f2f5; margin-bottom: 1.5rem;">'
+        html += f'<h3 style="font-size: 0.85rem; text-transform: uppercase; font-weight: 800; color: #111; margin-bottom: 1rem; display: flex; justify-content: space-between;">Color <span style="color:#ccc;">-</span></h3>'
+        html += '<div style="display:flex; flex-wrap:wrap; gap:12px; padding-top:5px;">'
+        for c in colors[:15]:
+            val = str(c.get('value', ''))
+            label = str(c.get('label') or val).title()
+            
+            # CSS Magic for Color Swatches
+            css_color = val.lower().replace(" ", "")
+            if css_color == "multi" or css_color == "multicolor": 
+                bg_style = "background: linear-gradient(45deg, red, blue, green);"
+            else:
+                bg_style = f"background-color: {css_color};"
+            
+            # Highlight if selected
+            is_active = val.lower() in active_colors
+            checked_style = "border: 2px solid #111; transform: scale(1.15); box-shadow: 0 0 5px rgba(0,0,0,0.3);" if is_active else "border: 1px solid #d1d5db;"
+            
+            # Render Swatch
+            html += f'''
+            <div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">
+                <div class="color-filter-swatch" data-value="{val}" 
+                     style="width: 28px; height: 28px; border-radius: 50%; cursor: pointer; transition: 0.2s; {bg_style} {checked_style}" 
+                     title="{label}">
+                </div>
+                <span style="font-size: 0.65rem; color: #666;">{label}</span>
+            </div>
+            '''
+        html += '</div></div>'
+
+    return html
 # =========================================================================
 # 🔎 AUTOCOMPLETE ROUTE (Typeahead Dropdown)
 # =========================================================================
