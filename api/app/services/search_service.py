@@ -4,7 +4,7 @@ import time
 import logging
 import re
 from app.config import os_client, INDEX_NAME, redis_client, openai_client
-from app.models.search import SearchRequest
+from app.models.search import SearchRequest, Filters # Added Filters import
 
 # =========================================================================
 # ⚙️ SYSTEM SETUP & CONFIGURATION
@@ -129,7 +129,6 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V18 Redis Key: Forces the new Percentage Sorting logic
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
     cache_key = f"search:ai:v18:{hashlib.md5(request_str.encode()).hexdigest()}"
@@ -339,7 +338,6 @@ async def execute_search(request: SearchRequest):
             "score": round(display_score, 2)
         })
 
-    # 🟢 THE FIX: Sort the results array by our new UI percentages so 99% is ALWAYS first
     if request.sort not in ["price_asc", "price_desc"]:
         results.sort(key=lambda x: x["score"], reverse=True)
 
@@ -389,6 +387,106 @@ async def execute_search(request: SearchRequest):
     try: await redis_client.set(cache_key, json.dumps(final_response), ex=300)
     except Exception: pass
     return final_response
+
+
+# =========================================================================
+# 🤖 NEW: AI ASSISTANT CHAT LOGIC (DYNAMIC SHIFTING)
+# =========================================================================
+async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
+    """
+    This function intercepts chat messages from the AI panel, figures out 
+    what the user wants to do (Filter vs New Search), updates the payload, 
+    and sends it back to the main search engine.
+    """
+    
+    # 1. Prepare the current context to send to the LLM
+    current_filters = current_state.filters.model_dump() if current_state.filters else {}
+    
+    # We use OpenAI to perform Intent Classification & Extraction
+    system_prompt = f"""
+    You are ATHERA, an intelligent e-commerce AI shopping assistant.
+    
+    CURRENT CONTEXT:
+    - User is currently looking at: "{current_state.query}"
+    - Current Active Filters applied: {json.dumps(current_filters)}
+
+    NEW USER MESSAGE: "{chat_message}"
+
+    YOUR TASK:
+    Analyze the new user message. You must decide if the user wants to:
+    1. REFINE the current search (e.g. they typed "red" while looking at "shoes").
+    2. Start a NEW SEARCH (e.g. they typed "dresses" or "iphone" while looking at "shoes").
+
+    Output ONLY a valid JSON object matching this structure:
+    {{
+        "intent": "refine" | "new_search",
+        "search_query": "The core product name. If 'new_search', this is the new item (e.g., 'dresses'). If 'refine', keep the current query.",
+        "filters": {{
+            "color": ["extracted colors"],
+            "gender": ["men", "women", "kids", etc],
+            "brand": ["extracted brands"],
+            "category": ["extracted categories"]
+        }},
+        "ai_message": "A friendly 1-sentence reply explaining what you did. E.g., 'Filtering your shoes to show only red ones!' or 'Sure, let's look at some stylish dresses for women.'"
+    }}
+    Make sure to combine any new filters they mentioned with any relevant existing filters from the Current Active Filters.
+    """
+
+    try:
+        # Ask OpenAI for the JSON structure
+        llm_response = await openai_client.chat.completions.create(
+            model="gpt-3.5-turbo-0125", # Optimized for JSON formatting
+            response_format={ "type": "json_object" },
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": chat_message}
+            ],
+            temperature=0.0
+        )
+        
+        parsed_intent = json.loads(llm_response.choices[0].message.content)
+        
+        # 2. Build a brand new Search Request based on the AI's decision
+        updated_request = SearchRequest(
+            query=parsed_intent.get("search_query", current_state.query),
+            page=1, # Reset to page 1 for new queries/filters
+            page_size=10, # Keep it at 10 for the AI sidebar display
+            sort="relevance"
+        )
+        
+        # 3. Apply the dynamically extracted filters
+        extracted_filters = parsed_intent.get("filters", {})
+        new_filters_obj = Filters()
+        
+        if extracted_filters.get("color"): new_filters_obj.color = extracted_filters["color"]
+        if extracted_filters.get("gender"): new_filters_obj.gender = extracted_filters["gender"]
+        if extracted_filters.get("brand"): new_filters_obj.brand = extracted_filters["brand"]
+        if extracted_filters.get("category"): new_filters_obj.category = extracted_filters["category"]
+        
+        # Preserve pricing and stock filters if it's just a refinement
+        if parsed_intent.get("intent") == "refine" and current_state.filters:
+            new_filters_obj.price = current_state.filters.price
+            new_filters_obj.in_stock = current_state.filters.in_stock
+
+        updated_request.filters = new_filters_obj
+
+        # 4. Pass the dynamically rebuilt payload to the main search function
+        final_results = await execute_search(updated_request)
+        
+        # 5. Override the generic AI message with the custom contextual one we just generated
+        final_results["ai_message"] = parsed_intent.get("ai_message", "Here is what I found for you.")
+        
+        # We also pass back the updated state so the Frontend UI can update the main grid and checkboxes!
+        final_results["updated_query"] = updated_request.query
+        final_results["updated_filters"] = new_filters_obj.model_dump()
+        
+        return final_results
+
+    except Exception as e:
+        logger.error(f"❌ AI Assistant Processing Error: {e}")
+        # Fallback to standard search if OpenAI API fails
+        return await execute_search(current_state)
+
 
 # =========================================================================
 # 🔎 AUTOCOMPLETE ROUTE
