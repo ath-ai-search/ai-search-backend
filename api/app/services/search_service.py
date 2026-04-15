@@ -147,12 +147,9 @@ def extract_semantic_matrix(query_string):
 
 # =========================================================================
 # 👑 MAIN SEARCH ROUTE
-# Handles the central product grid and the AI Assistant Sidebar Chat
+# Handles the central product grid
 # =========================================================================
 async def execute_search(request: SearchRequest):
-    # Determine if this is a main grid search (25 items) or AI chat search (10 items)
-    request.page_size = 25 if request.page_size != 10 else 10
-    
     # ⚡ Redis Caching (Instantly returns repeated searches)
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
@@ -188,7 +185,7 @@ async def execute_search(request: SearchRequest):
             logger.error(f"❌ OpenAI Embedding Failed: {e}")
 
     # =========================================================================
-    # 🛡️ HARD FILTERS (Stock, Price, Brand, Sale Status)
+    # 🛡️ HARD FILTERS (Stock, Price, Brand, Sale Status, Color, Gender, Size)
     # Applies exact rules discovered by the NLP Matrix or UI Checkboxes
     # =========================================================================
     filters = [{"term": {"in_stock": True}}]
@@ -206,6 +203,13 @@ async def execute_search(request: SearchRequest):
         if request.filters.brand: filters.append({"terms": {"brand": request.filters.brand}})
         if request.filters.category: filters.append({"terms": {"category": request.filters.category}})
         if request.filters.in_stock is not None: filters.append({"term": {"in_stock": request.filters.in_stock}})
+        
+        # 🟢 NEW UI FILTERS 🟢
+        # NOTE: If your mapping uses nested attributes (e.g. attributes.color), change "color" to "attributes.color"
+        if request.filters.color: filters.append({"terms": {"color": request.filters.color}})
+        if request.filters.gender: filters.append({"terms": {"gender": request.filters.gender}})
+        if request.filters.size: filters.append({"terms": {"size": request.filters.size}})
+        
         if request.filters.price:
             p_range = {}
             if request.filters.price.min is not None: p_range["gte"] = request.filters.price.min
@@ -331,36 +335,9 @@ async def execute_search(request: SearchRequest):
         "categories": [{"value": str(c.get("key")).strip(), "label": str(c.get("key")).strip(), "count": c.get("doc_count", 0)} for c in aggregations.get("categories", {}).get("buckets", []) if c.get("key")]
     }
 
-    # =========================================================================
-    # 🤖 AI PART 5: GENERATIVE CHAT RESPONSE
-    # Uses OpenAI to write a custom sentence based on the fetched products.
-    # ONLY triggers when the sidebar assistant calls it (page_size == 10).
-    # =========================================================================
-    ai_chat_message = "Here are some great options I found for you:"
-    if request.page_size == 10 and query_text and total_hits > 0:
-        try:
-            top_brands = [b["label"] for b in facets["brands"][:3]]
-            top_cats = [c["label"] for c in facets["categories"][:3]]
-            b_str = ", ".join(top_brands) if top_brands else "our top brands"
-            c_str = ", ".join(top_cats) if top_cats else "related categories"
-            
-            sys_msg = "You are ATHERA, a helpful, stylish AI shopping assistant. Write exactly 1 short, friendly sentence to introduce the products the user searched for. Mention the top brands or categories provided."
-            user_msg = f"User searched: '{query_text}'. We found {total_hits} matches. Top Brands: {b_str}. Categories: {c_str}."
-            
-            chat_resp = await openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": sys_msg},
-                    {"role": "user", "content": user_msg}
-                ],
-                max_tokens=60,
-                temperature=0.7
-            )
-            ai_chat_message = chat_resp.choices[0].message.content.strip()
-        except Exception as e:
-            logger.error(f"OpenAI Chat Error: {e}")
-    elif request.page_size == 10 and total_hits == 0:
-        ai_chat_message = f"I couldn't find any exact matches for '{query_text}'. Try adjusting your search keywords!"
+    # Removed the GPT Generative Chat logic as requested.
+    # Leaving an empty string ensures the UI structure doesn't break if it expects this key.
+    ai_chat_message = ""
 
     final_response = {
         "total_results": total_hits, "total_pages": total_pages, 
