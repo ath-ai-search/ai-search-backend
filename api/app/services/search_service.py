@@ -117,19 +117,10 @@ def extract_semantic_matrix(query_string):
     if not core_query:
         core_query = query_lower 
 
-    personas_dict = ["men", "mens", "women", "womens", "kids", "boys", "girls", "baby", "unisex"]
-    occasions_dict = ["wedding", "party", "gym", "running", "casual", "formal", "summer", "winter", "fall", "spring", "outdoor", "indoor", "beach"]
-    visuals_dict = ["red", "blue", "black", "white", "green", "yellow", "pink", "purple", "brown", "leather", "suede", "canvas", "cotton", "striped", "solid", "floral", "minimalist", "vintage", "shiny", "matte"]
-
-    extracted_personas = [p for p in personas_dict if re.search(rf'\b{p}\b', query_lower)]
-    extracted_occasions = [o for o in occasions_dict if re.search(rf'\b{o}\b', query_lower)]
-    extracted_visuals = [v for v in visuals_dict if re.search(rf'\b{v}\b', query_lower)]
-
     return {
         "core_query": core_query,
         "min_price": smart_min_price, "max_price": smart_max_price, 
-        "size": smart_size, "discount": smart_discount, "is_sale": is_sale_intent,
-        "personas": extracted_personas, "occasions": extracted_occasions, "visuals": extracted_visuals
+        "size": smart_size, "discount": smart_discount, "is_sale": is_sale_intent
     }
 
 # =========================================================================
@@ -138,10 +129,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V11 Redis Key: Clears old caches and forces the new strict algorithm
+    # ⚡ V12 Redis Key: Completely flushes old results and applies new scoring
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v11:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v12:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -170,7 +161,7 @@ async def execute_search(request: SearchRequest):
             logger.error(f"❌ OpenAI Embedding Failed: {e}")
 
     # =========================================================================
-    # 🛡️ STRICT FILTERS (Solves the "Cuban Link Chain" passing for "Dress")
+    # 🛡️ STRICT FILTERS
     # =========================================================================
     filters = [{"term": {"in_stock": True}}]
     
@@ -188,30 +179,14 @@ async def execute_search(request: SearchRequest):
         if request.filters.category: filters.append({"terms": {"category": request.filters.category}})
         if request.filters.in_stock is not None: filters.append({"term": {"in_stock": request.filters.in_stock}})
         
-        # 🟢 STRICT PHRASE MATCHING: Ensures partial words don't sneak through
         if request.filters.color:
-            filters.append({
-                "bool": {
-                    "should": [{"multi_match": {"query": c, "type": "phrase", "fields": ["color", "attributes*", "name"]}} for c in request.filters.color],
-                    "minimum_should_match": 1
-                }
-            })
+            filters.append({"bool": {"should": [{"multi_match": {"query": c, "type": "phrase", "fields": ["color", "attributes*", "name"]}} for c in request.filters.color], "minimum_should_match": 1}})
             
         if request.filters.gender:
-            filters.append({
-                "bool": {
-                    "should": [{"multi_match": {"query": g, "type": "phrase", "fields": ["gender", "attributes*", "name", "category"]}} for g in request.filters.gender],
-                    "minimum_should_match": 1
-                }
-            })
+            filters.append({"bool": {"should": [{"multi_match": {"query": g, "type": "phrase", "fields": ["gender", "attributes*", "name", "category"]}} for g in request.filters.gender], "minimum_should_match": 1}})
             
         if request.filters.size:
-            filters.append({
-                "bool": {
-                    "should": [{"multi_match": {"query": s, "type": "phrase", "fields": ["size", "attributes*", "name"]}} for s in request.filters.size],
-                    "minimum_should_match": 1
-                }
-            })
+            filters.append({"bool": {"should": [{"multi_match": {"query": s, "type": "phrase", "fields": ["size", "attributes*", "name"]}} for s in request.filters.size], "minimum_should_match": 1}})
         
         if request.filters.price:
             p_range = {}
@@ -224,39 +199,38 @@ async def execute_search(request: SearchRequest):
     elif request.sort == "price_desc": sort_query = [{"price": "desc"}]
 
     # =========================================================================
-    # 🧠 AI PART 3: TRUE HYBRID SCORING (Solves the "Shoe Bag" issue)
+    # 🧠 AI PART 3: TRUE HYBRID SCORING WITH MASSIVE LEXICAL BOOSTS
     # =========================================================================
     if vector:
         k_val = max(200, from_val + request.page_size + 100)
         
-        # We heavily boost matching categories to bury accessories/irrelevant items
         semantic_shoulds = [
-            {"match_phrase": {"category": {"query": core_query, "boost": 25.0}}}, # MASSIVE category boost
-            {"match_phrase": {"name": {"query": core_query, "boost": 10.0}}}, 
-            {"match_phrase": {"brand": {"query": core_query, "boost": 8.0}}},
+            # 1. Vector Search (Catches the broad semantic meaning)
+            {"knn": {"embedding": {"vector": vector, "k": k_val}}},
+            
+            # 2. General Keyword Match
             {
                 "multi_match": {
                     "query": core_query, 
-                    "fields": ["name^4", "brand^3", "category^2"],
-                    "operator": "and",
+                    "fields": ["name^5", "brand^4", "category^3", "attributes^2"],
                     "fuzziness": "AUTO",
-                    "boost": 5.0
+                    "boost": 10.0
                 }
-            }
+            },
+            
+            # 3. THE FIX: Massive Super-Boosts for EXACT phrase matches
+            # This forces actual iPhones above cases, and actual shoes above shoe bags
+            {"match_phrase": {"name": {"query": core_query, "boost": 100.0}}}, 
+            {"match_phrase": {"category": {"query": core_query, "boost": 80.0}}},
+            {"match_phrase": {"brand": {"query": core_query, "boost": 50.0}}}
         ]
         
-        for p in matrix["personas"]: semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^2", "category^2"], "boost": 3.0}})
-        for o in matrix["occasions"]: semantic_shoulds.append({"multi_match": {"query": o, "fields": ["name^2", "attributes^2"], "boost": 3.0}})
-        for v in matrix["visuals"]: semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^2", "attributes^2"], "boost": 3.0}})
-        if matrix["size"]: semantic_shoulds.append({"multi_match": {"query": matrix["size"], "fields": ["name^4", "attributes^3"], "boost": 6.0}})
-
         query_body = {
             "query": {
                 "bool": {
-                    "must": [{"knn": {"embedding": {"vector": vector, "k": k_val}}}],
                     "should": semantic_shoulds,
-                    "filter": filters,
-                    "minimum_should_match": 0
+                    "minimum_should_match": 1,
+                    "filter": filters
                 }
             }
         }
@@ -283,11 +257,9 @@ async def execute_search(request: SearchRequest):
     total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
 
     # =========================================================================
-    # 📈 AI PART 4: REALISTIC MATCH PERCENTAGE
+    # 📈 AI PART 4: DETERMINISTIC SCORE NORMALIZATION (Fixes 0% Bug)
     # =========================================================================
     max_score = hits.get("max_score")
-    if not max_score and len(hits.get("hits", [])) > 0:
-        max_score = hits["hits"][0].get("_score", 1.0)
     if not max_score or max_score == 0: max_score = 1.0
 
     results = []
@@ -309,18 +281,22 @@ async def execute_search(request: SearchRequest):
         _demo_rating = 4.0 + (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 10) / 10.0
         _demo_sales = (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 800) + 150
 
-        # Create a realistic Confidence Score (Instead of always 100%)
         raw_score = hit.get("_score", 0) or 0
-        normalized_score = min(1.0, raw_score / max_score) if max_score > 0 else 0
         
-        # Base realistic score between 40% and 95%
-        display_score = 0.40 + (normalized_score * 0.55) 
-        
-        # Boost confidence to 90%+ ONLY if the exact search word is in the name or category
         name_lower = str(source.get("name", "")).lower()
         cat_lower = " ".join(clean_cats).lower()
-        if core_query and (core_query in name_lower or core_query in cat_lower):
-            display_score = min(0.99, display_score + 0.15) # Cap at 99%
+        brand_lower = brand_display.lower()
+        
+        # 🟢 SMART SCORING LOGIC: Assigns realistic UI percentages based on exact relevance
+        if core_query and core_query == name_lower:
+            display_score = 0.99
+        elif core_query and core_query in name_lower:
+            display_score = 0.90 + (min(1.0, raw_score / max_score) * 0.08)
+        elif core_query and (core_query in cat_lower or core_query in brand_lower):
+            display_score = 0.80 + (min(1.0, raw_score / max_score) * 0.09)
+        else:
+            # Semantic fallback for purely vector-related items
+            display_score = 0.40 + (min(1.0, raw_score / max_score) * 0.35)
 
         results.append({
             "id": source.get("product_id"), "name": source.get("name", "Unknown Product"),
@@ -340,7 +316,7 @@ async def execute_search(request: SearchRequest):
     }
 
     # =========================================================================
-    # 🤖 AI PART 5: GENERATIVE CHAT RESPONSE (STAYS ACTIVE)
+    # 🤖 AI PART 5: GENERATIVE CHAT RESPONSE 
     # =========================================================================
     ai_chat_message = ""
     if request.page_size == 10 and query_text and total_hits > 0:
@@ -460,11 +436,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                     }
                 }
             ]
-            for p in matrix["personas"]: semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^1.5", "category^1.5"]}})
-            for o in matrix["occasions"]: semantic_shoulds.append({"multi_match": {"query": o, "fields": ["name^1.5", "attributes^1.5"]}})
-            for v in matrix["visuals"]: semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^1.5", "attributes^1.5"]}})
-            if matrix["size"]: semantic_shoulds.append({"multi_match": {"query": matrix["size"], "fields": ["name^3", "attributes^2"]}})
-
+            
             os_query = {
                 "size": 4,
                 "query": {
