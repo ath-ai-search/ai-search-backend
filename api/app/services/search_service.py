@@ -388,54 +388,43 @@ async def execute_search(request: SearchRequest):
     except Exception: pass
     return final_response
 
-
 # =========================================================================
 # 🤖 NEW: AI ASSISTANT CHAT LOGIC (DYNAMIC SHIFTING)
 # =========================================================================
 async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
-    """
-    This function intercepts chat messages from the AI panel, figures out 
-    what the user wants to do (Filter vs New Search), updates the payload, 
-    and sends it back to the main search engine.
-    """
-    
-    # 1. Prepare the current context to send to the LLM
     current_filters = current_state.filters.model_dump() if current_state.filters else {}
     
-    # We use OpenAI to perform Intent Classification & Extraction
     system_prompt = f"""
     You are ATHERA, an intelligent e-commerce AI shopping assistant.
     
     CURRENT CONTEXT:
     - User is currently looking at: "{current_state.query}"
-    - Current Active Filters applied: {json.dumps(current_filters)}
+    - Current Active Filters: {json.dumps(current_filters)}
 
     NEW USER MESSAGE: "{chat_message}"
 
     YOUR TASK:
     Analyze the new user message. You must decide if the user wants to:
     1. REFINE the current search (e.g. they typed "red" while looking at "shoes").
-    2. Start a NEW SEARCH (e.g. they typed "dresses" or "iphone" while looking at "shoes").
+    2. Start a NEW SEARCH (e.g. they typed "bags" or "iphone" while looking at "shoes").
 
     Output ONLY a valid JSON object matching this structure:
     {{
         "intent": "refine" | "new_search",
-        "search_query": "The core product name. If 'new_search', this is the new item (e.g., 'dresses'). If 'refine', keep the current query.",
+        "search_query": "The core product name. If 'new_search', this is the new item (e.g., 'bags'). If 'refine', keep the current query.",
         "filters": {{
-            "color": ["extracted colors"],
-            "gender": ["men", "women", "kids", etc],
-            "brand": ["extracted brands"],
-            "category": ["extracted categories"]
+            "color": ["colors mentioned in the NEW message"],
+            "gender": ["genders mentioned in the NEW message"],
+            "brand": ["brands mentioned in the NEW message"],
+            "category": ["categories mentioned in the NEW message"]
         }},
-        "ai_message": "A friendly 1-sentence reply explaining what you did. E.g., 'Filtering your shoes to show only red ones!' or 'Sure, let's look at some stylish dresses for women.'"
+        "ai_message": "A friendly 1-sentence reply. E.g., 'Filtering your shoes to show only red ones!' or 'Starting a new search for bags!'"
     }}
-    Make sure to combine any new filters they mentioned with any relevant existing filters from the Current Active Filters.
     """
 
     try:
-        # Ask OpenAI for the JSON structure
         llm_response = await openai_client.chat.completions.create(
-            model="gpt-3.5-turbo-0125", # Optimized for JSON formatting
+            model="gpt-3.5-turbo-0125",
             response_format={ "type": "json_object" },
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -446,45 +435,46 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         
         parsed_intent = json.loads(llm_response.choices[0].message.content)
         
-        # 2. Build a brand new Search Request based on the AI's decision
         updated_request = SearchRequest(
             query=parsed_intent.get("search_query", current_state.query),
-            page=1, # Reset to page 1 for new queries/filters
-            page_size=10, # Keep it at 10 for the AI sidebar display
+            page=1, 
+            page_size=10, 
             sort="relevance"
         )
         
-        # 3. Apply the dynamically extracted filters
+        # 🟢 SMART FILTER WIPING LOGIC
         extracted_filters = parsed_intent.get("filters", {})
         new_filters_obj = Filters()
         
+        # If it is a REFINEMENT, we carry over the old filters first
+        if parsed_intent.get("intent") == "refine" and current_state.filters:
+            new_filters_obj.brand = current_state.filters.brand
+            new_filters_obj.category = current_state.filters.category
+            new_filters_obj.color = current_state.filters.color
+            new_filters_obj.gender = current_state.filters.gender
+            new_filters_obj.price = current_state.filters.price
+            new_filters_obj.in_stock = current_state.filters.in_stock
+
+        # If it is a NEW_SEARCH, the old filters are intentionally left blank (wiped!)
+        # Now, we apply whatever new filters the AI extracted from the latest chat message
         if extracted_filters.get("color"): new_filters_obj.color = extracted_filters["color"]
         if extracted_filters.get("gender"): new_filters_obj.gender = extracted_filters["gender"]
         if extracted_filters.get("brand"): new_filters_obj.brand = extracted_filters["brand"]
         if extracted_filters.get("category"): new_filters_obj.category = extracted_filters["category"]
         
-        # Preserve pricing and stock filters if it's just a refinement
-        if parsed_intent.get("intent") == "refine" and current_state.filters:
-            new_filters_obj.price = current_state.filters.price
-            new_filters_obj.in_stock = current_state.filters.in_stock
-
         updated_request.filters = new_filters_obj
 
-        # 4. Pass the dynamically rebuilt payload to the main search function
         final_results = await execute_search(updated_request)
-        
-        # 5. Override the generic AI message with the custom contextual one we just generated
         final_results["ai_message"] = parsed_intent.get("ai_message", "Here is what I found for you.")
-        
-        # We also pass back the updated state so the Frontend UI can update the main grid and checkboxes!
         final_results["updated_query"] = updated_request.query
+        
+        # Pass back the wiped/updated filters so the UI unchecks the old boxes automatically
         final_results["updated_filters"] = new_filters_obj.model_dump()
         
         return final_results
 
     except Exception as e:
         logger.error(f"❌ AI Assistant Processing Error: {e}")
-        # Fallback to standard search if OpenAI API fails
         return await execute_search(current_state)
 
 
