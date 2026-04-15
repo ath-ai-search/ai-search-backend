@@ -117,15 +117,16 @@ def extract_semantic_matrix(query_string):
     if not core_query:
         core_query = query_lower 
 
-    # 🛑 ANTI-ACCESSORY DETECTOR
-    accessory_keywords = ["case", "cover", "charger", "cable", "bag", "protector", "accessories", "strap", "band"]
+    # 🛑 ACCESSORY INTENT DETECTOR
+    accessory_keywords = ["case", "cover", "charger", "cable", "bag", "protector", "strap", "band", "adapter", "mount", "holder"]
     has_accessory_intent = any(acc in query_lower for acc in accessory_keywords)
 
     return {
         "core_query": core_query,
         "min_price": smart_min_price, "max_price": smart_max_price, 
         "size": smart_size, "discount": smart_discount, "is_sale": is_sale_intent,
-        "has_accessory_intent": has_accessory_intent
+        "has_accessory_intent": has_accessory_intent,
+        "accessory_keywords": " ".join(accessory_keywords)
     }
 
 # =========================================================================
@@ -134,10 +135,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V13 Redis Key: Flushes out old errors and caches new advanced logic
+    # ⚡ V14 Redis Key: Forces the new weighted scoring cache
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v13:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v14:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -166,7 +167,7 @@ async def execute_search(request: SearchRequest):
             logger.error(f"❌ OpenAI Embedding Failed: {e}")
 
     # =========================================================================
-    # 🛡️ HARD FILTERS & STRICT ISOLATION
+    # 🛡️ HARD FILTERS
     # =========================================================================
     filters = [{"term": {"in_stock": True}}]
     must_nots = []
@@ -192,7 +193,6 @@ async def execute_search(request: SearchRequest):
             genders = [g.lower() for g in request.filters.gender]
             filters.append({"bool": {"should": [{"multi_match": {"query": g, "type": "phrase", "fields": ["gender", "attributes*", "name", "category"]}} for g in genders], "minimum_should_match": 1}})
             
-            # 🛑 STRICT ISOLATION: Prevent "Womens" from matching "Men"
             if "men" in genders and "women" not in genders:
                 must_nots.extend([
                     {"match_phrase": {"name": "women"}},
@@ -215,51 +215,63 @@ async def execute_search(request: SearchRequest):
     elif request.sort == "price_desc": sort_query = [{"price": "desc"}]
 
     # =========================================================================
-    # 🧠 AI PART 3: ADVANCED FUZZY HYBRID SCORING
+    # ⚖️ AI PART 3: ADVANCED WEIGHTED SCORING (function_score)
     # =========================================================================
+    semantic_shoulds = []
+    
     if vector:
         k_val = max(200, from_val + request.page_size + 100)
+        semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": k_val}}})
         
-        semantic_shoulds = [
-            # 1. Base AI Vector Search
-            {"knn": {"embedding": {"vector": vector, "k": k_val}}},
-            
-            # 2. MEGA TYPO TOLERANCE (Solves "iphoe 16" bug)
-            {
+    semantic_shoulds.extend([
+        {
+            "multi_match": {
+                "query": core_query, 
+                "fields": ["name^5", "brand^4", "category^3"],
+                "fuzziness": "AUTO",
+                "boost": 5.0
+            }
+        },
+        {"match_phrase": {"name": {"query": core_query, "boost": 10.0}}}, 
+        {"match_phrase": {"category": {"query": core_query, "boost": 8.0}}}
+    ])
+
+    # 🛑 THE FIX: Explicit Weight Functions
+    score_functions = []
+    
+    # If the user DID NOT search for an accessory, heavily penalize accessories!
+    if not matrix["has_accessory_intent"]:
+        score_functions.append({
+            "filter": {
                 "multi_match": {
-                    "query": core_query, 
-                    "fields": ["name^6", "brand^5", "category^4"],
-                    "operator": "and",
-                    "fuzziness": "AUTO",
-                    "boost": 100.0  # Massive boost for typo-corrected matches
+                    "query": matrix["accessory_keywords"], 
+                    "fields": ["name", "category"]
                 }
             },
-            
-            # 3. EXACT PHRASE BOOSTS
-            {"match_phrase": {"name": {"query": core_query, "boost": 200.0}}}, 
-            {"match_phrase": {"category": {"query": core_query, "boost": 150.0}}},
-            {"match_phrase": {"brand": {"query": core_query, "boost": 80.0}}}
-        ]
-
-        # 🛑 ANTI-ACCESSORY LOGIC (Solves Phone Case & Shoe Bag bug)
-        if not matrix["has_accessory_intent"]:
-            # Give an 80x boost to items that do NOT have accessory words in their title
-            semantic_shoulds.append({
-                "bool": {
-                    "must_not": [
-                        {"multi_match": {"query": "case cover charger cable bag protector strap accessories", "fields": ["name", "category"]}}
-                    ],
-                    "boost": 80.0
-                }
-            })
+            "weight": 0.001  # This crushes the score of cases/bags down to near-zero
+        })
         
+    # Give a massive weight boost to items where the category perfectly matches the search
+    score_functions.append({
+        "filter": {"match": {"category": core_query}},
+        "weight": 3.0
+    })
+
+    if vector or core_query:
         query_body = {
             "query": {
-                "bool": {
-                    "should": semantic_shoulds,
-                    "must_not": must_nots,
-                    "minimum_should_match": 1,
-                    "filter": filters
+                "function_score": {
+                    "query": {
+                        "bool": {
+                            "should": semantic_shoulds,
+                            "must_not": must_nots,
+                            "minimum_should_match": 1,
+                            "filter": filters
+                        }
+                    },
+                    "functions": score_functions,
+                    "score_mode": "multiply",
+                    "boost_mode": "multiply"
                 }
             }
         }
@@ -292,6 +304,8 @@ async def execute_search(request: SearchRequest):
     if not max_score or max_score == 0: max_score = 1.0
 
     results = []
+    acc_keywords = matrix["accessory_keywords"].split()
+    
     for hit in hits.get("hits", []):
         source = hit.get("_source", {})
         brand_display = get_smart_brand(source)
@@ -313,13 +327,18 @@ async def execute_search(request: SearchRequest):
         raw_score = hit.get("_score", 0) or 0
         normalized_score = min(1.0, raw_score / max_score) if max_score > 0 else 0
         
-        # Determine strictness of match for UI display
         name_lower = str(source.get("name", "")).lower()
+        is_item_accessory = any(acc in name_lower for acc in acc_keywords)
         
-        if core_query in name_lower:
-            display_score = 0.94 + (normalized_score * 0.05) # 94% to 99%
+        # Calculate UI Match Percentage beautifully
+        if core_query == name_lower:
+            display_score = 0.99
+        elif core_query in name_lower and not matrix["has_accessory_intent"] and not is_item_accessory:
+            display_score = 0.95 + (normalized_score * 0.04) # High 90s for exact product
+        elif core_query in name_lower:
+            display_score = 0.85 + (normalized_score * 0.09) # Mid 80s-90s
         else:
-            display_score = 0.60 + (normalized_score * 0.30) # 60% to 90%
+            display_score = 0.60 + (normalized_score * 0.20) # Semantic guesses
 
         results.append({
             "id": source.get("product_id"), "name": source.get("name", "Unknown Product"),
@@ -461,25 +480,29 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                 }
             ]
             
+            score_functions = []
             if not matrix["has_accessory_intent"]:
-                semantic_shoulds.append({
-                    "bool": {
-                        "must_not": [
-                            {"multi_match": {"query": "case cover charger cable bag protector strap accessories", "fields": ["name", "category"]}}
-                        ],
-                        "boost": 8.0
-                    }
+                score_functions.append({
+                    "filter": {"multi_match": {"query": matrix["accessory_keywords"], "fields": ["name", "category"]}},
+                    "weight": 0.01 
                 })
 
             os_query = {
                 "size": 4,
                 "query": {
-                    "bool": {
-                        "must": [{"knn": {"embedding": {"vector": vector, "k": 50}}}],
-                        "should": semantic_shoulds,
-                        "filter": filters,
-                        "must_not": must_nots,
-                        "minimum_should_match": 0
+                    "function_score": {
+                        "query": {
+                            "bool": {
+                                "must": [{"knn": {"embedding": {"vector": vector, "k": 50}}}],
+                                "should": semantic_shoulds,
+                                "filter": filters,
+                                "must_not": must_nots,
+                                "minimum_should_match": 0
+                            }
+                        },
+                        "functions": score_functions,
+                        "score_mode": "multiply",
+                        "boost_mode": "multiply"
                     }
                 },
                 "track_total_hits": True, 
