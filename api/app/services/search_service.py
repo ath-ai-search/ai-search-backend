@@ -129,10 +129,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V17 Redis Key: Flushes out all bad cached searches (Apple Lotion, Shoe Bags)
+    # ⚡ V18 Redis Key: Forces the new Percentage Sorting logic
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v17:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v18:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -215,7 +215,6 @@ async def execute_search(request: SearchRequest):
         semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": k_val}}})
         
     semantic_shoulds.extend([
-        # Standard Fallback Match
         {
             "multi_match": {
                 "query": core_query, 
@@ -224,17 +223,14 @@ async def execute_search(request: SearchRequest):
                 "boost": 2.0
             }
         },
-        # 🚀 THE NUCLEAR BOOSTS: These completely overwhelm the vector score
-        {"match_phrase": {"brand": {"query": core_query, "boost": 5000.0}}},    # Force Brand Match to Absolute Top
-        {"match": {"category": {"query": core_query, "boost": 3000.0}}},        # Force Category Match to Top (Fixes Shoes)
-        {"match_phrase": {"name": {"query": core_query, "boost": 500.0}}}       # Force Title Match 
+        {"match_phrase": {"brand": {"query": core_query, "boost": 5000.0}}},    
+        {"match": {"category": {"query": core_query, "boost": 3000.0}}},        
+        {"match_phrase": {"name": {"query": core_query, "boost": 500.0}}}       
     ])
 
-    # 🔪 THE ACCESSORY ASSASSIN
     score_functions = []
     
     if not matrix["has_accessory_intent"]:
-        # Add a crushing penalty for EVERY accessory keyword found
         for acc in matrix["accessory_keywords"]:
             score_functions.append({
                 "filter": {"match": {"name": acc}},
@@ -319,15 +315,14 @@ async def execute_search(request: SearchRequest):
         cat_lower = " ".join(clean_cats).lower()
         is_item_accessory = any(acc in name_lower for acc in matrix["accessory_keywords"])
         
-        # 🟢 THE REALISTIC UI SCORING LOGIC
         if core_query == brand_lower:
             display_score = 0.99
         elif core_query in cat_lower:
             display_score = 0.98
         elif core_query in name_lower and not matrix["has_accessory_intent"] and not is_item_accessory:
-            display_score = 0.95 + (normalized_score * 0.03) # Ensures primary matches get 95-98%
+            display_score = 0.95 + (normalized_score * 0.03) 
         elif is_item_accessory and not matrix["has_accessory_intent"]:
-            display_score = 0.40 + (normalized_score * 0.15) # Visually punishes accessories that sneak in
+            display_score = 0.40 + (normalized_score * 0.15) 
         elif core_query in name_lower:
             display_score = 0.85 + (normalized_score * 0.09)
         else:
@@ -343,6 +338,10 @@ async def execute_search(request: SearchRequest):
             "sales_count": source.get("sales_count") if source.get("sales_count", 0) > 0 else _demo_sales,
             "score": round(display_score, 2)
         })
+
+    # 🟢 THE FIX: Sort the results array by our new UI percentages so 99% is ALWAYS first
+    if request.sort not in ["price_asc", "price_desc"]:
+        results.sort(key=lambda x: x["score"], reverse=True)
 
     aggregations = response.get("aggregations", {})
     facets = {
