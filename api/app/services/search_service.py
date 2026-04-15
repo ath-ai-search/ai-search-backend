@@ -689,7 +689,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     # 🚀 FIX: Perfectly indented dynamic button with the correct clean_query string applied
     if clean_query:
         sidebar_html += f"""
-        <button id="ai-toggle" type="button" class="ath-assistant-box" onclick="document.getElementById('ai-panel').classList.add('open');">
+        <button id="ai-toggle" type="button" class="ath-assistant-box">
             <div class="ath-assistant-left">
                 <i class="fas fa-magic ath-assistant-icon"></i>
                 <div class="ath-assistant-text">
