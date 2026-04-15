@@ -82,7 +82,7 @@ def extract_semantic_matrix(query_string):
     query_lower = query_string.lower()
     core_query = query_lower
     
-    smart_min_price, smart_max_price, smart_size, smart_discount = None, None, None, None
+    smart_min_price, smart_max_price, smart_discount = None, None, None
     is_sale_intent = False
 
     range_match = re.search(r'(?:between|from)?\s*\$?\s*(\d+)\s*(?:to|and|-)\s*\$?\s*(\d+)', query_lower)
@@ -99,11 +99,6 @@ def extract_semantic_matrix(query_string):
             smart_min_price = float(min_match.group(1))
             core_query = core_query.replace(min_match.group(0), '')
 
-    size_match = re.search(r'size\s*(\d+(?:\.\d+)?)', query_lower)
-    if size_match: 
-        smart_size = str(size_match.group(1))
-        core_query = core_query.replace(size_match.group(0), '')
-
     disc_match = re.search(r'(\d+)%\s*(?:off|discount|sale)', query_lower)
     if disc_match: 
         smart_discount = int(disc_match.group(1))
@@ -117,14 +112,13 @@ def extract_semantic_matrix(query_string):
     if not core_query:
         core_query = query_lower 
 
-    # 🛑 ACCESSORY INTENT DETECTOR
     accessory_keywords = ["case", "cover", "charger", "cable", "bag", "protector", "strap", "band", "adapter", "mount", "holder"]
     has_accessory_intent = any(acc in query_lower for acc in accessory_keywords)
 
     return {
         "core_query": core_query,
         "min_price": smart_min_price, "max_price": smart_max_price, 
-        "size": smart_size, "discount": smart_discount, "is_sale": is_sale_intent,
+        "discount": smart_discount, "is_sale": is_sale_intent,
         "has_accessory_intent": has_accessory_intent,
         "accessory_keywords": " ".join(accessory_keywords)
     }
@@ -135,10 +129,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V14 Redis Key: Forces the new weighted scoring cache
+    # ⚡ V15 Redis Key: Flushes out old size-related caches!
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v14:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v15:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -184,12 +178,12 @@ async def execute_search(request: SearchRequest):
     if request.filters:
         if request.filters.brand: filters.append({"terms": {"brand": request.filters.brand}})
         if request.filters.category: filters.append({"terms": {"category": request.filters.category}})
-        if request.filters.in_stock is not None: filters.append({"term": {"in_stock": request.filters.in_stock}})
+        if getattr(request.filters, "in_stock", None) is not None: filters.append({"term": {"in_stock": request.filters.in_stock}})
         
-        if request.filters.color:
+        if getattr(request.filters, "color", None):
             filters.append({"bool": {"should": [{"multi_match": {"query": c, "type": "phrase", "fields": ["color", "attributes*", "name"]}} for c in request.filters.color], "minimum_should_match": 1}})
             
-        if request.filters.gender:
+        if getattr(request.filters, "gender", None):
             genders = [g.lower() for g in request.filters.gender]
             filters.append({"bool": {"should": [{"multi_match": {"query": g, "type": "phrase", "fields": ["gender", "attributes*", "name", "category"]}} for g in genders], "minimum_should_match": 1}})
             
@@ -200,9 +194,6 @@ async def execute_search(request: SearchRequest):
                     {"match_phrase": {"name": "women's"}},
                     {"match_phrase": {"category": "women"}}
                 ])
-            
-        if request.filters.size:
-            filters.append({"bool": {"should": [{"multi_match": {"query": s, "type": "phrase", "fields": ["size", "attributes*", "name"]}} for s in request.filters.size], "minimum_should_match": 1}})
         
         if request.filters.price:
             p_range = {}
@@ -236,10 +227,8 @@ async def execute_search(request: SearchRequest):
         {"match_phrase": {"category": {"query": core_query, "boost": 8.0}}}
     ])
 
-    # 🛑 THE FIX: Explicit Weight Functions
     score_functions = []
     
-    # If the user DID NOT search for an accessory, heavily penalize accessories!
     if not matrix["has_accessory_intent"]:
         score_functions.append({
             "filter": {
@@ -248,10 +237,9 @@ async def execute_search(request: SearchRequest):
                     "fields": ["name", "category"]
                 }
             },
-            "weight": 0.001  # This crushes the score of cases/bags down to near-zero
+            "weight": 0.001 
         })
         
-    # Give a massive weight boost to items where the category perfectly matches the search
     score_functions.append({
         "filter": {"match": {"category": core_query}},
         "weight": 3.0
@@ -330,15 +318,14 @@ async def execute_search(request: SearchRequest):
         name_lower = str(source.get("name", "")).lower()
         is_item_accessory = any(acc in name_lower for acc in acc_keywords)
         
-        # Calculate UI Match Percentage beautifully
         if core_query == name_lower:
             display_score = 0.99
         elif core_query in name_lower and not matrix["has_accessory_intent"] and not is_item_accessory:
-            display_score = 0.95 + (normalized_score * 0.04) # High 90s for exact product
+            display_score = 0.95 + (normalized_score * 0.04)
         elif core_query in name_lower:
-            display_score = 0.85 + (normalized_score * 0.09) # Mid 80s-90s
+            display_score = 0.85 + (normalized_score * 0.09)
         else:
-            display_score = 0.60 + (normalized_score * 0.20) # Semantic guesses
+            display_score = 0.60 + (normalized_score * 0.20)
 
         results.append({
             "id": source.get("product_id"), "name": source.get("name", "Unknown Product"),

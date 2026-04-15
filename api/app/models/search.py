@@ -21,7 +21,6 @@ class Filters(BaseModel):
     # 🟢 NEW: Added to support the new UI sidebar arrays
     color: Optional[List[str]] = None
     gender: Optional[List[str]] = None
-    size: Optional[List[str]] = None
 
 class SearchRequest(BaseModel):
     query: str
