@@ -82,7 +82,7 @@ def extract_semantic_matrix(query_string):
     query_lower = query_string.lower()
     core_query = query_lower
     
-    smart_min_price, smart_max_price, smart_size, smart_discount = None, None, None, None
+    smart_min_price, smart_max_price, smart_discount = None, None, None
     is_sale_intent = False
 
     range_match = re.search(r'(?:between|from)?\s*\$?\s*(\d+)\s*(?:to|and|-)\s*\$?\s*(\d+)', query_lower)
@@ -99,11 +99,6 @@ def extract_semantic_matrix(query_string):
             smart_min_price = float(min_match.group(1))
             core_query = core_query.replace(min_match.group(0), '')
 
-    size_match = re.search(r'size\s*(\d+(?:\.\d+)?)', query_lower)
-    if size_match: 
-        smart_size = str(size_match.group(1))
-        core_query = core_query.replace(size_match.group(0), '')
-
     disc_match = re.search(r'(\d+)%\s*(?:off|discount|sale)', query_lower)
     if disc_match: 
         smart_discount = int(disc_match.group(1))
@@ -117,16 +112,15 @@ def extract_semantic_matrix(query_string):
     if not core_query:
         core_query = query_lower 
 
-    # 🛑 ACCESSORY INTENT DETECTOR
     accessory_keywords = ["case", "cover", "charger", "cable", "bag", "protector", "strap", "band", "adapter", "mount", "holder"]
     has_accessory_intent = any(acc in query_lower for acc in accessory_keywords)
 
     return {
         "core_query": core_query,
         "min_price": smart_min_price, "max_price": smart_max_price, 
-        "size": smart_size, "discount": smart_discount, "is_sale": is_sale_intent,
+        "discount": smart_discount, "is_sale": is_sale_intent,
         "has_accessory_intent": has_accessory_intent,
-        "accessory_keywords": " ".join(accessory_keywords)
+        "accessory_keywords": accessory_keywords
     }
 
 # =========================================================================
@@ -135,10 +129,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V16 Redis Key: Flushes out the Apple Lotion Cache!
+    # ⚡ V17 Redis Key: Flushes out all bad cached searches (Apple Lotion, Shoe Bags)
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v16:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v17:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -212,7 +206,7 @@ async def execute_search(request: SearchRequest):
     elif request.sort == "price_desc": sort_query = [{"price": "desc"}]
 
     # =========================================================================
-    # ⚖️ AI PART 3: ADVANCED WEIGHTED SCORING (function_score)
+    # ⚖️ AI PART 3: THE "NUCLEAR OVERRIDES" FOR HYBRID SCORING
     # =========================================================================
     semantic_shoulds = []
     
@@ -221,43 +215,35 @@ async def execute_search(request: SearchRequest):
         semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": k_val}}})
         
     semantic_shoulds.extend([
+        # Standard Fallback Match
         {
             "multi_match": {
                 "query": core_query, 
-                "fields": ["brand^6", "name^5", "category^3"], # Brand is mathematically heaviest here
+                "fields": ["name^5", "brand^4", "category^3"],
                 "fuzziness": "AUTO",
-                "boost": 5.0
+                "boost": 2.0
             }
         },
-        # 🟢 NEW: MASSIVE BRAND BOOST (Fixes the Apple Lotion bug)
-        {"match_phrase": {"brand": {"query": core_query, "boost": 20.0}}}, 
-        {"match_phrase": {"name": {"query": core_query, "boost": 10.0}}}, 
-        {"match_phrase": {"category": {"query": core_query, "boost": 8.0}}}
+        # 🚀 THE NUCLEAR BOOSTS: These completely overwhelm the vector score
+        {"match_phrase": {"brand": {"query": core_query, "boost": 5000.0}}},    # Force Brand Match to Absolute Top
+        {"match": {"category": {"query": core_query, "boost": 3000.0}}},        # Force Category Match to Top (Fixes Shoes)
+        {"match_phrase": {"name": {"query": core_query, "boost": 500.0}}}       # Force Title Match 
     ])
 
+    # 🔪 THE ACCESSORY ASSASSIN
     score_functions = []
     
     if not matrix["has_accessory_intent"]:
-        score_functions.append({
-            "filter": {
-                "multi_match": {
-                    "query": matrix["accessory_keywords"], 
-                    "fields": ["name", "category"]
-                }
-            },
-            "weight": 0.001 
-        })
-        
-    score_functions.append({
-        "filter": {"match": {"category": core_query}},
-        "weight": 3.0
-    })
-    
-    # 🟢 NEW: MASSIVE BRAND MULTIPLIER
-    score_functions.append({
-        "filter": {"match": {"brand": core_query}},
-        "weight": 5.0  # Multiplies final score by 5 if the brand matches!
-    })
+        # Add a crushing penalty for EVERY accessory keyword found
+        for acc in matrix["accessory_keywords"]:
+            score_functions.append({
+                "filter": {"match": {"name": acc}},
+                "weight": 0.001 
+            })
+            score_functions.append({
+                "filter": {"match": {"category": acc}},
+                "weight": 0.001 
+            })
 
     if vector or core_query:
         query_body = {
@@ -306,7 +292,6 @@ async def execute_search(request: SearchRequest):
     if not max_score or max_score == 0: max_score = 1.0
 
     results = []
-    acc_keywords = matrix["accessory_keywords"].split()
     
     for hit in hits.get("hits", []):
         source = hit.get("_source", {})
@@ -331,19 +316,21 @@ async def execute_search(request: SearchRequest):
         
         name_lower = str(source.get("name", "")).lower()
         brand_lower = brand_display.lower()
-        is_item_accessory = any(acc in name_lower for acc in acc_keywords)
+        cat_lower = " ".join(clean_cats).lower()
+        is_item_accessory = any(acc in name_lower for acc in matrix["accessory_keywords"])
         
-        # 🟢 SMART UI SCORING (Handles the Apple Lotion)
-        if core_query == name_lower:
+        # 🟢 THE REALISTIC UI SCORING LOGIC
+        if core_query == brand_lower:
             display_score = 0.99
-        elif core_query == brand_lower:
-            display_score = 0.98  # Exact brand match gets guaranteed 98%
+        elif core_query in cat_lower:
+            display_score = 0.98
         elif core_query in name_lower and not matrix["has_accessory_intent"] and not is_item_accessory:
-            display_score = 0.95 + (normalized_score * 0.04)
+            display_score = 0.95 + (normalized_score * 0.03) # Ensures primary matches get 95-98%
+        elif is_item_accessory and not matrix["has_accessory_intent"]:
+            display_score = 0.40 + (normalized_score * 0.15) # Visually punishes accessories that sneak in
         elif core_query in name_lower:
             display_score = 0.85 + (normalized_score * 0.09)
         else:
-            # Drop purely semantic matches lower so they don't look broken
             display_score = 0.60 + (normalized_score * 0.20)
 
         results.append({
@@ -473,13 +460,13 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 
         if vector:
             semantic_shoulds = [
-                {"match_phrase": {"brand": {"query": core_query, "boost": 15.0}}},
-                {"match_phrase": {"name": {"query": core_query, "boost": 10.0}}},
-                {"match_phrase": {"category": {"query": core_query, "boost": 8.0}}},
+                {"match_phrase": {"brand": {"query": core_query, "boost": 5000.0}}},
+                {"match": {"category": {"query": core_query, "boost": 3000.0}}},
+                {"match_phrase": {"name": {"query": core_query, "boost": 500.0}}},
                 {
                     "multi_match": {
                         "query": core_query, 
-                        "fields": ["brand^5", "name^4", "category^3"],
+                        "fields": ["name^5", "brand^4", "category^3"],
                         "operator": "and",
                         "fuzziness": "AUTO",
                         "boost": 5.0
@@ -489,15 +476,15 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             
             score_functions = []
             if not matrix["has_accessory_intent"]:
-                score_functions.append({
-                    "filter": {"multi_match": {"query": matrix["accessory_keywords"], "fields": ["name", "category"]}},
-                    "weight": 0.01 
-                })
-                
-            score_functions.append({
-                "filter": {"match": {"brand": core_query}},
-                "weight": 5.0 
-            })
+                for acc in matrix["accessory_keywords"]:
+                    score_functions.append({
+                        "filter": {"match": {"name": acc}},
+                        "weight": 0.001 
+                    })
+                    score_functions.append({
+                        "filter": {"match": {"category": acc}},
+                        "weight": 0.001 
+                    })
 
             os_query = {
                 "size": 4,
