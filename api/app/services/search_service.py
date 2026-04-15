@@ -449,9 +449,12 @@ async def execute_search(request: SearchRequest):
             "score":        round(normalized_score, 2)
         })
 
-    # Get Processed Facets
+# Get Processed Facets
     aggregations = response.get("aggregations", {})
     facets = process_aggregations_to_facets(aggregations)
+
+    # 🚀 GENERATE THE SIDEBAR HTML!
+    sidebar_html = build_sidebar_html(facets, active_state)
 
     # =========================================================================
     # 🤖 AI PART 5: GENERATIVE CHAT RESPONSE
@@ -484,16 +487,16 @@ async def execute_search(request: SearchRequest):
     elif request.page_size == 10 and total_hits == 0:
         ai_chat_message = f"I couldn't find any exact matches for '{query_text}'. Try adjusting your search keywords!"
 
-    final_response = {
+final_response = {
         "total_results":   total_hits,
         "total_pages":     total_pages,
         "current_page":    request.page,
         "pagination_html": build_pagination_html(total_pages, request.page),
         "results":         results,
         "facets":          facets,
+        "sidebar_html":    sidebar_html,  # 🚀 Added this line to send to UI!
         "ai_message":      ai_chat_message
     }
-
     try:
         await redis_client.set(cache_key, json.dumps(final_response), ex=300)
     except Exception:
