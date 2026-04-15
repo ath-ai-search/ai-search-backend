@@ -1,47 +1,32 @@
 from fastapi import APIRouter, Query
-from pydantic import BaseModel
-from app.models.search import SearchRequest
+from app.models.search import SearchRequest, AIAssistantRequest, AIAssistantResponse
 from app.services.search_service import execute_search, execute_autocomplete, process_ai_assistant
 
 router = APIRouter()
 
-# =========================================================================
-# 📥 NEW: AI ASSISTANT PAYLOAD MODEL
-# =========================================================================
-class AIAssistantRequest(BaseModel):
-    """
-    Captures the user's new chat message AND their current search state.
-    This allows the AI to know if "blue" means "blue shoes" (filtering) 
-    or if "show me dresses" means abandoning the shoes entirely (new search).
-    """
-    chat_message: str
-    current_state: SearchRequest
-
-
-# =========================================================================
-# 🌐 ENDPOINTS
-# =========================================================================
-
 @router.post("")
 async def search_products(request: SearchRequest):
-    """Standard grid search and filtering endpoint."""
+    """
+    1. Standard Grid Search and Filtering Endpoint.
+    This route handles the main product grid searches and UI sidebar filter updates.
+    """
     return await execute_search(request)
-
 
 @router.get("/autocomplete")
 async def autocomplete(q: str = Query(..., min_length=1, description="The letters the user is typing")):
-    """Typeahead dropdown endpoint for the main search bar."""
+    """
+    2. Typeahead Datalist Endpoint for the Main Search Bar.
+    This provides instant product suggestions as you type.
+    """
     return await execute_autocomplete(q)
 
-
-@router.post("/ai-assistant")
+@router.post("/ai-assistant", response_model=AIAssistantResponse)
 async def ai_assistant(request: AIAssistantRequest):
     """
-    🟢 NEW: Dedicated endpoint for the AI Assistant Chat.
-    Passes the chat message and the current search parameters to the LLM 
-    to decide whether to filter the current grid or start a brand new search.
+    ✨ 3. DYNAMIC AI ASSISTANT CHAT ENDPOINT ✨
+    This specialized route handles requests ONLY from the AI assistant chat panel.
+    It passes the user's message AND their current search state to the backend
+    service, allowing the 'brain' to make context-aware decisions (filtering vs. switching).
     """
-    return await process_ai_assistant(
-        chat_message=request.chat_message, 
-        current_state=request.current_state
-    )
+    # This calls the complex AI context-switching function we are building in services.
+    return await process_ai_assistant(request.chat_message, request.current_state)

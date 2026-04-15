@@ -3,80 +3,90 @@ from typing import List, Optional, Any, Dict
 
 # =========================================================================
 # 📥 REQUEST MODELS (What the Frontend UI sends to the Backend)
-# These models validate the incoming JSON payloads from your Javascript fetch()
-# calls to ensure they match the expected data types before processing the query.
 # =========================================================================
 
-class AIQuery(BaseModel):
+class AIAssistantRequest(BaseModel):
     """
-    Payload model specifically for the AI Assistant's chat endpoint.
-    Captures the raw user message typed into the AI panel (e.g., 'show me red shoes for women').
+    🔵 NEW: Payload model for the AI Assistant's chat endpoint.
+    This model captures the user's new chat message (e.g., 'bags')
+    AND their current search state (e.g., 'searching for red nike shoes').
+    This context is critical for the AI to decide if the user is refining
+    shoes or switching to a totally new product.
     """
-    query: str
+    chat_message: str
+    current_state: 'SearchRequest' # Captures the whole active SearchRequest payload
+
 
 class PriceFilter(BaseModel):
-    """
-    Defines the minimum and maximum boundaries for the price range filter.
-    Both fields are optional, allowing for 'Under $50' (max only) or 'Over $100' (min only) searches.
-    """
+    """Defines min/max boundaries for price filtering."""
     min: Optional[float] = None
     max: Optional[float] = None
 
+
 class Filters(BaseModel):
     """
-    Represents the exact state of the UI sidebar filters.
-    When a user checks boxes or enters prices in the UI, those values
-    are populated here as lists of strings or boolean values. The AI Assistant
-    can also inject values directly into these arrays based on semantic intent.
+    Structured object representing the exact state of the UI filters sidebar.
+    Values are populated by UI interaction (checkboxes/prices). The AI
+    Assistant will now dynamically update these arrays based on semantic intent.
     """
     price: Optional[PriceFilter] = None
-    brand: Optional[List[str]] = None      # e.g., ["Apple", "Samsung"]
-    category: Optional[List[str]] = None   # e.g., ["Electronics", "Phones"]
-    in_stock: Optional[bool] = None        # True if 'In Stock Only' checkbox is clicked
+    brand: Optional[List[str]] = None
+    category: Optional[List[str]] = None
+    in_stock: Optional[bool] = None
     
-    # 🟢 Dynamic Filters extracted from UI static checkboxes or AI semantic intent
-    color: Optional[List[str]] = None      # e.g., ["black", "red"]
+    # 🟢 DYNAMIC FILTERS: Extracted by the AI from semantic chat intent
+    color: Optional[List[str]] = None
+    # GENDER HAS BEEN REMOVED FROM THIS MODEL AS REQUESTED
+
+
 class SearchRequest(BaseModel):
     """
     The master payload for the main search API (/search).
-    This encapsulates the user's text query, active filters, sorting preference,
-    and pagination state into a single object passed to the search_service.
+    This encapsulates the user's search text, active filters, sorting methods,
+    and pagination state (page 1, page 2...) passed to OpenSearch.
     """
-    query: str  # The main search bar input OR the AI's extracted core product query
+    query: str  # The main search input (e.g., 'shoes', 'iphone', 'athera home')
     
-    # 🔥 PAGINATION CONTROLS 🔥
-    page: int = 1        # The current page number requested by the UI (default: 1)
-    page_size: int = 25  # Number of products to return per page (25 for the main grid, 10 for AI chat)
+    # PAGINATION CONTROLS
+    page: int = 1        # The UI changes this to 2, 3, 4... for paging
+    page_size: int = 25  # keeps grid nice. AI assistant will overwrite to 10.
     
     filters: Optional[Filters] = None  # The nested filter object (see Filters class above)
-    sort: str = "relevance"            # Sorting method selected in UI dropdown (e.g., 'price_asc', 'weighted')
+    sort: str = "best_matches"        # The sorting method chosen in the UI dropdown
 
 
 # =========================================================================
-# 📤 RESPONSE MODELS (What the Backend sends back to the Frontend UI)
-# These models dictate exactly how the JSON response is structured so the
-# Javascript frontend knows how to parse and dynamically render the grid.
+# 📤 RESPONSE MODELS (What the Backend sends to the Frontend)
 # =========================================================================
 
 class SearchResponse(BaseModel):
     """
-    The structured response returned by the search engine after querying AWS OpenSearch.
-    Contains the matching products, updated filter counts (facets), and pagination math.
+    The structured response sent back after a standard search.
+    It contains the products, filter data, and pagination math that the
+    Javascript uses to dynamically redraw the whole product grid and sidebar.
     """
-    # 🔥 PAGINATION METADATA 🔥
-    total_results: int     # Total number of products matching the query across all pages
-    total_pages: int       # Total pages available (calculated as total_results / page_size)
-    current_page: int      # The page currently being viewed
+    # PAGINATION DATA: Used by UI to draw buttons (1, 2, 3...)
+    total_results: int
+    total_pages: int
+    current_page: int
     
-    # Pre-rendered HTML string containing the pagination buttons (1, 2, 3...) generated by Python
-    pagination_html: Optional[str] = ""
+    pagination_html: Optional[str] = "" # Pre-rendered Python pagination buttons
     
-    # 📦 MAIN DATA 📦
-    # List of product dictionaries containing normalized AI scores, images, prices, titles, etc.
+    # MAIN DATA PACKETS
+    # List of product dictionaries with normalized AI best match scores, images, prices...
     results: List[Dict[str, Any]]
-    
-    # Dictionary of dynamic facets (Brands, Categories) with their document counts for the UI sidebar
+    # Dictionary of dynamic facets (Brands, categories) with document counts for the UI sidebar.
     facets: Dict[str, Any]
     
-    # Optional field to pass backend errors (like OpenSearch timeouts) to the frontend gracefully
-    error: Optional[str] = None
+    error: Optional[str] = None # Passes backend errors to the UI gracefully
+
+
+class AIAssistantResponse(SearchResponse):
+    """
+    🔴 NEW: Specialized response model for the AI Assistant.
+    It inherits everything from SearchResponse but adds two fields so the
+    frontend can automatically synchronize the product grid with the AI's decision.
+    """
+    ai_message: Optional[str] = "" # A friendly, contextual 1-sentence reply generated by the LLM
+    updated_query: Optional[str] = None # The AI's decision on the new primary query (e.g., 'bags')
+    updated_filters: Optional[Dict[str, Any]] = None # The AI's decision on the new filter arrays

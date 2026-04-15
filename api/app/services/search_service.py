@@ -4,7 +4,7 @@ import time
 import logging
 import re
 from app.config import os_client, INDEX_NAME, redis_client, openai_client
-from app.models.search import SearchRequest, Filters, PriceFilter
+from app.models.search import SearchRequest, AIAssistantResponse, Filters, PriceFilter
 
 # =========================================================================
 # ⚙️ SYSTEM SETUP & CONFIGURATION
@@ -129,10 +129,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V20 Redis Key: Flushes cache to apply gender removal
+    # ⚡ V21 Redis Key: Flushes cache to apply all new logic
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v20:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v21:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -269,14 +269,10 @@ async def execute_search(request: SearchRequest):
     total_hits = hits.get("total", {}).get("value", 0)
     total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
 
-    # =========================================================================
-    # 📈 AI PART 4: REALISTIC MATCH PERCENTAGE
-    # =========================================================================
     max_score = hits.get("max_score")
     if not max_score or max_score == 0: max_score = 1.0
 
     results = []
-    
     for hit in hits.get("hits", []):
         source = hit.get("_source", {})
         brand_display = get_smart_brand(source)
@@ -340,7 +336,7 @@ async def execute_search(request: SearchRequest):
         "total_results": total_hits, "total_pages": total_pages, 
         "current_page": request.page, "pagination_html": build_pagination_html(total_pages, request.page), 
         "results": results, "facets": facets, 
-        "ai_message": ""
+        "ai_message": "" # Empty for standard searches
     }
     
     try: await redis_client.set(cache_key, json.dumps(final_response), ex=300)
@@ -349,45 +345,52 @@ async def execute_search(request: SearchRequest):
 
 
 # =========================================================================
-# 🤖 NEW: AI ASSISTANT CHAT LOGIC (DYNAMIC SHIFTING)
+# ✨ NEW DYNAMIC AI METHOD: Intent & Context Shifting ✨
 # =========================================================================
 async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
+    """
+    🔵 THE SOLUTION TO THE STACKING ISSUE.
+    This specialized context-aware function intercepts AI chat messages and,
+    instead of cumulatively adding them, it uses an LLM to decide if the user
+    is refining the current search OR switching context completely.
+    """
+    
     current_filters = current_state.filters.model_dump() if current_state.filters else {}
     
     system_prompt = f"""
     You are ATHERA, an intelligent e-commerce AI shopping assistant.
     
     CURRENT CONTEXT:
-    - User is looking at: "{current_state.query}"
-    - Active Filters: {json.dumps(current_filters)}
+    - User is currently searching for: "{current_state.query}"
+    - Active UI Sidebar Filters applied: {json.dumps(current_filters)}
 
     NEW USER MESSAGE: "{chat_message}"
 
     YOUR TASK:
-    Analyze the message. Decide if the user wants to:
-    1. REFINE the current search (e.g. they typed "red" or "under $100").
-    2. Start a NEW SEARCH (e.g. they typed "bags", or a full phrase like "nike shoes red color between $100 to $200").
+    Analyze the new user message. You must decide if the user wants to:
+    1. REFINE the current search (e.g. they typed "red" or "nike" while looking at "shoes").
+    2. Start a NEW SEARCH (e.g. they typed "bags" or "iphone" while looking at "shoes").
 
-    Output ONLY a valid JSON object matching this exact structure:
+    Output ONLY a valid JSON object matching this structure:
     {{
         "intent": "refine" | "new_search",
         "search_query": "The core product noun ONLY (e.g., 'shoes', 'bags', 'dress'). NEVER include colors or brands in this field.",
         "filters": {{
             "color": ["black", "white", "blue", "red", "green", "brown"], 
             "brand": ["nike", "apple", "samsung", etc],
-            "price": {{"min": number or null, "max": number or null}}
+            "category": ["electronics", "footwear", etc]
         }},
-        "ai_message": "Friendly 1-sentence reply. E.g. 'Searching for red Nike shoes between $100 and $200!'"
+        "ai_message": "A friendly 1-sentence reply in the style of a stylish assistant. E.g., 'Filtering your shoes to show only red Nike ones!' or 'Sure, let's explore some stylish bags!'"
     }}
     
-    CRITICAL RULES:
-    - Extract ALL attributes (brands, colors, price ranges) into the "filters" object. 
-    - The "search_query" must ONLY be the base item (e.g., 'shoes' not 'nike shoes').
+    CRITICAL DECISION RULE:
+    If the current search is 'shoes' and the new message is 'bags', this is 'new_search'.
+    If the current search is 'shoes' and the new message is 'red nike', this is 'refine'.
     """
 
     try:
         llm_response = await openai_client.chat.completions.create(
-            model="gpt-3.5-turbo-0125",
+            model="gpt-3.5-turbo",
             response_format={ "type": "json_object" },
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -402,16 +405,16 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             query=parsed_intent.get("search_query", current_state.query),
             page=1, 
             page_size=10, 
-            sort="relevance"
+            sort="best_matches" 
         )
         
         extracted_filters = parsed_intent.get("filters", {})
         new_filters_obj = Filters()
         
+        # Initialize explicit empty lists so we can wipe filters if it's a new search
         new_filters_obj.color = []
         new_filters_obj.brand = []
         new_filters_obj.category = []
-        new_filters_obj.price = None
         
         if parsed_intent.get("intent") == "refine" and current_state.filters:
             new_filters_obj.brand = current_state.filters.brand or []
@@ -424,29 +427,24 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             new_filters_obj.color = list(set(new_filters_obj.color + extracted_filters["color"]))
         if extracted_filters.get("brand"): 
             new_filters_obj.brand = list(set(new_filters_obj.brand + extracted_filters["brand"]))
-            
-        if extracted_filters.get("price"):
-            p_data = extracted_filters["price"]
-            if p_data.get("min") is not None or p_data.get("max") is not None:
-                new_filters_obj.price = PriceFilter(min=p_data.get("min"), max=p_data.get("max"))
-
+        if extracted_filters.get("category"): 
+            new_filters_obj.category = list(set(new_filters_obj.category + extracted_filters["category"]))
+        
         updated_request.filters = new_filters_obj
 
-        final_results = await execute_search(updated_request)
-        final_results["ai_message"] = parsed_intent.get("ai_message", "Here is what I found for you.")
-        final_results["updated_query"] = updated_request.query
+        final_results_dict = await execute_search(updated_request)
         
-        final_results["updated_filters"] = {
-            "color": new_filters_obj.color,
-            "brand": new_filters_obj.brand,
-            "category": new_filters_obj.category
-        }
-        
-        return final_results
+        return AIAssistantResponse(
+            **final_results_dict, 
+            ai_message=parsed_intent.get("ai_message", "Here is what I found for you."), 
+            updated_query=updated_request.query, 
+            updated_filters=new_filters_obj.model_dump() 
+        )
 
     except Exception as e:
         logger.error(f"❌ AI Assistant Processing Error: {e}")
-        return await execute_search(current_state)
+        fail_results = await execute_search(current_state)
+        return AIAssistantResponse(**fail_results, ai_message="Here are the best matches I found:")
 
 
 # =========================================================================
@@ -633,14 +631,17 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 
     sidebar_html = ""
     if clean_query:
+        # 🟢 UPDATED: Using the exact button structure requested by your Sir
         sidebar_html += f"""
-        <div id='ai-toggle' class='ath-assistant-box'>
+        <button id='ai-toggle' type='button' class='ath-assistant-box'>
             <div class='ath-assistant-left'>
                 <i class='fas fa-magic ath-assistant-icon'></i>
-                <div class='ath-assistant-text'>Open "<span>{clean_query}</span>"<br>in Assistant</div>
+                <div class='ath-assistant-text'>
+                    Open "<span>{clean_query}</span>"<br>in Assistant
+                </div>
             </div>
             <i class='fas fa-arrow-right' style='font-size: 14px; color: #111;'></i>
-        </div>
+        </button>
         """
     
     if recent_searches:
@@ -679,7 +680,8 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         .ath-mega-menu {{ display: flex; width: 100%; max-width: 900px; height: 500px; background: white; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.15); font-family: 'Inter', sans-serif; text-align: left; overflow: hidden; border: 1px solid #e5e7eb; }}
         .ath-left-col {{ width: 320px; background: #fdfdfd; padding: 24px; border-right: 1px solid #f0f0f0; overflow-y: auto; }}
         
-        .ath-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }}
+        /* 🟢 UPDATED CSS: Added width, text-align, and font-family so the <button> acts exactly like a block element */
+        .ath-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); width: 100%; text-align: left; font-family: inherit; }}
         .ath-assistant-box:hover {{ border-color: #d1d5db; box-shadow: 0 4px 6px rgba(0,0,0,0.05); background: #fdfdfd; }}
         .ath-assistant-left {{ display: flex; align-items: center; gap: 12px; }}
         .ath-assistant-icon {{ font-size: 16px; color: #111; }}
