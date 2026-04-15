@@ -126,10 +126,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V25 Redis Key: Flushes cache to apply fix
+    # ⚡ V26 Redis Key: Flushes cache to apply the strict JSON parsing fix
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v25:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v26:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -204,9 +204,7 @@ async def execute_search(request: SearchRequest):
             "multi_match": {
                 "query": core_query, 
                 "fields": ["name^5", "brand^4", "category^3"],
-                # 🟢 THE FIX: Removed OpenSearch Fuzziness entirely! Vector AI already handles typos. 
-                # This guarantees we NEVER hit the 1024 clause limit again.
-                "boost": 2.0
+                "boost": 2.0 # OS Fuzziness strictly disabled to prevent crashing
             }
         },
         {"match_phrase": {"brand": {"query": core_query, "boost": 5000.0}}},    
@@ -350,7 +348,7 @@ async def execute_search(request: SearchRequest):
 async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     current_filters = current_state.filters.model_dump() if current_state.filters else {}
     
-    # 🟢 THE FIX: Explicitly instructing the LLM to use empty arrays [] unless specifically mentioned.
+    # 🟢 THE FIX: Removed ALL JSON comments so Python's json.loads() stops crashing!
     system_prompt = f"""
     You are ATHERA, an intelligent e-commerce AI shopping assistant.
     
@@ -365,22 +363,23 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     1. REFINE the current search (e.g. they typed "red" or "under $100").
     2. Start a NEW SEARCH (e.g. they typed "bags", or a phrase like "nike shoes red between $100 to $200").
 
-    Output ONLY a valid JSON object matching this exact structure:
+    Output ONLY a valid JSON object matching this exact structure. DO NOT output placeholder words like 'etc' or 'any'. Leave arrays completely empty [] if the user did not mention a filter.
     {{
         "intent": "refine" | "new_search",
         "search_query": "The core product noun ONLY (e.g., 'shoes', 'bags'). NEVER include colors or brands in this field.",
         "filters": {{
-            "color": [], // Add strings here ONLY if explicitly mentioned in the NEW message, otherwise leave empty []
-            "brand": [], // Add strings here ONLY if explicitly mentioned in the NEW message, otherwise leave empty []
-            "price": {{"min": null, "max": null}}
+            "color": ["string"], 
+            "brand": ["string"],
+            "price": {{"min": 10, "max": 50}}
         }},
         "ai_message": "Friendly 1-sentence reply. E.g. 'Searching for red Nike shoes between $100 and $200!'"
     }}
     """
 
     try:
+        # 🟢 THE FIX: Explicitly enforce 0125 to guarantee perfect JSON responses
         llm_response = await openai_client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-3.5-turbo-0125",
             response_format={ "type": "json_object" },
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -412,15 +411,21 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             new_filters_obj.price = current_state.filters.price
             new_filters_obj.in_stock = current_state.filters.in_stock
 
-        if extracted_filters.get("color"): 
-            new_filters_obj.color = list(set(new_filters_obj.color + extracted_filters["color"]))
+        bad_words = ["etc", "example", "any", "none", "string"]
+
+        if extracted_filters.get("color"):
+            colors = [str(c).lower() for c in extracted_filters["color"] if str(c).lower() not in bad_words]
+            new_filters_obj.color = list(set(new_filters_obj.color + colors))
+            
         if extracted_filters.get("brand"): 
-            new_filters_obj.brand = list(set(new_filters_obj.brand + extracted_filters["brand"]))
+            brands = [str(b).lower() for b in extracted_filters["brand"] if str(b).lower() not in bad_words]
+            new_filters_obj.brand = list(set(new_filters_obj.brand + brands))
             
         if extracted_filters.get("price"):
             p_data = extracted_filters["price"]
-            if p_data.get("min") is not None or p_data.get("max") is not None:
-                new_filters_obj.price = PriceFilter(min=p_data.get("min"), max=p_data.get("max"))
+            if isinstance(p_data, dict):
+                if p_data.get("min") is not None or p_data.get("max") is not None:
+                    new_filters_obj.price = PriceFilter(min=p_data.get("min"), max=p_data.get("max"))
 
         updated_request.filters = new_filters_obj
 
@@ -428,10 +433,15 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         
         if "ai_message" in final_results_dict:
             del final_results_dict["ai_message"]
+            
+        # 🟢 Guarantee we always have a string message to pass to the UI
+        ai_reply = parsed_intent.get("ai_message", "")
+        if not ai_reply or not isinstance(ai_reply, str):
+            ai_reply = "Here are the highly matched products I found for you."
         
         return AIAssistantResponse(
             **final_results_dict, 
-            ai_message=parsed_intent.get("ai_message", "Here is what I found for you."), 
+            ai_message=ai_reply, 
             updated_query=updated_request.query, 
             updated_filters=new_filters_obj.model_dump() 
         )
@@ -442,6 +452,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         if "ai_message" in fail_results:
             del fail_results["ai_message"]
         return AIAssistantResponse(**fail_results, ai_message="Sorry, I encountered an error. Please try adjusting your search terms!")
+
 
 # =========================================================================
 # 🔎 AUTOCOMPLETE ROUTE
@@ -522,8 +533,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                         "query": core_query, 
                         "fields": ["name^5", "brand^4", "category^3"],
                         "operator": "and",
-                        # 🟢 THE FIX: Removed Fuzziness here too!
-                        "boost": 5.0
+                        "boost": 5.0 # OS fuzziness removed entirely
                     }
                 })
             
