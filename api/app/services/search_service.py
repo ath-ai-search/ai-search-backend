@@ -129,10 +129,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V21 Redis Key: Flushes cache to apply all new logic
+    # ⚡ V22 Redis Key
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v21:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v22:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -208,6 +208,7 @@ async def execute_search(request: SearchRequest):
                 "query": core_query, 
                 "fields": ["name^5", "brand^4", "category^3"],
                 "fuzziness": "AUTO",
+                "max_expansions": 50, # 🟢 FIX: Prevents max_clause_count crash on generic searches
                 "boost": 2.0
             }
         },
@@ -336,7 +337,7 @@ async def execute_search(request: SearchRequest):
         "total_results": total_hits, "total_pages": total_pages, 
         "current_page": request.page, "pagination_html": build_pagination_html(total_pages, request.page), 
         "results": results, "facets": facets, 
-        "ai_message": "" # Empty for standard searches
+        "ai_message": ""
     }
     
     try: await redis_client.set(cache_key, json.dumps(final_response), ex=300)
@@ -348,13 +349,6 @@ async def execute_search(request: SearchRequest):
 # ✨ NEW DYNAMIC AI METHOD: Intent & Context Shifting ✨
 # =========================================================================
 async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
-    """
-    🔵 THE SOLUTION TO THE STACKING ISSUE.
-    This specialized context-aware function intercepts AI chat messages and,
-    instead of cumulatively adding them, it uses an LLM to decide if the user
-    is refining the current search OR switching context completely.
-    """
-    
     current_filters = current_state.filters.model_dump() if current_state.filters else {}
     
     system_prompt = f"""
@@ -411,7 +405,6 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         extracted_filters = parsed_intent.get("filters", {})
         new_filters_obj = Filters()
         
-        # Initialize explicit empty lists so we can wipe filters if it's a new search
         new_filters_obj.color = []
         new_filters_obj.brand = []
         new_filters_obj.category = []
@@ -434,6 +427,11 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
 
         final_results_dict = await execute_search(updated_request)
         
+        # 🟢 THE FIX: We must completely remove the blank `ai_message` key
+        # returned by execute_search so we don't pass it twice to AIAssistantResponse
+        if "ai_message" in final_results_dict:
+            del final_results_dict["ai_message"]
+        
         return AIAssistantResponse(
             **final_results_dict, 
             ai_message=parsed_intent.get("ai_message", "Here is what I found for you."), 
@@ -444,6 +442,10 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     except Exception as e:
         logger.error(f"❌ AI Assistant Processing Error: {e}")
         fail_results = await execute_search(current_state)
+        
+        if "ai_message" in fail_results:
+            del fail_results["ai_message"]
+            
         return AIAssistantResponse(**fail_results, ai_message="Here are the best matches I found:")
 
 
@@ -525,6 +527,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                         "fields": ["name^5", "brand^4", "category^3"],
                         "operator": "and",
                         "fuzziness": "AUTO",
+                        "max_expansions": 50, # Prevents crash here too
                         "boost": 5.0
                     }
                 }
@@ -631,7 +634,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 
     sidebar_html = ""
     if clean_query:
-        # 🟢 UPDATED: Using the exact button structure requested by your Sir
         sidebar_html += f"""
         <button id='ai-toggle' type='button' class='ath-assistant-box'>
             <div class='ath-assistant-left'>
@@ -680,7 +682,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         .ath-mega-menu {{ display: flex; width: 100%; max-width: 900px; height: 500px; background: white; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.15); font-family: 'Inter', sans-serif; text-align: left; overflow: hidden; border: 1px solid #e5e7eb; }}
         .ath-left-col {{ width: 320px; background: #fdfdfd; padding: 24px; border-right: 1px solid #f0f0f0; overflow-y: auto; }}
         
-        /* 🟢 UPDATED CSS: Added width, text-align, and font-family so the <button> acts exactly like a block element */
         .ath-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); width: 100%; text-align: left; font-family: inherit; }}
         .ath-assistant-box:hover {{ border-color: #d1d5db; box-shadow: 0 4px 6px rgba(0,0,0,0.05); background: #fdfdfd; }}
         .ath-assistant-left {{ display: flex; align-items: center; gap: 12px; }}
