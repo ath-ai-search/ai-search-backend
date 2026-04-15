@@ -7,25 +7,27 @@ from app.config import os_client, INDEX_NAME, redis_client, openai_client
 from app.models.search import SearchRequest
 
 # =========================================================================
-# ⚙️ SYSTEM SETUP & CONFIGURATION
+# ⚙️ SECTION 1: SYSTEM SETUP & CONFIGURATION
+# Sets up the server logs and safety limits for OpenSearch
 # =========================================================================
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-MAX_OS_WINDOW = 10000
+MAX_OS_WINDOW = 10000 
 
 # =========================================================================
-# 🛠️ UTILITY FUNCTIONS
+# 🛠️ SECTION 2: UTILITY FUNCTIONS
+# Helper functions to clean data and build HTML elements
 # =========================================================================
 def get_smart_brand(source):
     """
-    Cleans up brand names and maps missing/messy brands to official names
-    based on the product title (e.g., 'macbook' -> 'APPLE').
+    Cleans up messy brand names from the database and intelligently maps 
+    product models (like 'macbook' or 's20') to their parent brand (APPLE, SAMSUNG).
     """
     raw_brand = source.get("brand", "")
     if raw_brand and str(raw_brand).strip().lower() not in ["none", "", "null", "other brands", "unknown"]:
         return str(raw_brand).strip().upper()
-
+        
     attrs = source.get("attributes", {})
     if isinstance(attrs, dict):
         supplier = attrs.get("supplier", "")
@@ -34,7 +36,7 @@ def get_smart_brand(source):
 
     title = str(source.get("name", "")).strip()
     title_lower = title.lower()
-
+    
     brand_mappings = {
         "iphone": "APPLE", "ipad": "APPLE", "macbook": "APPLE", "airpods": "APPLE", "imac": "APPLE",
         "galaxy": "SAMSUNG", "s20": "SAMSUNG", "s21": "SAMSUNG", "s22": "SAMSUNG", "s23": "SAMSUNG", "s24": "SAMSUNG",
@@ -49,31 +51,31 @@ def get_smart_brand(source):
     for keyword, mapped_brand in brand_mappings.items():
         if re.search(rf'\b{keyword}\b', title_lower):
             return mapped_brand
-
+            
     known_brands = [
-        "nike", "adidas", "puma", "reebok", "sony", "dell", "asus", "acer", "lenovo", "hp",
-        "microsoft", "apple", "samsung", "viking", "u-line"
+        "nike", "adidas", "puma", "reebok", "sony", "dell", "asus", "acer", "lenovo", "hp", "microsoft", "apple", "samsung", "viking", "u-line"
     ]
     for b in known_brands:
         if re.search(rf'\b{b}\b', title_lower):
             return b.upper()
-
+            
     words = title.split()
     if words:
         first_word = words[0].strip('",\'()[]{}!@#$%-').upper()
         if len(first_word) > 2 and not first_word.isnumeric() and first_word not in ["THE", "FOR", "AND", "WITH"]:
             return first_word
-
+            
     return "UNKNOWN"
 
-
 def build_pagination_html(total_pages: int, current_page: int) -> str:
-    """Generates the HTML buttons for page navigation at the bottom of the grid."""
+    """
+    Generates the clickable HTML pagination buttons (1, 2, 3...) for the frontend grid.
+    """
     if total_pages <= 1: return ""
     start = max(1, current_page - 2)
     end = min(total_pages, start + 4)
     if end - start < 4: start = max(1, end - 4)
-
+    
     html = ""
     if start > 1: html += '<button class="page-btn" data-page="1">1</button><span style="align-self:center;">...</span>'
     for i in range(start, end + 1):
@@ -82,144 +84,106 @@ def build_pagination_html(total_pages: int, current_page: int) -> str:
     if end < total_pages: html += f'<span style="align-self:center;">...</span><button class="page-btn" data-page="{total_pages}">{total_pages}</button>'
     return html
 
-
 # =========================================================================
-# 🧠 AI PART 1: NLP (NATURAL LANGUAGE PROCESSING) MATRIX
-# Extracts complex intents (Prices, Sizes, Sales, Colors, Personas) from text
+# 🧠 SECTION 3: AI NLP (NATURAL LANGUAGE PROCESSING) MATRIX
+# This is the "Brain" that rips apart the user's sentence to find prices, 
+# sizes, colors, genders, and sales, leaving only the "core" item behind.
 # =========================================================================
 def extract_semantic_matrix(query_string):
     query_lower = query_string.lower()
     core_query = query_lower
-
+    
     smart_min_price, smart_max_price, smart_size, smart_discount = None, None, None, None
     is_sale_intent = False
 
-    # 1a. Math NLP: Extract Price Ranges (e.g., "between $40 to $100")
+    # Extractor: Price Ranges ("between $40 to $100")
     range_match = re.search(r'(?:between|from)?\s*\$?\s*(\d+)\s*(?:to|and|-)\s*\$?\s*(\d+)', query_lower)
     if range_match:
         smart_min_price, smart_max_price = float(range_match.group(1)), float(range_match.group(2))
         core_query = core_query.replace(range_match.group(0), '')
     else:
+        # Extractor: Price Limits ("under 100", "over 50")
         max_match = re.search(r'(?:under|less than|below|<)\s*\$?\s*(\d+)', query_lower)
-        if max_match:
+        if max_match: 
             smart_max_price = float(max_match.group(1))
             core_query = core_query.replace(max_match.group(0), '')
         min_match = re.search(r'(?:over|more than|above|>)\s*\$?\s*(\d+)', query_lower)
-        if min_match:
+        if min_match: 
             smart_min_price = float(min_match.group(1))
             core_query = core_query.replace(min_match.group(0), '')
 
-    # 1b. Math NLP: Extract Sizes
+    # Extractor: Sizes ("size 10.5")
     size_match = re.search(r'size\s*(\d+(?:\.\d+)?)', query_lower)
-    if size_match:
+    if size_match: 
         smart_size = str(size_match.group(1))
         core_query = core_query.replace(size_match.group(0), '')
 
-    # 1c. Math NLP: Extract Discounts and Sale Intent ("20% off", "clearance")
+    # Extractor: Sales and Discounts ("20% off", "clearance")
     disc_match = re.search(r'(\d+)%\s*(?:off|discount|sale)', query_lower)
-    if disc_match:
+    if disc_match: 
         smart_discount = int(disc_match.group(1))
         core_query = core_query.replace(disc_match.group(0), '')
-
+    
     if "sale" in query_lower or "clearance" in query_lower or "discount" in query_lower or smart_discount:
         is_sale_intent = True
         core_query = re.sub(r'\b(?:with\s+sale|on\s+sale|sale|clearance|discount)\b', '', core_query)
 
-    # Clean up the query so text-search only sees the actual object
+    # Clean the Core Query (Removes double spaces)
     core_query = re.sub(r'\s+', ' ', core_query).strip()
     if not core_query:
-        core_query = query_lower
+        core_query = query_lower 
 
-    # 1d. Semantic Context NLP (Who, Where, What)
+    # Dimension Dictionaries
     personas_dict = ["men", "mens", "women", "womens", "kids", "boys", "girls", "baby", "unisex"]
     occasions_dict = ["wedding", "party", "gym", "running", "casual", "formal", "summer", "winter", "fall", "spring", "outdoor", "indoor", "beach"]
     visuals_dict = ["red", "blue", "black", "white", "green", "yellow", "pink", "purple", "brown", "leather", "suede", "canvas", "cotton", "striped", "solid", "floral", "minimalist", "vintage", "shiny", "matte"]
 
+    # Extractor: Dimension Matching
     extracted_personas = [p for p in personas_dict if re.search(rf'\b{p}\b', query_lower)]
     extracted_occasions = [o for o in occasions_dict if re.search(rf'\b{o}\b', query_lower)]
     extracted_visuals = [v for v in visuals_dict if re.search(rf'\b{v}\b', query_lower)]
 
     return {
         "core_query": core_query,
-        "min_price": smart_min_price, "max_price": smart_max_price,
+        "min_price": smart_min_price, "max_price": smart_max_price, 
         "size": smart_size, "discount": smart_discount, "is_sale": is_sale_intent,
         "personas": extracted_personas, "occasions": extracted_occasions, "visuals": extracted_visuals
     }
 
-
 # =========================================================================
 # 🔧 HELPER: BUILD DYNAMIC FACET AGGREGATIONS
 # =========================================================================
-# ⚠️  FIELD NAME GUIDE — adjust these to match your actual OpenSearch index mapping:
-#
-#   FIELD                        LIKELY MAPPING IN YOUR INDEX
-#   ─────────────────────────────────────────────────────────
-#   Brand                      → "brand"  (already used)
-#   Category                   → "category"  (already used)
-#   Size (clothing/shoes)      → "attributes.size.keyword"
-#                                 OR "size.keyword"
-#                                 OR "attributes.size"  (if not analyzed)
-#   Gender                     → "attributes.gender.keyword"
-#                                 OR "gender.keyword"
-#   Color                      → "attributes.color.keyword"
-#                                 OR "color.keyword"
-#   Price (numeric)            → "price"  (already used)
-#
-#   If your index uses nested attributes you may need:
-#       {"nested": {"path": "attributes"}, "aggs": {...}}
-#   Replace the field strings below to match your mapping.
-# ═══════════════════════════════════════════════════════════════════════════
 def build_facet_aggregations() -> dict:
     """
     Returns the OpenSearch aggregations block that powers ALL filter panels.
     Each aggregation becomes one filter section in the frontend sidebar.
     """
     return {
-        # ── Existing facets ──────────────────────────────────────────────
         "brands": {
             "terms": {"field": "brand", "size": 25}
         },
         "categories": {
             "terms": {"field": "category", "size": 25}
         },
-
-        # ── NEW: Size facet ───────────────────────────────────────────────
-        # Pulls every distinct size value that exists in the current result set.
-        # Only products that HAVE a size field contribute to this bucket list,
-        # so if the user searches "laptops" they won't see shoe sizes.
-        # 🔧 Change "attributes.size.keyword" to match your index mapping.
         "sizes": {
             "terms": {
-                "field": "attributes.size.keyword",   # ← adjust if needed
+                "field": "attributes.size.keyword",
                 "size": 30,
-                "order": {"_key": "asc"}              # sorted alphabetically / numerically
+                "order": {"_key": "asc"}
             }
         },
-
-        # ── NEW: Gender facet ─────────────────────────────────────────────
-        # Aggregates Men / Women / Kids / Unisex from the gender field.
-        # Products without a gender field are silently excluded from this bucket.
-        # 🔧 Change "attributes.gender.keyword" to match your index mapping.
         "genders": {
             "terms": {
-                "field": "attributes.gender.keyword",  # ← adjust if needed
+                "field": "attributes.gender.keyword",
                 "size": 10
             }
         },
-
-        # ── NEW: Color facet ──────────────────────────────────────────────
-        # Shows the top colours found in the current result set.
-        # 🔧 Change "attributes.color.keyword" to match your index mapping.
         "colors": {
             "terms": {
-                "field": "attributes.color.keyword",   # ← adjust if needed
+                "field": "attributes.color.keyword",
                 "size": 20
             }
         },
-
-        # ── NEW: Price statistics ─────────────────────────────────────────
-        # Returns min/max/avg for the CURRENT result set so the frontend
-        # can set sensible slider/input boundaries instead of hardcoding them.
         "price_stats": {
             "stats": {"field": "price"}
         }
@@ -235,7 +199,6 @@ def process_aggregations_to_facets(aggregations: dict) -> dict:
     facets dictionary.  Every key here becomes a filter section in the UI.
     """
 
-    # ── Brands ───────────────────────────────────────────────────────────
     brands_facet = [
         {
             "label": str(b.get("key", "")).strip() or "Other Brands",
@@ -246,7 +209,6 @@ def process_aggregations_to_facets(aggregations: dict) -> dict:
         if b.get("key")
     ]
 
-    # ── Categories ───────────────────────────────────────────────────────
     categories_facet = [
         {
             "label": str(c.get("key", "")).strip(),
@@ -257,8 +219,6 @@ def process_aggregations_to_facets(aggregations: dict) -> dict:
         if c.get("key") and str(c.get("key")).strip().lower() not in ["none", "null", ""]
     ]
 
-    # ── NEW: Sizes ────────────────────────────────────────────────────────
-    # Skips any bucket whose key is null / "none" / empty so the UI stays clean.
     sizes_facet = [
         {
             "label": str(s.get("key", "")).strip(),
@@ -269,8 +229,6 @@ def process_aggregations_to_facets(aggregations: dict) -> dict:
         if s.get("key") and str(s.get("key")).strip().lower() not in ["none", "null", ""]
     ]
 
-    # ── NEW: Genders ──────────────────────────────────────────────────────
-    # Title-cases the label (men → Men, WOMEN → Women) for a clean display.
     genders_facet = [
         {
             "label": str(g.get("key", "")).strip().title(),
@@ -281,7 +239,6 @@ def process_aggregations_to_facets(aggregations: dict) -> dict:
         if g.get("key") and str(g.get("key")).strip().lower() not in ["none", "null", ""]
     ]
 
-    # ── NEW: Colors ───────────────────────────────────────────────────────
     colors_facet = [
         {
             "label": str(col.get("key", "")).strip().title(),
@@ -292,9 +249,6 @@ def process_aggregations_to_facets(aggregations: dict) -> dict:
         if col.get("key") and str(col.get("key")).strip().lower() not in ["none", "null", ""]
     ]
 
-    # ── NEW: Price range ──────────────────────────────────────────────────
-    # The stats aggregation gives us min/max from the ACTUAL result set,
-    # so the price inputs always reflect what is really available.
     raw_stats = aggregations.get("price_stats", {})
     price_min = round(float(raw_stats.get("min") or 0), 2)
     price_max = round(float(raw_stats.get("max") or 9999), 2)
@@ -306,27 +260,24 @@ def process_aggregations_to_facets(aggregations: dict) -> dict:
     return {
         "brands":      brands_facet,
         "categories":  categories_facet,
-        "sizes":       sizes_facet,        # NEW
-        "genders":     genders_facet,      # NEW
-        "colors":      colors_facet,       # NEW
-        "price_range": price_range_facet,  # NEW
+        "sizes":       sizes_facet,
+        "genders":     genders_facet,
+        "colors":      colors_facet,
+        "price_range": price_range_facet,
     }
 
 
 # =========================================================================
-# 👑 MAIN SEARCH ROUTE
-# Handles the central product grid and the AI Assistant Sidebar Chat
+# 👑 SECTION 4: MAIN SEARCH ROUTE
+# This handles the big product grid, the sidebar filters, and AI Chat
 # =========================================================================
 async def execute_search(request: SearchRequest):
-    # Determine if this is a main grid search (25 items) or AI chat search (10 items)
     request.page_size = 25 if request.page_size != 10 else 10
-
-    # ⚡ Redis Caching (Instantly returns repeated searches)
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v9:{hashlib.md5(request_str.encode()).hexdigest()}"
-    # NOTE: Version bumped to v9 so existing v8 cache entries are ignored after
-    # adding the new facets (sizes / genders / colors / price_range).
+    
+    # ⚡ Redis Cache (v15)
+    cache_key = f"search:ai:v15:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         start_time = time.time()
@@ -343,7 +294,7 @@ async def execute_search(request: SearchRequest):
     query_text = request.query.strip() if request.query else ""
     vector = None
 
-    # Step 1: Run Natural Language Processing
+    # Step 4.1: Run the NLP Matrix
     matrix = extract_semantic_matrix(query_text)
     core_query = matrix["core_query"]
 
@@ -359,84 +310,52 @@ async def execute_search(request: SearchRequest):
             logger.error(f"❌ OpenAI Embedding Failed: {e}")
 
     # =========================================================================
-    # 🛡️ HARD FILTERS (Stock, Price, Brand, Sale Status, Size, Gender, Color)
-    # Applies exact rules discovered by the NLP Matrix or UI Checkboxes
+    # 🛡️ SECTION 4.3: STRICT FILTERING (Backend & UI Sidebar)
+    # Automatically applies NLP math rules AND listens to user clicks on the UI
     # =========================================================================
     filters = [{"term": {"in_stock": True}}]
 
-    # ── Price from NLP ───────────────────────────────────────────────────
     if matrix["min_price"] is not None or matrix["max_price"] is not None:
         price_range = {}
         if matrix["min_price"] is not None: price_range["gte"] = matrix["min_price"]
         if matrix["max_price"] is not None: price_range["lte"] = matrix["max_price"]
         filters.append({"range": {"price": price_range}})
 
-    # ── Sale intent from NLP ─────────────────────────────────────────────
     if matrix["is_sale"] or request.sort == "on_sale":
         filters.append({"range": {"sale_price": {"gt": 0}}})
 
-    # ── Filters coming from the UI sidebar ───────────────────────────────
     if request.filters:
-        # Brand checkboxes
         if request.filters.brand:
             filters.append({"terms": {"brand": request.filters.brand}})
-
-        # Category checkboxes
         if request.filters.category:
             filters.append({"terms": {"category": request.filters.category}})
-
-        # In-Stock toggle
         if request.filters.in_stock is not None:
             filters.append({"term": {"in_stock": request.filters.in_stock}})
-
-        # Price slider / inputs from the sidebar
         if request.filters.price:
             p_range = {}
             if request.filters.price.min is not None: p_range["gte"] = request.filters.price.min
             if request.filters.price.max is not None: p_range["lte"] = request.filters.price.max
             if p_range: filters.append({"range": {"price": p_range}})
 
-        # ── NEW: Size filter ──────────────────────────────────────────────
-        # Sent from the frontend when user ticks one or more size boxes.
-        # 🔧 The field name must match your index mapping (see build_facet_aggregations).
+        # New Attributes
         if hasattr(request.filters, "size") and request.filters.size:
-            filters.append({
-                "terms": {
-                    "attributes.size.keyword": request.filters.size  # ← adjust if needed
-                }
-            })
-
-        # ── NEW: Gender filter ────────────────────────────────────────────
-        # 🔧 The field name must match your index mapping.
+            filters.append({"terms": {"attributes.size.keyword": request.filters.size}})
         if hasattr(request.filters, "gender") and request.filters.gender:
-            filters.append({
-                "terms": {
-                    "attributes.gender.keyword": request.filters.gender  # ← adjust if needed
-                }
-            })
-
-        # ── NEW: Color filter ─────────────────────────────────────────────
-        # 🔧 The field name must match your index mapping.
+            filters.append({"terms": {"attributes.gender.keyword": request.filters.gender}})
         if hasattr(request.filters, "color") and request.filters.color:
-            filters.append({
-                "terms": {
-                    "attributes.color.keyword": request.filters.color  # ← adjust if needed
-                }
-            })
+            filters.append({"terms": {"attributes.color.keyword": request.filters.color}})
 
-    # ── Default sort ─────────────────────────────────────────────────────
     sort_query = [{"_score": "desc"}]
     if request.sort == "price_asc":  sort_query = [{"price": "asc"}]
     elif request.sort == "price_desc": sort_query = [{"price": "desc"}]
 
     # =========================================================================
-    # 🧠 AI PART 3: k-NN (k-Nearest Neighbors) & HYBRID SCORING
-    # Combines vector meaning with exact keyword boosts to fix "hallucinations"
+    # ⚖️ SECTION 4.4: WEIGHTED HYBRID SCORING (k-NN + Lexical)
+    # Balances AI Meaning with Exact Text Matching to prevent Hallucinations
     # =========================================================================
     if vector:
         k_val = max(200, from_val + request.page_size + 100)
 
-        # Lexical Score Boosters
         semantic_shoulds = [
             {"match_phrase": {"name":     {"query": core_query, "boost": 10.0}}},
             {"match_phrase": {"brand":    {"query": core_query, "boost": 8.0}}},
@@ -452,7 +371,6 @@ async def execute_search(request: SearchRequest):
             }
         ]
 
-        # Apply Semantic Context Boosts
         for p in matrix["personas"]:  semantic_shoulds.append({"multi_match": {"query": p, "fields": ["name^2", "category^2"], "boost": 3.0}})
         for o in matrix["occasions"]: semantic_shoulds.append({"multi_match": {"query": o, "fields": ["name^2", "attributes^2"], "boost": 3.0}})
         for v in matrix["visuals"]:   semantic_shoulds.append({"multi_match": {"query": v, "fields": ["name^2", "attributes^2"], "boost": 3.0}})
@@ -471,7 +389,10 @@ async def execute_search(request: SearchRequest):
     else:
         query_body = {"query": {"bool": {"must": [{"match_all": {}}], "filter": filters}}}
 
-    # ── Build the full OpenSearch query ──────────────────────────────────
+    # =========================================================================
+    # 📊 SECTION 4.5: DYNAMIC AGGREGATION (Building the UI Sidebar)
+    # Automatically counts every brand, category, color, size, and gender
+    # =========================================================================
     os_query = {
         "from": from_val,
         "size": request.page_size,
@@ -479,11 +400,9 @@ async def execute_search(request: SearchRequest):
         "sort": sort_query,
         "track_total_hits": True,
         "track_scores": True,
-        # 🔑 NEW: use the helper so ALL filter facets are requested in one place
         "aggs": build_facet_aggregations()
     }
 
-    # 📡 Execute Query against AWS OpenSearch
     try:
         response = os_client.search(index=INDEX_NAME, body=os_query)
     except Exception as e:
@@ -494,10 +413,6 @@ async def execute_search(request: SearchRequest):
     total_hits  = hits.get("total", {}).get("value", 0)
     total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
 
-    # =========================================================================
-    # 📈 AI PART 4: SCORE NORMALIZATION
-    # Converts messy OpenSearch math into a clean 0 to 1 percentage score
-    # =========================================================================
     max_score = hits.get("max_score")
     if not max_score and len(hits.get("hits", [])) > 0:
         max_score = hits["hits"][0].get("_score", 1.0)
@@ -509,7 +424,6 @@ async def execute_search(request: SearchRequest):
         source = hit.get("_source", {})
         brand_display = get_smart_brand(source)
 
-        # Clean Categories
         raw_cats = source.get("category", [])
         clean_cats = []
         if isinstance(raw_cats, str):
@@ -519,7 +433,6 @@ async def execute_search(request: SearchRequest):
         if not clean_cats or clean_cats == ["None"]:
             clean_cats = ["Uncategorized"]
 
-        # Parse Images & Fallbacks
         images = source.get("images", [])
         primary_image = images[0] if isinstance(images, list) and len(images) > 0 else None
         _pid = str(source.get("product_id", "123"))
@@ -527,7 +440,6 @@ async def execute_search(request: SearchRequest):
         _demo_rating = 4.0 + (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 10) / 10.0
         _demo_sales  = (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 800) + 150
 
-        # Calculate Final Percentage
         raw_score        = hit.get("_score", 0) or 0
         normalized_score = min(1.0, raw_score / max_score)
 
@@ -548,12 +460,7 @@ async def execute_search(request: SearchRequest):
             "score":        round(normalized_score, 2)
         })
 
-    # =========================================================================
-    # 🗂️ BUILD FACETS — ALL FILTER SECTIONS COME FROM HERE
-    # =========================================================================
-    # process_aggregations_to_facets() converts raw OpenSearch buckets →
-    # clean lists that the frontend renderSidebar() function reads directly.
-    # Any new filter type only needs to be added once: here + build_facet_aggregations().
+    # Get Processed Facets
     aggregations = response.get("aggregations", {})
     facets = process_aggregations_to_facets(aggregations)
 
@@ -594,7 +501,7 @@ async def execute_search(request: SearchRequest):
         "current_page":    request.page,
         "pagination_html": build_pagination_html(total_pages, request.page),
         "results":         results,
-        "facets":          facets,       # ← now contains brands/categories/sizes/genders/colors/price_range
+        "facets":          facets,
         "ai_message":      ai_chat_message
     }
 
@@ -606,7 +513,7 @@ async def execute_search(request: SearchRequest):
 
 
 # =========================================================================
-# 🔎 AUTOCOMPLETE ROUTE (Typeahead dropdown in search bar)
+# 🔎 AUTOCOMPLETE ROUTE (Typeahead Dropdown)
 # =========================================================================
 async def execute_autocomplete(query_string: str):
     clean_query = query_string.strip()
@@ -649,7 +556,7 @@ async def execute_autocomplete(query_string: str):
 
 # =========================================================================
 # 🌐 HTML MEGA MENU ROUTE
-# Generates the full HTML/CSS layout for the instant pop-up dropdown
+# Generates the entire HTML popup widget that drops down when you click Search
 # =========================================================================
 async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     clean_query = query_string.strip().lower()
@@ -778,10 +685,11 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             </div>
             """
 
- sidebar_html = ""
+    sidebar_html = ""
+    # 🚀 FIX: Perfectly indented dynamic button with the correct clean_query string applied
     if clean_query:
         sidebar_html += f"""
-       <button id="ai-toggle" type="button" class="ath-assistant-box" onclick="document.getElementById('ai-panel').classList.add('open');">
+        <button id="ai-toggle" type="button" class="ath-assistant-box" onclick="document.getElementById('ai-panel').classList.add('open');">
             <div class="ath-assistant-left">
                 <i class="fas fa-magic ath-assistant-icon"></i>
                 <div class="ath-assistant-text">
