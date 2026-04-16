@@ -126,10 +126,9 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V26 Redis Key: Flushes cache to apply the strict JSON parsing fix
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v26:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v30:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -173,12 +172,11 @@ async def execute_search(request: SearchRequest):
         filters.append({"range": {"sale_price": {"gt": 0}}})
 
     if request.filters:
-        if getattr(request.filters, "brand", None): filters.append({"terms": {"brand": request.filters.brand}})
-        if getattr(request.filters, "category", None): filters.append({"terms": {"category": request.filters.category}})
+        if getattr(request.filters, "category", None): filters.append({"terms": {"category": request.filters.category[:5]}})
         if getattr(request.filters, "in_stock", None) is not None: filters.append({"term": {"in_stock": request.filters.in_stock}})
         
         if getattr(request.filters, "color", None):
-            filters.append({"bool": {"should": [{"multi_match": {"query": c, "type": "phrase", "fields": ["color", "attributes*", "name"]}} for c in request.filters.color], "minimum_should_match": 1}})
+            filters.append({"bool": {"should": [{"multi_match": {"query": c, "type": "phrase", "fields": ["color", "attributes*", "name"]}} for c in request.filters.color[:5]], "minimum_should_match": 1}})
         
         if getattr(request.filters, "price", None):
             p_range = {}
@@ -246,13 +244,14 @@ async def execute_search(request: SearchRequest):
     else:
         query_body = {"query": {"bool": {"must": [{"match_all": {}}], "filter": filters, "must_not": must_nots}}}
 
+    # 🟢 OS Ags reduced to just Category since Brand filter is gone from the UI
     os_query = {
         "from": from_val, "size": request.page_size,
         **query_body,
         "sort": sort_query, 
         "track_total_hits": True,
         "track_scores": True, 
-        "aggs": {"brands": {"terms": {"field": "brand", "size": 25}}, "categories": {"terms": {"field": "category", "size": 25}}}
+        "aggs": {"categories": {"terms": {"field": "category", "size": 25}}}
     }
 
     try:
@@ -266,7 +265,7 @@ async def execute_search(request: SearchRequest):
             "total_pages": 0,
             "current_page": request.page,
             "pagination_html": "",
-            "facets": {"brands": [], "categories": []}
+            "facets": {"categories": []}
         }
     
     hits = response.get("hits", {})
@@ -328,7 +327,6 @@ async def execute_search(request: SearchRequest):
 
     aggregations = response.get("aggregations", {})
     facets = {
-        "brands": [{"label": str(b.get("key", "")).strip() if b.get("key") and str(b.get("key")).strip() else "Other Brands", "value": b.get("key"), "count": b.get("doc_count", 0)} for b in aggregations.get("brands", {}).get("buckets", [])],
         "categories": [{"value": str(c.get("key")).strip(), "label": str(c.get("key")).strip(), "count": c.get("doc_count", 0)} for c in aggregations.get("categories", {}).get("buckets", []) if c.get("key")]
     }
 
@@ -348,7 +346,7 @@ async def execute_search(request: SearchRequest):
 async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     current_filters = current_state.filters.model_dump() if current_state.filters else {}
     
-    # 🟢 THE FIX: Removed ALL JSON comments so Python's json.loads() stops crashing!
+    # 🟢 NO COMMENTS IN PROMPT: Guarantees json.loads() never crashes
     system_prompt = f"""
     You are ATHERA, an intelligent e-commerce AI shopping assistant.
     
@@ -360,24 +358,23 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
 
     YOUR TASK:
     Analyze the message. Decide if the user wants to:
-    1. REFINE the current search (e.g. they typed "red" or "under $100").
-    2. Start a NEW SEARCH (e.g. they typed "bags", or a phrase like "nike shoes red between $100 to $200").
+    1. REFINE the current search.
+    2. Start a NEW SEARCH.
 
-    Output ONLY a valid JSON object matching this exact structure. DO NOT output placeholder words like 'etc' or 'any'. Leave arrays completely empty [] if the user did not mention a filter.
+    Output ONLY a valid JSON object matching this exact structure. Leave arrays completely empty [] if the user did not explicitly mention a filter. DO NOT output placeholder text.
     {{
-        "intent": "refine" | "new_search",
-        "search_query": "The core product noun ONLY (e.g., 'shoes', 'bags'). NEVER include colors or brands in this field.",
+        "intent": "refine",
+        "search_query": "The core product noun ONLY.",
         "filters": {{
-            "color": ["string"], 
-            "brand": ["string"],
-            "price": {{"min": 10, "max": 50}}
+            "color": [], 
+            "price": {{"min": null, "max": null}}
         }},
-        "ai_message": "Friendly 1-sentence reply. E.g. 'Searching for red Nike shoes between $100 and $200!'"
+        "ai_message": "Friendly 1-sentence reply."
     }}
     """
 
     try:
-        # 🟢 THE FIX: Explicitly enforce 0125 to guarantee perfect JSON responses
+        # 🟢 FORCE 0125 MODEL: Optimized for strict JSON adherence
         llm_response = await openai_client.chat.completions.create(
             model="gpt-3.5-turbo-0125",
             response_format={ "type": "json_object" },
@@ -401,25 +398,19 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         new_filters_obj = Filters()
         
         new_filters_obj.color = []
-        new_filters_obj.brand = []
         new_filters_obj.category = []
         
         if parsed_intent.get("intent") == "refine" and current_state.filters:
-            new_filters_obj.brand = current_state.filters.brand or []
             new_filters_obj.category = current_state.filters.category or []
             new_filters_obj.color = current_state.filters.color or []
             new_filters_obj.price = current_state.filters.price
             new_filters_obj.in_stock = current_state.filters.in_stock
 
-        bad_words = ["etc", "example", "any", "none", "string"]
+        bad_words = ["string", "example", "any", "none", "etc"]
 
         if extracted_filters.get("color"):
             colors = [str(c).lower() for c in extracted_filters["color"] if str(c).lower() not in bad_words]
             new_filters_obj.color = list(set(new_filters_obj.color + colors))
-            
-        if extracted_filters.get("brand"): 
-            brands = [str(b).lower() for b in extracted_filters["brand"] if str(b).lower() not in bad_words]
-            new_filters_obj.brand = list(set(new_filters_obj.brand + brands))
             
         if extracted_filters.get("price"):
             p_data = extracted_filters["price"]
@@ -431,10 +422,10 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
 
         final_results_dict = await execute_search(updated_request)
         
+        # 🟢 PREVENT CRASH: Remove empty ai_message before initializing Pydantic model
         if "ai_message" in final_results_dict:
             del final_results_dict["ai_message"]
             
-        # 🟢 Guarantee we always have a string message to pass to the UI
         ai_reply = parsed_intent.get("ai_message", "")
         if not ai_reply or not isinstance(ai_reply, str):
             ai_reply = "Here are the highly matched products I found for you."
@@ -452,7 +443,6 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         if "ai_message" in fail_results:
             del fail_results["ai_message"]
         return AIAssistantResponse(**fail_results, ai_message="Sorry, I encountered an error. Please try adjusting your search terms!")
-
 
 # =========================================================================
 # 🔎 AUTOCOMPLETE ROUTE
@@ -533,7 +523,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                         "query": core_query, 
                         "fields": ["name^5", "brand^4", "category^3"],
                         "operator": "and",
-                        "boost": 5.0 # OS fuzziness removed entirely
+                        "boost": 5.0 # OS Fuzziness disabled
                     }
                 })
             
@@ -593,7 +583,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         dynamic_cats = []
 
     products_html = ""
-    dynamic_brands_set = set()
     
     if not hits:
         products_html = "<div style='padding: 20px; color: #666;'>No products found.</div>"
@@ -602,7 +591,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             source = hit.get("_source", {})
             name = source.get("name", "Unknown Product")
             brand_display = get_smart_brand(source)
-            if brand_display != "UNKNOWN BRAND" and brand_display != "UNKNOWN": dynamic_brands_set.add(brand_display)
             price = float(source.get("price", 0.0))
             raw_sale = source.get("sale_price")
             sale_price = float(raw_sale) if raw_sale is not None else 0.0
@@ -654,12 +642,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                     <div style="display:flex; align-items:center; gap:12px;"><i class='far fa-clock'></i> <span>{r}</span></div>
                     <div style="display:flex; gap:8px; color:#999;"><i class="fas fa-arrow-up" style="transform: rotate(45deg); font-size:10px;"></i></div>
                 </div>"""
-
-    dynamic_brands = list(dynamic_brands_set)
-    if dynamic_brands:
-        sidebar_html += "<div class='ath-side-title' style='margin-top:24px;'>BRAND</div>"
-        for b in dynamic_brands[:4]:
-            sidebar_html += f"<div class='ath-side-item'><div style='display:flex; align-items:center; gap:12px;'><i class='fas fa-filter'></i> <span>{b}</span></div></div>"
 
     if dynamic_cats:
         sidebar_html += "<div class='ath-side-title' style='margin-top:24px;'>POPULAR SEARCHES</div>"
