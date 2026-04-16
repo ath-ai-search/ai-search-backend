@@ -795,6 +795,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     overflow-y: auto;
     display: flex;
     flex-wrap: wrap;
+    gap:10px;
     align-items: flex-start; }}
 
     .bclouds-prod-header h3 {{
@@ -811,7 +812,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     .bclouds-prod-header span {{
     display: inline-block;
     height: 35px;
-    margin-top: 20px;
+    margin-top: 14px;
     border: 1px solid #ccc;
     border-radius: 3px;
     padding: 5px 15px;
@@ -825,11 +826,17 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     width: calc(25% - 8px);
 }}   
 
-    .bclouds-prod-img {{ width: 60px; height: 60px; display: flex; align-items: center; justify-content: center; }}
+    .bclouds-prod-img {{  width: 100%;
+    height: 180px;
+    display: flex;
+    align-items: center;
+    justify-content: center; }}
+
     .bclouds-prod-img img {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
 
-    .bclouds-prod-title {{ font-size: 14px; color: #444; }}
-    .bclouds-prod-price {{ font-size: 14px; font-weight: 700; }}
+    .bclouds-prod-title {{ font-size: 14px; color: #444; padding: 8px 0 5px 0; }}
+    .bclouds-prod-price {{ font-size: 14px; font-weight: 700; font-size: 16px; padding: 5px 0;
+ }}
 
     /* 🔥 GLOW ANIMATION (Properly Escaped for Python) */
     .glowAni {{
