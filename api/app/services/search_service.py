@@ -128,7 +128,7 @@ async def execute_search(request: SearchRequest):
     
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v40:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v45:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -162,7 +162,8 @@ async def execute_search(request: SearchRequest):
         if matrix["max_price"] is not None: price_range["lte"] = matrix["max_price"]
         filters.append({"range": {"price": price_range}})
 
-    if matrix["is_sale"] or request.sort == "on_sale":
+    # 🟢 NEW: Handles AI on_sale parameter explicitly
+    if matrix["is_sale"] or request.sort == "on_sale" or (request.filters and getattr(request.filters, "on_sale", False)):
         filters.append({"range": {"sale_price": {"gt": 0}}})
 
     if request.filters:
@@ -172,9 +173,9 @@ async def execute_search(request: SearchRequest):
         if getattr(request.filters, "color", None):
             filters.append({"bool": {"should": [{"multi_match": {"query": c, "type": "phrase", "fields": ["color", "attributes*", "name"]}} for c in request.filters.color[:5]], "minimum_should_match": 1}})
             
-        # 🟢 Added handling for Size filter to hit OpenSearch
         if getattr(request.filters, "size", None):
-            filters.append({"bool": {"should": [{"multi_match": {"query": s, "type": "phrase", "fields": ["size", "attributes*", "name"]}} for s in request.filters.size[:5]], "minimum_should_match": 1}})
+            # 🟢 FIX: Removed "name" field so finding size "9" doesn't return a 9-inch fishing lure!
+            filters.append({"bool": {"should": [{"multi_match": {"query": s, "type": "phrase", "fields": ["size", "attributes.size", "attributes.Size", "attributes*"]}} for s in request.filters.size[:5]], "minimum_should_match": 1}})
         
         if getattr(request.filters, "price", None):
             p_range = {}
@@ -185,6 +186,7 @@ async def execute_search(request: SearchRequest):
     sort_query = [{"_score": "desc"}]
     if request.sort == "price_asc": sort_query = [{"price": "asc"}]
     elif request.sort == "price_desc": sort_query = [{"price": "desc"}]
+    elif request.sort == "on_sale": sort_query = [{"_score": "desc"}] # Ensure relevance is kept when sale forced
 
     semantic_shoulds = []
     
@@ -329,7 +331,7 @@ async def execute_search(request: SearchRequest):
     return final_response
 
 # =========================================================================
-# ✨ AI ASSISTANT CHAT LOGIC (DYNAMIC SHIFTING & SUGGESTIONS) ✨
+# ✨ AI ASSISTANT CHAT LOGIC
 # =========================================================================
 async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     current_filters = current_state.filters.model_dump() if current_state.filters else {}
@@ -344,20 +346,17 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     NEW USER MESSAGE: "{chat_message}"
 
     YOUR TASK:
-    Analyze the message. Decide if the user wants to:
-    1. REFINE the current search (e.g. they typed "red", "size 9", or "under $100").
-    2. Start a NEW SEARCH (e.g. they typed "bags").
-
-    Output ONLY a valid JSON object matching this exact structure. Leave arrays completely empty [] if the user did not mention a filter.
+    Analyze the message. Output ONLY a valid JSON object matching this exact structure. Leave arrays completely empty [] if not explicitly mentioned.
     {{
         "intent": "refine" | "new_search",
         "search_query": "The product and brand ONLY (e.g., 'nike shoes'). NEVER include colors, sizes, or price in this field.",
         "filters": {{
             "color": [], 
-            "size": [], // Extract any numbers/sizes (e.g., ["8", "9", "XL", "Small"])
+            "size": [], // Extract numbers/sizes (e.g., ["8", "9", "XL"])
+            "on_sale": false, // 🟢 Set to true if they ask for sale, clearance, or discount
             "price": {{"min": null, "max": null}}
         }},
-        "ai_message": "Friendly 1-sentence reply WITH FUN EMOJIS! E.g. 'Searching for size 9 flip flops! 🩴✨'",
+        "ai_message": "Friendly 1-sentence reply WITH FUN EMOJIS! E.g. 'Searching for size 9 flip flops on sale! 🩴💸'",
         "suggestions": [
             "Generate 3 to 4 related follow-up search queries..."
         ]
@@ -389,7 +388,8 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         
         new_filters_obj.color = []
         new_filters_obj.category = []
-        new_filters_obj.size = [] # Ensure initialized
+        new_filters_obj.size = [] 
+        new_filters_obj.on_sale = extracted_filters.get("on_sale", False)
         
         if parsed_intent.get("intent") == "refine" and current_state.filters:
             new_filters_obj.category = current_state.filters.category or []
@@ -397,6 +397,10 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             new_filters_obj.size = current_state.filters.size or []
             new_filters_obj.price = current_state.filters.price
             new_filters_obj.in_stock = current_state.filters.in_stock
+            
+            # Keep on_sale active if it was already active
+            if getattr(current_state.filters, "on_sale", False) and extracted_filters.get("on_sale") is not False:
+                new_filters_obj.on_sale = True
 
         bad_words = ["string", "example", "any", "none", "etc"]
 
@@ -415,6 +419,10 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
                     new_filters_obj.price = PriceFilter(min=p_data.get("min"), max=p_data.get("max"))
 
         updated_request.filters = new_filters_obj
+        
+        # 🟢 Force Sort to "on_sale" if AI applied sale filter
+        if new_filters_obj.on_sale:
+            updated_request.sort = "on_sale"
 
         final_results_dict = await execute_search(updated_request)
         
@@ -434,6 +442,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             ai_message=ai_reply, 
             updated_query=updated_request.query, 
             updated_filters=new_filters_obj.model_dump(),
+            updated_sort=updated_request.sort, # Send sort back to UI
             suggestions=suggestions[:4]
         )
 
@@ -719,7 +728,7 @@ async def generate_ai_welcome(current_query: str):
     
     RULES:
     1. If CURRENT SEARCH CONTEXT is empty (or ""), write a general, stylish welcome. E.g., "Welcome! Ready to explore some great fashion finds? ✨"
-    2. If CURRENT SEARCH CONTEXT contains a product, acknowledge it and act as a personal stylist by cross-selling complementary items! 
+    2. If CURRENT SEARCH CONTEXT contains a product, acknowledge it and offer highly relevant refinements or complementary accessories specifically for that product! 
     3. The "suggestions" array MUST contain 3 to 4 realistic, clickable follow-up questions formatted as natural user requests.
     
     Output ONLY a valid JSON object matching this structure:

@@ -16,7 +16,8 @@ class Filters(BaseModel):
     color: Optional[List[str]] = None
     brand: Optional[List[str]] = None 
     gender: Optional[List[str]] = None 
-    size: Optional[List[str]] = None # 🟢 NEW: Added size filtering!
+    size: Optional[List[str]] = None
+    on_sale: Optional[bool] = None # 🟢 NEW: AI can now toggle the sale filter directly
 
 class SearchRequest(BaseModel):
     query: str
@@ -49,6 +50,7 @@ class AIAssistantResponse(SearchResponse):
     ai_message: Optional[str] = ""
     updated_query: Optional[str] = None
     updated_filters: Optional[Dict[str, Any]] = None
+    updated_sort: Optional[str] = None # 🟢 NEW: Forces the UI sort dropdown to update
     suggestions: Optional[List[str]] = [] 
 
 class AIWelcomeResponse(BaseModel):
