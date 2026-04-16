@@ -790,7 +790,8 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     .bclouds-side-item {{ font-size: 14px; padding: 10px 0; cursor: pointer; display: flex; justify-content: space-between; }}
     .bclouds-side-item:hover {{ background: #f5f5f5; border-radius: 4px; }}
 
-    .bclouds-right-col {{ flex: 1; padding: 24px 32px; overflow-y: auto; }}
+    .bclouds-right-col {{ position: relative; flex: 1; padding: 75px 32px 24px 32px; overflow-y: auto; }}
+
     .bclouds-prod-header h3 {{
     margin-top: 21px;
 }}
@@ -811,7 +812,15 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     padding: 5px 15px;
     background-color: #f5f5f5;
 }}
-    .bclouds-prod-row {{ display: flex; gap: 20px; padding: 16px 0; border-bottom: 1px solid #f5f5f5; }}
+.bclouds-prod-row {{
+    display: flex;
+    padding: 16px 0;
+    border-bottom: 1px solid #f5f5f5;
+    width: 25%;
+    flex-wrap: wrap;
+    border: 1px solid #ddd;
+}}   
+
     .bclouds-prod-img {{ width: 60px; height: 60px; display: flex; align-items: center; justify-content: center; }}
     .bclouds-prod-img img {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
 
