@@ -792,7 +792,8 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 
     .bclouds-right-col {{ position: relative;
     flex: 1;
-    padding: 65px 32px 24px 32px;
+    
+    padding: 57px 32px 24px 32px;
     overflow-y: auto;
     display: flex;
     flex-wrap: wrap;
@@ -800,7 +801,8 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     align-items: flex-start; }}
 
     .bclouds-prod-header h3 {{
-    margin-top: 10px;
+       margin-top: 10px;
+       font-size: 18px;
 }}
 
     .bclouds-prod-header {{   display: flex;
@@ -812,18 +814,19 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 
     .bclouds-prod-header span {{
     display: inline-block;
-    height: 35px;
-    margin-top: 10px;
+    height: 33px;
+    margin-top: 4px;
     border: 1px solid #ccc;
     border-radius: 3px;
     padding: 5px 15px;
     background-color: #f5f5f5;
+    font-size: 14px;
 }}
 .bclouds-prod-row {{
     border-bottom: 1px solid #f5f5f5;
     flex-wrap: wrap;
     border: 1px solid #ddd;
-    padding: 15px;
+    padding: 12px;
     width: calc(25% - 8px);
     background-color: #fff;
 }}   
@@ -837,7 +840,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     .bclouds-prod-img img {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
 
     .bclouds-prod-title {{ font-size: 14px; color: #444; padding: 8px 0 5px 0; }}
-    .bclouds-prod-price {{ font-size: 14px; font-weight: 700; font-size: 16px; padding: 5px 0;
+    .bclouds-prod-price {{ font-size: 14px; font-weight: 700; font-size: 16px;
  }}
 
     /* 🔥 GLOW ANIMATION (Properly Escaped for Python) */
