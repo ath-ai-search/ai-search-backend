@@ -767,7 +767,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         display: flex;
         width: 1495px;
         max-width: 95%;
-        height: 500px;
+        height: 661px;
         background: white;
         border-radius: 8px;
         box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
@@ -792,7 +792,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 
     .bclouds-right-col {{ position: relative;
     flex: 1;
-    padding: 75px 32px 24px 32px;
+    padding: 65px 32px 24px 32px;
     overflow-y: auto;
     display: flex;
     flex-wrap: wrap;
@@ -800,7 +800,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     align-items: flex-start; }}
 
     .bclouds-prod-header h3 {{
-    margin-top: 21px;
+    margin-top: 10px;
 }}
 
     .bclouds-prod-header {{   display: flex;
@@ -813,7 +813,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     .bclouds-prod-header span {{
     display: inline-block;
     height: 35px;
-    margin-top: 14px;
+    margin-top: 10px;
     border: 1px solid #ccc;
     border-radius: 3px;
     padding: 5px 15px;
