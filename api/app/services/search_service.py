@@ -128,7 +128,7 @@ async def execute_search(request: SearchRequest):
     
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v36:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v40:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -171,6 +171,10 @@ async def execute_search(request: SearchRequest):
         
         if getattr(request.filters, "color", None):
             filters.append({"bool": {"should": [{"multi_match": {"query": c, "type": "phrase", "fields": ["color", "attributes*", "name"]}} for c in request.filters.color[:5]], "minimum_should_match": 1}})
+            
+        # 🟢 Added handling for Size filter to hit OpenSearch
+        if getattr(request.filters, "size", None):
+            filters.append({"bool": {"should": [{"multi_match": {"query": s, "type": "phrase", "fields": ["size", "attributes*", "name"]}} for s in request.filters.size[:5]], "minimum_should_match": 1}})
         
         if getattr(request.filters, "price", None):
             p_range = {}
@@ -341,20 +345,21 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
 
     YOUR TASK:
     Analyze the message. Decide if the user wants to:
-    1. REFINE the current search (e.g. they typed "red" or "under $100").
-    2. Start a NEW SEARCH (e.g. they typed "bags", or a phrase like "nike shoes red between $100 to $200").
+    1. REFINE the current search (e.g. they typed "red", "size 9", or "under $100").
+    2. Start a NEW SEARCH (e.g. they typed "bags").
 
     Output ONLY a valid JSON object matching this exact structure. Leave arrays completely empty [] if the user did not mention a filter.
     {{
         "intent": "refine" | "new_search",
-        "search_query": "The product and brand (e.g., 'nike shoes', 'apple laptop'). NEVER include colors or price in this field.",
+        "search_query": "The product and brand ONLY (e.g., 'nike shoes'). NEVER include colors, sizes, or price in this field.",
         "filters": {{
             "color": [], 
+            "size": [], // Extract any numbers/sizes (e.g., ["8", "9", "XL", "Small"])
             "price": {{"min": null, "max": null}}
         }},
-        "ai_message": "Friendly 1-sentence reply. E.g. 'Searching for red Nike shoes between $100 and $200!'",
+        "ai_message": "Friendly 1-sentence reply WITH FUN EMOJIS! E.g. 'Searching for size 9 flip flops! 🩴✨'",
         "suggestions": [
-            "Generate 3 to 4 related follow-up search queries the user could click next, formatted as natural statements like 'Find bags under $200' or 'Show me running shoes'"
+            "Generate 3 to 4 related follow-up search queries..."
         ]
     }}
     """
@@ -384,10 +389,12 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         
         new_filters_obj.color = []
         new_filters_obj.category = []
+        new_filters_obj.size = [] # Ensure initialized
         
         if parsed_intent.get("intent") == "refine" and current_state.filters:
             new_filters_obj.category = current_state.filters.category or []
             new_filters_obj.color = current_state.filters.color or []
+            new_filters_obj.size = current_state.filters.size or []
             new_filters_obj.price = current_state.filters.price
             new_filters_obj.in_stock = current_state.filters.in_stock
 
@@ -396,6 +403,10 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         if extracted_filters.get("color"):
             colors = [str(c).lower() for c in extracted_filters["color"] if str(c).lower() not in bad_words]
             new_filters_obj.color = list(set(new_filters_obj.color + colors))
+            
+        if extracted_filters.get("size"):
+            sizes = [str(s).upper() for s in extracted_filters["size"] if str(s).lower() not in bad_words]
+            new_filters_obj.size = list(set(new_filters_obj.size + sizes))
             
         if extracted_filters.get("price"):
             p_data = extracted_filters["price"]
@@ -412,7 +423,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             
         ai_reply = parsed_intent.get("ai_message", "")
         if not ai_reply or not isinstance(ai_reply, str):
-            ai_reply = "Here are the matches I found."
+            ai_reply = "Here are the matches I found! 🌟"
             
         suggestions = parsed_intent.get("suggestions", [])
         if not isinstance(suggestions, list):
@@ -431,8 +442,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         fail_results = await execute_search(current_state)
         if "ai_message" in fail_results:
             del fail_results["ai_message"]
-        return AIAssistantResponse(**fail_results, ai_message="Sorry, I encountered an error.", suggestions=["Show me shoes", "I'm looking for bags"])
-
+        return AIAssistantResponse(**fail_results, ai_message="Sorry, I encountered an error. 🚧", suggestions=["Show me shoes", "I'm looking for bags"])
 
 # =========================================================================
 # 🔎 AUTOCOMPLETE ROUTE
@@ -708,13 +718,13 @@ async def generate_ai_welcome(current_query: str):
     Generate a highly dynamic, conversational welcome message and 3-4 clickable suggestion chips.
     
     RULES:
-    1. If CURRENT SEARCH CONTEXT is empty (or ""), write a general, stylish welcome. Suggest popular categories. E.g., "Welcome! Ready to explore some great fashion finds?"
-    2. If CURRENT SEARCH CONTEXT contains a product (e.g., "iphone" or "dress"), acknowledge it and offer highly relevant refinements or complementary accessories specifically for that product! E.g., for "iphone", suggest "Show iPhone cases" or "Compare iPhone models". For "dress", suggest "Show summer dresses" or "Party dresses".
+    1. If CURRENT SEARCH CONTEXT is empty (or ""), write a general, stylish welcome. E.g., "Welcome! Ready to explore some great fashion finds? ✨"
+    2. If CURRENT SEARCH CONTEXT contains a product, acknowledge it and act as a personal stylist by cross-selling complementary items! 
     3. The "suggestions" array MUST contain 3 to 4 realistic, clickable follow-up questions formatted as natural user requests.
     
     Output ONLY a valid JSON object matching this structure:
     {{
-        "ai_message": "Your conversational welcome text.",
+        "ai_message": "Your conversational welcome text WITH 1 OR 2 RELEVANT EMOJIS! 🛍️",
         "suggestions": ["Suggestion 1", "Suggestion 2", "Suggestion 3"]
     }}
     """
@@ -730,13 +740,13 @@ async def generate_ai_welcome(current_query: str):
         parsed = json.loads(llm_response.choices[0].message.content)
         
         return {
-            "ai_message": parsed.get("ai_message", "Welcome to bclouds! How can I help you today?"),
+            "ai_message": parsed.get("ai_message", "Welcome to bclouds! How can I help you today? ✨"),
             "suggestions": parsed.get("suggestions", ["Show me new arrivals", "Find shoes", "I need a dress"])[:4]
         }
         
     except Exception as e:
         logger.error(f"❌ AI Welcome Error: {e}")
         return {
-            "ai_message": "Welcome to bclouds! Ready to explore some great finds?",
+            "ai_message": "Welcome to bclouds! Ready to explore some great finds? 🛍️",
             "suggestions": ["Show me dresses", "Find shoes", "Looking for bags"]
         }

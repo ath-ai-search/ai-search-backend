@@ -16,6 +16,7 @@ class Filters(BaseModel):
     color: Optional[List[str]] = None
     brand: Optional[List[str]] = None 
     gender: Optional[List[str]] = None 
+    size: Optional[List[str]] = None # 🟢 NEW: Added size filtering!
 
 class SearchRequest(BaseModel):
     query: str
@@ -28,7 +29,6 @@ class AIAssistantRequest(BaseModel):
     chat_message: str
     current_state: SearchRequest
 
-# 🚀 NEW: Lightweight request for the dynamic welcome
 class AIWelcomeRequest(BaseModel):
     current_query: str
 
@@ -51,7 +51,6 @@ class AIAssistantResponse(SearchResponse):
     updated_filters: Optional[Dict[str, Any]] = None
     suggestions: Optional[List[str]] = [] 
 
-# 🚀 NEW: Lightweight response for the dynamic welcome
 class AIWelcomeResponse(BaseModel):
     ai_message: str
     suggestions: List[str]
