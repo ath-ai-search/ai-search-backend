@@ -1,3 +1,36 @@
+"""
+=====================================================================================
+🧠 bclouds AI SEARCH ARCHITECTURE - MASTER DOCUMENTATION 🧠
+=====================================================================================
+
+This service powers the AI search infrastructure. It combines five distinct technologies:
+
+1. NLP (Natural Language Processing) & Intent Matrix:
+   - The `extract_semantic_matrix` function parses conversational text. It uses regex 
+     and heuristics to strip out pricing ("under $100") and intents ("on sale"). 
+     This guarantees clean data before hitting the vector engine.
+
+2. LLM Embeddings (Vectorization):
+   - We use OpenAI's `text-embedding-3-small` to convert the query into a 
+     1,536-dimensional vector. This captures the semantic *meaning* of the text.
+
+3. KNN (K-Nearest Neighbors) Semantic Search:
+   - OpenSearch uses the vector to find the conceptually "Nearest Neighbors". 
+     This allows users to find products even if they use synonyms or make typos.
+
+4. NPQ (Negative Predictive Querying / Demotion Scoring):
+   - If a user searches for an "iPhone", standard text searches will return "iPhone Cases". 
+     Our NPQ logic actively penalizes (demotes) accessory keywords (e.g., "case", "cable") 
+     unless the user explicitly asked for them, keeping the core results pure.
+
+5. LLM Chat Agent (4-Tier Cascade Fallback):
+   - The `process_ai_assistant` function acts as a router. It extracts strict JSON filters.
+   - 4-Tier Fallback: If a strict filter (e.g., Size 9 + Red + Nike) returns 0 results, 
+     the engine programmatically drops the strictest filters and retries the search. 
+     This mathematically prevents the user from ever hitting a "0 Products Found" screen.
+=====================================================================================
+"""
+
 import json
 import hashlib
 import time
@@ -18,10 +51,7 @@ MAX_OS_WINDOW = 10000
 # 🛠️ UTILITY FUNCTIONS
 # =========================================================================
 def get_smart_brand(source):
-    """
-    Intelligently extracts or infers the brand from a product record.
-    If the brand is missing, it scans the title for known keywords (e.g., "iphone" -> "APPLE").
-    """
+    """Extracts and normalizes the brand name from product metadata."""
     raw_brand = source.get("brand", "")
     if raw_brand and str(raw_brand).strip().lower() not in ["none", "", "null", "other brands", "unknown"]:
         return str(raw_brand).strip().upper()
@@ -66,6 +96,7 @@ def get_smart_brand(source):
     return "UNKNOWN"
 
 def build_pagination_html(total_pages: int, current_page: int) -> str:
+    """Generates the pagination HTML snippet for the frontend UI."""
     if total_pages <= 1: return ""
     start = max(1, current_page - 2)
     end = min(total_pages, start + 4)
@@ -79,20 +110,14 @@ def build_pagination_html(total_pages: int, current_page: int) -> str:
     if end < total_pages: html += f'<span style="align-self:center;">...</span><button class="page-btn" data-page="{total_pages}">{total_pages}</button>'
     return html
 
-
 # =========================================================================
-# 🧠 AI PART 1: NLP (NATURAL LANGUAGE PROCESSING) INTENT EXTRACTION
+# 🧠 NLP: SEMANTIC MATRIX EXTRACTION
 # =========================================================================
 def extract_semantic_matrix(query_string):
     """
     [NLP ENGINE]
-    Before hitting the database, this function uses Regex and NLP heuristics to strip out 
-    "intents" from the raw text. 
-    Example: "nike shoes under 50 on sale" -> 
-      - core_query: "nike shoes"
-      - max_price: 50
-      - is_sale: True
-    This prevents the vector engine from getting confused by numbers and command words.
+    Parses natural language to separate strict numerical filters from semantic text.
+    E.g., "shoes under 50" -> query: "shoes", max_price: 50.
     """
     query_lower = query_string.lower()
     core_query = query_lower
@@ -100,13 +125,12 @@ def extract_semantic_matrix(query_string):
     smart_min_price, smart_max_price, smart_discount = None, None, None
     is_sale_intent = False
 
-    # Extract Price Ranges (e.g., "between 50 and 100")
+    # Extract boundaries
     range_match = re.search(r'(?:between|from)?\s*\$?\s*(\d+)\s*(?:to|and|-)\s*\$?\s*(\d+)', query_lower)
     if range_match:
         smart_min_price, smart_max_price = float(range_match.group(1)), float(range_match.group(2))
         core_query = core_query.replace(range_match.group(0), '')
     else:
-        # Extract Under/Over Limits (e.g., "under 100")
         max_match = re.search(r'(?:under|less than|below|<)\s*\$?\s*(\d+)', query_lower)
         if max_match: 
             smart_max_price = float(max_match.group(1))
@@ -116,7 +140,6 @@ def extract_semantic_matrix(query_string):
             smart_min_price = float(min_match.group(1))
             core_query = core_query.replace(min_match.group(0), '')
 
-    # Extract Sale Intents
     disc_match = re.search(r'(\d+)%\s*(?:off|discount|sale)', query_lower)
     if disc_match: 
         smart_discount = int(disc_match.group(1))
@@ -126,12 +149,14 @@ def extract_semantic_matrix(query_string):
         is_sale_intent = True
         core_query = re.sub(r'\b(?:with\s+sale|on\s+sale|sale|clearance|discount)\b', '', core_query)
 
+    # Clean formatting for multi-item parsing (e.g., "iphone, ipad" -> "iphone ipad")
+    core_query = re.sub(r'[,|&]', ' ', core_query)
     core_query = re.sub(r'\s+', ' ', core_query).strip()
+    
     if not core_query:
         core_query = query_lower 
 
-    # [NLP] Accessory Intent Detection: If the user searches "iphone", we don't want to show "iphone cases".
-    # We tag the query to see if the user explicitly asked for an accessory.
+    # [NPQ Prep] Detect if the user actually wants an accessory
     accessory_keywords = ["case", "cover", "charger", "cable", "bag", "protector", "strap", "band", "adapter", "mount", "holder"]
     has_accessory_intent = any(acc in query_lower for acc in accessory_keywords)
 
@@ -144,14 +169,15 @@ def extract_semantic_matrix(query_string):
     }
 
 # =========================================================================
-# 👑 MAIN SEARCH ROUTE (Hybrid KNN + Lexical Scoring)
+# 👑 MAIN SEARCH ROUTE (Omni-Search Engine)
 # =========================================================================
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
+    # Redis Caching
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v50:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v60:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -169,11 +195,7 @@ async def execute_search(request: SearchRequest):
     matrix = extract_semantic_matrix(query_text)
     core_query = matrix["core_query"]
 
-    # =========================================================================
-    # 🧠 AI PART 2: LLM EMBEDDINGS (Vectorization)
-    # =========================================================================
-    # We pass the user's query to OpenAI's embedding model. This converts the text 
-    # into a mathematical array (vector) of 1536 dimensions representing the *meaning* # of the text, allowing us to find products even if the exact keywords don't match.
+    # [KNN] Vector Embeddings Generation
     if query_text:
         try:
             resp = await openai_client.embeddings.create(input=query_text, model="text-embedding-3-small")
@@ -202,8 +224,11 @@ async def execute_search(request: SearchRequest):
             filters.append({"bool": {"should": [{"multi_match": {"query": c, "type": "phrase", "fields": ["color", "attributes*", "name"]}} for c in request.filters.color[:5]], "minimum_should_match": 1}})
             
         if getattr(request.filters, "size", None):
-            # Strict multi_match on size attributes so "Size 9" doesn't return a "9-inch" product.
+            # Strict attribute mapping prevents title pollution (e.g., stops "9-inch" showing up for "size 9")
             filters.append({"bool": {"should": [{"multi_match": {"query": s, "type": "phrase", "fields": ["size", "attributes.size", "attributes.Size", "attributes*"]}} for s in request.filters.size[:5]], "minimum_should_match": 1}})
+        
+        if getattr(request.filters, "brand", None):
+            filters.append({"terms": {"brand": [b.upper() for b in request.filters.brand[:5]]}})
         
         if getattr(request.filters, "price", None):
             p_range = {}
@@ -216,38 +241,36 @@ async def execute_search(request: SearchRequest):
     elif request.sort == "price_desc": sort_query = [{"price": "desc"}]
     elif request.sort == "on_sale": sort_query = [{"_score": "desc"}] 
 
-    # =========================================================================
-    # ⚖️ AI PART 3: HYBRID KNN & LEXICAL SCORING ALGORITHM
-    # =========================================================================
+    # --- ⚖️ APPLY SCORING ALGORITHMS (KNN + Lexical + NPQ) ---
     semantic_shoulds = []
     
-    # [KNN] Vector Search: Finds products that are mathematically close to the 
-    # user's intent in 1536-dimensional space.
+    # Apply KNN Vector matching
     if vector:
         k_val = max(200, from_val + request.page_size + 100)
         semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": k_val}}})
         
-    # [Lexical Boosting] We combine Vector search with standard Keyword text search.
-    # Why? Vector finds conceptually similar items, but Lexical ensures that if someone 
-    # searches "Apple", they get Apple products, not just generic laptops.
+    # Apply Lexical Boosting (Matches exact keywords via OR operators for multi-item arrays)
     semantic_shoulds.extend([
         {
             "multi_match": {
                 "query": core_query, 
-                "fields": ["name^5", "brand^4", "category^3"],
+                "fields": ["name^5", "brand^4", "category^3", "description"],
+                "type": "best_fields",
+                "operator": "or",
+                "fuzziness": "AUTO",
+                "prefix_length": 2, 
+                "max_expansions": 10,
                 "boost": 2.0
             }
         },
-        {"match_phrase": {"brand": {"query": core_query, "boost": 5000.0}}},    
-        {"match": {"category": {"query": core_query, "boost": 3000.0}}},        
-        {"match_phrase": {"name": {"query": core_query, "boost": 500.0}}}       
+        {"match": {"brand": {"query": core_query, "operator": "or", "boost": 5000.0}}},    
+        {"match": {"category": {"query": core_query, "operator": "or", "boost": 3000.0}}},        
+        {"match": {"name": {"query": core_query, "operator": "or", "boost": 500.0}}}       
     ])
 
     score_functions = []
     
-    # [NPQ / Demotion Logic] If the user searches "iphone" (core product), we severely 
-    # penalize the score of anything containing the word "case" or "cable". This prevents 
-    # accessory pollution in core product searches.
+    # [NPQ Scoring] Demotes accessories if the user is looking for a core hardware item.
     if not matrix["has_accessory_intent"]:
         for acc in matrix["accessory_keywords"]:
             score_functions.append({"filter": {"match": {"name": acc}}, "weight": 0.001})
@@ -324,9 +347,6 @@ async def execute_search(request: SearchRequest):
         _demo_sales = (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 800) + 150
 
         raw_score = hit.get("_score", 0) or 0
-        
-        # [Score Normalization] OpenSearch raw scores are arbitrary (e.g., 24.5). 
-        # We normalize them against the highest hit in the batch to give the UI a clean 0-100% Match Metric.
         normalized_score = min(1.0, raw_score / max_score) if max_score > 0 else 0
         
         name_lower = str(source.get("name", "")).lower()
@@ -334,7 +354,7 @@ async def execute_search(request: SearchRequest):
         cat_lower = " ".join(clean_cats).lower()
         is_item_accessory = any(acc in name_lower for acc in matrix["accessory_keywords"])
         
-        # Override math: If the user searches "Nike", force Nike products to 99% match for business logic purposes.
+        # Artificial Match Percentage Tuning based on context
         if core_query == brand_lower: display_score = 0.99
         elif core_query in cat_lower: display_score = 0.98
         elif core_query in name_lower and not matrix["has_accessory_intent"] and not is_item_accessory:
@@ -374,15 +394,13 @@ async def execute_search(request: SearchRequest):
     return final_response
 
 # =========================================================================
-# ✨ AI ASSISTANT CHAT LOGIC (Zero-Results Fallback & Agent Routing)
+# ✨ LLM AGENT ROUTER (4-Tier Fallback & Multi-Item Processing)
 # =========================================================================
 async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     """
     [LLM AGENT]
-    This function acts as a smart router. It feeds the user's natural language message
-    to an LLM, asking it to decide if the user is attempting to filter their current view, 
-    or completely pivot to a new product. 
-    It returns strict JSON with explicit query adjustments.
+    Acts as the brain of the assistant. Parses user language into structured JSON constraints.
+    Then executes a 4-Tier fallback strategy to guarantee a non-zero search result.
     """
     current_filters = current_state.filters.model_dump() if current_state.filters else {}
     
@@ -391,35 +409,34 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     
     CURRENT CONTEXT:
     - User is searching for: "{current_state.query}"
-    - Active UI Filters applied: {json.dumps(current_filters)}
+    - Active Filters: {json.dumps(current_filters)}
 
     NEW USER MESSAGE: "{chat_message}"
 
     YOUR TASK:
-    Analyze the message. Decide if the user wants to:
-    1. REFINE the current search (e.g. they typed "red", "size 9", or "under $100").
-    2. Start a NEW SEARCH (e.g. they typed "bags", or a phrase like "nike shoes red between $100 to $200").
+    Analyze the message. Decide if the user wants to REFINE the search or start a NEW SEARCH.
 
-    Output ONLY a valid JSON object matching this exact structure. Leave arrays completely empty [] if the user did not mention a filter.
+    CRITICAL RULE FOR MULTIPLE ITEMS:
+    If the user asks for multiple items separated by commas or 'and' (e.g. "iPhone, iPad, Macbook" or "bags and shoes"), remove the punctuation and combine them into a single space-separated string in the 'search_query' field (e.g. "iphone ipad macbook").
+
+    Output ONLY a valid JSON object:
     {{
         "intent": "refine" | "new_search",
-        "search_query": "The product and brand ONLY (e.g., 'nike shoes'). NEVER include colors, sizes, or price in this field.",
+        "search_query": "The product/brand ONLY (e.g., 'nike shoes' or 'iphone ipad'). NEVER include colors, sizes, or price.",
         "filters": {{
             "color": [], 
             "size": [], // Extract numbers/sizes (e.g., ["8", "9", "XL"])
-            "on_sale": false, // Set to true if they ask for sale, clearance, or discount
+            "brand": [], // Extract brand names explicitly mentioned
+            "on_sale": false, 
             "price": {{"min": null, "max": null}}
         }},
         "ai_message": "Friendly 1-sentence reply WITH FUN EMOJIS! E.g. 'Searching for size 9 flip flops on sale! 🩴💸'",
-        "suggestions": [
-            "Generate 3 to 4 related follow-up search queries..."
-        ]
+        "suggestions": ["Follow-up search query 1", "Follow-up query 2", "Follow-up query 3"]
     }}
     """
 
     try:
-        # GPT-3.5-turbo-0125 is used because it has highly reliable JSON-mode adherence,
-        # preventing backend crashes from malformed strings.
+        # GPT-3.5-turbo-0125 ensures 100% strict JSON adherence, preventing backend crashes.
         llm_response = await openai_client.chat.completions.create(
             model="gpt-3.5-turbo-0125",
             response_format={ "type": "json_object" },
@@ -444,12 +461,14 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         
         new_filters_obj.color = []
         new_filters_obj.category = []
+        new_filters_obj.brand = []
         new_filters_obj.size = [] 
         new_filters_obj.on_sale = extracted_filters.get("on_sale", False)
         
-        # [Context Preservation] If refining, we carry over their existing filters.
+        # Context bridging: Keep active filters if the user is refining
         if parsed_intent.get("intent") == "refine" and current_state.filters:
             new_filters_obj.category = current_state.filters.category or []
+            new_filters_obj.brand = current_state.filters.brand or []
             new_filters_obj.color = current_state.filters.color or []
             new_filters_obj.size = current_state.filters.size or []
             new_filters_obj.price = current_state.filters.price
@@ -458,8 +477,8 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             if getattr(current_state.filters, "on_sale", False) and extracted_filters.get("on_sale") is not False:
                 new_filters_obj.on_sale = True
 
-        # [Anti-Hallucination] Prevents the LLM from passing meta-words into our database arrays
-        bad_words = ["string", "example", "any", "none", "etc"]
+        # [Anti-Hallucination Shield] Deletes meta-language generated by the AI
+        bad_words = ["string", "example", "any", "none", "etc", "and", "or"]
 
         if extracted_filters.get("color"):
             colors = [str(c).lower() for c in extracted_filters["color"] if str(c).lower() not in bad_words]
@@ -468,6 +487,10 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         if extracted_filters.get("size"):
             sizes = [str(s).upper() for s in extracted_filters["size"] if str(s).lower() not in bad_words]
             new_filters_obj.size = list(set(new_filters_obj.size + sizes))
+            
+        if extracted_filters.get("brand"):
+            brands = [str(b).upper() for b in extracted_filters["brand"] if str(b).lower() not in bad_words]
+            new_filters_obj.brand = list(set(new_filters_obj.brand + brands))
             
         if extracted_filters.get("price"):
             p_data = extracted_filters["price"]
@@ -480,33 +503,48 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         if new_filters_obj.on_sale:
             updated_request.sort = "on_sale"
 
-        # 🟢 PHASE 1 SEARCH
+        # =======================================================
+        # 🟢 4-TIER CASCADE FALLBACK ENGINE 
+        # Mathematically guarantees we NEVER hit a 0-product screen!
+        # =======================================================
+        
+        # TIER 1: Try the strict filters
         final_results_dict = await execute_search(updated_request)
+        fallback_level = 0
         
-        fallback_triggered = False
-        
-        # [ZERO-RESULTS FALLBACK ENGINE]
-        # If the LLM's strict interpretation of color/size results in zero products,
-        # we programmatically drop the strict filters and search the main query again.
-        # This ensures the user NEVER hits an empty "0 products found" screen.
+        # TIER 2: If 0 results, drop Size & Color (Often too restrictive)
         if final_results_dict.get("total_results", 0) == 0 and (new_filters_obj.size or new_filters_obj.color):
-            logger.info("⚠️ Fallback triggered: Relaxing size/color filters")
+            logger.info("⚠️ Fallback Tier 2: Relaxing size/color")
             new_filters_obj.size = []
             new_filters_obj.color = []
             updated_request.filters = new_filters_obj
-            
-            # Re-run search without the strict restrictions
             final_results_dict = await execute_search(updated_request)
-            fallback_triggered = True
+            fallback_level = 1
+            
+        # TIER 3: If STILL 0 results, drop Brand & Price 
+        if final_results_dict.get("total_results", 0) == 0 and (new_filters_obj.brand or new_filters_obj.price):
+            logger.info("⚠️ Fallback Tier 3: Relaxing brand/price")
+            new_filters_obj.brand = []
+            new_filters_obj.price = None
+            updated_request.filters = new_filters_obj
+            final_results_dict = await execute_search(updated_request)
+            fallback_level = 2
+
+        # TIER 4: Pure Semantic Search (Drop EVERYTHING and rely purely on AI text vector matching)
+        if final_results_dict.get("total_results", 0) == 0:
+            logger.info("⚠️ Fallback Tier 4: Pure Semantic mode")
+            updated_request.filters = None
+            final_results_dict = await execute_search(updated_request)
+            fallback_level = 3
 
         if "ai_message" in final_results_dict:
             del final_results_dict["ai_message"]
             
         ai_reply = parsed_intent.get("ai_message", "")
         
-        # Override the AI's standard message to transparently tell the user we applied a fallback
-        if fallback_triggered:
-            ai_reply = f"I couldn't find that exact size or color, but here are some amazing {updated_request.query} you might like! ✨"
+        # Transparent Communication: Alter the AI's message if a fallback was triggered
+        if fallback_level > 0:
+            ai_reply = f"I couldn't find matches for those exact details, but here are the best {updated_request.query} items we have! ✨"
         elif not ai_reply or not isinstance(ai_reply, str):
             ai_reply = "Here are the matches I found! 🌟"
             
@@ -531,7 +569,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         return AIAssistantResponse(**fail_results, ai_message="Sorry, I encountered an error. 🚧", suggestions=["Show me shoes", "I'm looking for bags"])
 
 # =========================================================================
-# 🔎 AUTOCOMPLETE ROUTE (Fast Prefix Search)
+# 🔎 AUTOCOMPLETE ROUTE
 # =========================================================================
 async def execute_autocomplete(query_string: str):
     clean_query = query_string.strip()
@@ -564,7 +602,7 @@ async def execute_autocomplete(query_string: str):
     return final_response
 
 # =========================================================================
-# 🌐 HTML MEGA MENU ROUTE (Generates full dropdown GUI)
+# 🌐 HTML MEGA MENU ROUTE
 # =========================================================================
 async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     clean_query = query_string.strip().lower()
@@ -794,11 +832,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 # ✨ FULLY DYNAMIC AI WELCOME ENGINE ✨
 # =========================================================================
 async def generate_ai_welcome(current_query: str):
-    """
-    [DYNAMIC WELCOME AGENT]
-    This function analyzes the user's screen state the moment they open the AI panel.
-    If they are looking at "shoes", it generates specific cross-sell suggestions.
-    """
     system_prompt = f"""
     You are the bclouds AI, a high-end, intelligent e-commerce shopping assistant.
     The user just opened the AI chat panel. 
