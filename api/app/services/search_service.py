@@ -791,8 +791,26 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     .bclouds-side-item:hover {{ background: #f5f5f5; border-radius: 4px; }}
 
     .bclouds-right-col {{ flex: 1; padding: 24px 32px; overflow-y: auto; }}
+    .bclouds-prod-header h3 {{
+    margin-top: 21px;
+}}
 
-    .bclouds-prod-header {{ display: flex; justify-content: space-between; margin-bottom: 16px; }}
+    .bclouds-prod-header {{   display: flex;
+    justify-content: space-between;
+    margin-bottom: 16px;
+    position: absolute;
+    width: calc(100% - 66px);
+    top: 12px; }}
+
+    .bclouds-prod-header span {{
+    display: inline-block;
+    height: 35px;
+    margin-top: 20px;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    padding: 5px 15px;
+    background-color: #f5f5f5;
+}}
     .bclouds-prod-row {{ display: flex; gap: 20px; padding: 16px 0; border-bottom: 1px solid #f5f5f5; }}
     .bclouds-prod-img {{ width: 60px; height: 60px; display: flex; align-items: center; justify-content: center; }}
     .bclouds-prod-img img {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
