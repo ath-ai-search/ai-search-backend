@@ -24,16 +24,19 @@ to guarantee a flawless, 0-dead-end user experience:
      pollute the results with "iPhone Cases". Our NPQ logic actively penalizes 
      (demotes) accessory keywords unless the user explicitly asked for them.
 
-5. The "Mixer" (Lexical Term Splitter):
-   - If a user searches for multiple distinct items ("Apple Watch, AirPods"), vector 
-     math tries to average them out. The Mixer actively splits the sentence into 
-     individual words and dynamically boosts them so both items appear together.
+5. 🔥 "The Equalizer" (Lexical Term Splitter):
+   - If a user searches for disjoint items ("macbook and iphone"), vector math tries 
+     to "average" them, usually dropping one. The Equalizer explicitly splits the 
+     query ("macbook | iphone") and applies a Constant Score Boost to both independently, 
+     mathematically forcing BOTH items to mix evenly on Page 1.
 
-6. LLM Chat Agent (4-Tier Cascade Fallback):
+6. 🔥 LLM Chat Agent (4-Tier Cascade Fallback):
    - The `process_ai_assistant` acts as the brain. It extracts strict JSON filters.
    - 4-Tier Fallback: If a strict filter (e.g., Size 9 + Red) returns 0 results, 
      the engine programmatically drops the strictest filters and retries the search 
      in the background. This mathematically prevents "0 Products Found" screens.
+   - Dynamic Acknowledgment: The AI dynamically rewrites its message to tell the user
+     exactly which filter it dropped to keep the UX transparent.
 =====================================================================================
 """
 
@@ -156,9 +159,7 @@ def extract_semantic_matrix(query_string):
         is_sale_intent = True
         core_query = re.sub(r'\b(?:with\s+sale|on\s+sale|sale|clearance|discount)\b', '', core_query)
 
-    # Clean formatting for multi-item parsing (e.g., "iphone, ipad" -> "iphone ipad")
-    core_query = re.sub(r'\s+', ' ', core_query).strip()
-    core_query = re.sub(r'[,|&]', ' ', core_query)
+    # Clean formatting, but DO NOT strip the Pipe character `|` out here, we need it for The Equalizer!
     core_query = re.sub(r'\s+', ' ', core_query).strip()
     
     if not core_query:
@@ -182,9 +183,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
+    # ⚡ V85 Redis Key: Flushes cache to activate The Equalizer
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v80:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v85:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -202,10 +204,18 @@ async def execute_search(request: SearchRequest):
     matrix = extract_semantic_matrix(query_text)
     core_query = matrix["core_query"]
 
-    # [KNN] Vector Embeddings Generation
-    if query_text:
+    # 🟢 THE EQUALIZER SETUP: Check if the AI router split the items using a pipe '|'
+    if "|" in core_query:
+        multi_items = [item.strip() for item in core_query.split("|") if item.strip()]
+        core_query_for_vector = " ".join(multi_items) # Give vector the combined string
+    else:
+        multi_items = [core_query]
+        core_query_for_vector = core_query
+
+    # Generate Embeddings
+    if core_query_for_vector:
         try:
-            resp = await openai_client.embeddings.create(input=query_text, model="text-embedding-3-small")
+            resp = await openai_client.embeddings.create(input=core_query_for_vector, model="text-embedding-3-small")
             vector = resp.data[0].embedding
         except Exception as e:
             logger.error(f"❌ OpenAI Embedding Failed: {e}")
@@ -247,7 +257,7 @@ async def execute_search(request: SearchRequest):
         
         if getattr(request.filters, "brand", None):
             filters.append({"terms": {"brand": [b.upper() for b in request.filters.brand[:5]]}})
-        
+            
         if getattr(request.filters, "price", None):
             p_range = {}
             if getattr(request.filters.price, "min", None) is not None: p_range["gte"] = request.filters.price.min
@@ -267,28 +277,21 @@ async def execute_search(request: SearchRequest):
         k_val = max(200, from_val + request.page_size + 100)
         semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": k_val}}})
         
-    semantic_shoulds.extend([
-        {
-            "multi_match": {
-                "query": core_query, 
-                "fields": ["name^5", "brand^4", "category^3", "description"],
-                "type": "best_fields",
-                "operator": "or",
-                "boost": 2.0
-            }
-        }
-    ])
-    
-    # 🟢 [THE MIXER] Lexical Term Splitter for Multi-Item Searches ("iphone macbook")
-    # This splits the search into individual words and forces OpenSearch to boost 
-    # results for EVERY word independently. This prevents Vector Math from averaging them out!
-    query_terms = [t.strip() for t in re.split(r'\s+', core_query) if len(t.strip()) > 2 and t.lower() not in ["and", "with", "for", "the", "mobile", "phone"]]
-    for term in query_terms:
+    # 🟢 THE EQUALIZER LOGIC
+    # By using a 'constant_score' for each individual item the user asked for (split by the pipe '|'), 
+    # we mathematically force OpenSearch to rank MacBooks and iPhones exactly evenly on Page 1!
+    for item in multi_items:
         semantic_shoulds.append({
-            "multi_match": {
-                "query": term,
-                "fields": ["name^5", "brand^4", "category^3"],
-                "boost": 250.0  # Massive boost to ensure both items bubble up!
+            "constant_score": {
+                "filter": {
+                    "multi_match": {
+                        "query": item, 
+                        "fields": ["name^5", "brand^4", "category^3", "description"],
+                        "type": "best_fields",
+                        "fuzziness": "AUTO"
+                    }
+                },
+                "boost": 1000.0 # Guaranteed top-tier placement for all discrete items
             }
         })
 
@@ -418,7 +421,7 @@ async def execute_search(request: SearchRequest):
     return final_response
 
 # =========================================================================
-# ✨ LLM AGENT ROUTER (4-Tier Fallback & Multi-Item Processing)
+# ✨ LLM AGENT ROUTER (4-Tier Fallback & The Equalizer Pipeline)
 # =========================================================================
 async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     """
@@ -440,13 +443,13 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     YOUR TASK:
     Analyze the message. Decide if the user wants to REFINE the search or start a NEW SEARCH.
 
-    CRITICAL RULE FOR MULTIPLE ITEMS:
-    If the user asks for multiple items separated by commas or 'and' (e.g. "iPhone, iPad, Macbook" or "bags and shoes"), remove the punctuation and combine them into a single space-separated string in the 'search_query' field (e.g. "iphone ipad macbook").
+    🔥 CRITICAL RULE FOR MULTIPLE DISJOINT ITEMS:
+    If the user explicitly asks for completely different products in the same message (e.g. "iPhone and MacBook" or "bags, shoes, and hats"), output them in 'search_query' separated by a pipe character '|' (e.g. "iphone | macbook"). Do NOT set any brand or category filters when doing this!
 
     Output ONLY a valid JSON object:
     {{
         "intent": "refine" | "new_search",
-        "search_query": "The product/brand ONLY (e.g., 'nike shoes' or 'iphone ipad'). NEVER include colors, sizes, or price.",
+        "search_query": "The product/brand ONLY (e.g., 'nike shoes' or 'iphone | macbook'). NEVER include colors, sizes, or price.",
         "filters": {{
             "color": [], 
             "size": [], // Extract numbers/sizes (e.g., ["8", "9", "XL"])
@@ -528,38 +531,38 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             updated_request.sort = "on_sale"
 
         # =======================================================
-        # 🟢 4-TIER CASCADE FALLBACK ENGINE 
-        # Mathematically guarantees we NEVER hit a 0-product screen!
+        # 🟢 4-TIER CASCADE FALLBACK ENGINE WITH DYNAMIC ACKNOWLEDGMENT
         # =======================================================
         
         # TIER 1: Try the strict filters
         final_results_dict = await execute_search(updated_request)
-        fallback_level = 0
+        dropped_filters = []
         
         # TIER 2: If 0 results, drop Size & Color (Often too restrictive)
         if final_results_dict.get("total_results", 0) == 0 and (new_filters_obj.size or new_filters_obj.color):
             logger.info("⚠️ Fallback Tier 2: Relaxing size/color")
+            if new_filters_obj.size: dropped_filters.append("size")
+            if new_filters_obj.color: dropped_filters.append("color")
             new_filters_obj.size = []
             new_filters_obj.color = []
             updated_request.filters = new_filters_obj
             final_results_dict = await execute_search(updated_request)
-            fallback_level = 1
             
         # TIER 3: If STILL 0 results, drop Brand & Price 
         if final_results_dict.get("total_results", 0) == 0 and (new_filters_obj.brand or new_filters_obj.price):
             logger.info("⚠️ Fallback Tier 3: Relaxing brand/price")
+            if new_filters_obj.brand: dropped_filters.append("brand")
+            if new_filters_obj.price: dropped_filters.append("price constraints")
             new_filters_obj.brand = []
             new_filters_obj.price = None
             updated_request.filters = new_filters_obj
             final_results_dict = await execute_search(updated_request)
-            fallback_level = 2
 
-        # TIER 4: Pure Semantic Search (Drop EVERYTHING and rely purely on AI text vector matching)
+        # TIER 4: Pure Semantic Search (Drop EVERYTHING)
         if final_results_dict.get("total_results", 0) == 0:
             logger.info("⚠️ Fallback Tier 4: Pure Semantic mode")
             updated_request.filters = None
             final_results_dict = await execute_search(updated_request)
-            fallback_level = 3
 
         if "ai_message" in final_results_dict:
             del final_results_dict["ai_message"]
@@ -567,8 +570,9 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         ai_reply = parsed_intent.get("ai_message", "")
         
         # [Fallback Messaging] Transparent Communication to the user if we adjusted their request
-        if fallback_level > 0:
-            ai_reply = f"I couldn't find matches for those exact details, but here are the best {updated_request.query} items we have! ✨"
+        if dropped_filters:
+            dropped_str = " or ".join(dropped_filters)
+            ai_reply = f"I couldn't find exact matches for that {dropped_str}, but here are the best {updated_request.query.replace('|', ' and ')} items we have in stock! ✨"
         elif not ai_reply or not isinstance(ai_reply, str):
             ai_reply = "Here are the matches I found! 🌟"
             
@@ -579,7 +583,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         return AIAssistantResponse(
             **final_results_dict, 
             ai_message=ai_reply, 
-            updated_query=updated_request.query, 
+            updated_query=updated_request.query.replace("|", " "), # Clean UI display
             updated_filters=new_filters_obj.model_dump(),
             updated_sort=updated_request.sort, 
             suggestions=suggestions[:4]
