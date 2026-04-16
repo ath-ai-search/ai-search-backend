@@ -813,20 +813,22 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 
     master_html = f"""
     <style>
-    .bclouds-mega-menu {{
-    display: flex;
-    width: 1495px;
-    max-width: 95%;
-    height: 500px;
-    background: white;
-    border-radius: 8px;
-    box-shadow: 0 10px 40px rgba(0,0,0,0.15);
-    font-family: 'Inter', sans-serif;
-    text-align: left;
-    overflow: hidden;
-    border: 1px solid #e5e7eb;
-    margin: 0 auto;
-}}
+   .bclouds-mega-menu {{
+    display: -webkit-box;
+    display: -ms-flexbox;
+    display: flex;
+    width: 1495px;
+    max-width: 95%;
+    height: 500px;
+    background: white;
+    border-radius: 8px;
+    -webkit-box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+    font-family: 'Inter', sans-serif;
+    text-align: left;
+    overflow: hidden;
+    border: 1px solid #e5e7eb;
+    margin: 133px auto 0;}}
         .bclouds-left-col {{ width: 320px; background: #fdfdfd; padding: 24px; border-right: 1px solid #f0f0f0; overflow-y: auto; }}
         .bclouds-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); width: 100%; text-align: left; font-family: inherit; }}
         .bclouds-assistant-box:hover {{ border-color: #d1d5db; box-shadow: 0 4px 6px rgba(0,0,0,0.05); background: #fdfdfd; }}
