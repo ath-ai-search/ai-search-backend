@@ -14,8 +14,8 @@ class Filters(BaseModel):
     category: Optional[List[str]] = None
     in_stock: Optional[bool] = None
     color: Optional[List[str]] = None
-    brand: Optional[List[str]] = None # Kept optional to prevent 422 cache errors
-    gender: Optional[List[str]] = None # Kept optional to prevent 422 cache errors
+    brand: Optional[List[str]] = None 
+    gender: Optional[List[str]] = None 
 
 class SearchRequest(BaseModel):
     query: str
@@ -27,6 +27,10 @@ class SearchRequest(BaseModel):
 class AIAssistantRequest(BaseModel):
     chat_message: str
     current_state: SearchRequest
+
+# 🚀 NEW: Lightweight request for the dynamic welcome
+class AIWelcomeRequest(BaseModel):
+    current_query: str
 
 # =========================================================================
 # 📤 RESPONSE MODELS
@@ -45,3 +49,9 @@ class AIAssistantResponse(SearchResponse):
     ai_message: Optional[str] = ""
     updated_query: Optional[str] = None
     updated_filters: Optional[Dict[str, Any]] = None
+    suggestions: Optional[List[str]] = [] 
+
+# 🚀 NEW: Lightweight response for the dynamic welcome
+class AIWelcomeResponse(BaseModel):
+    ai_message: str
+    suggestions: List[str]

@@ -128,7 +128,7 @@ async def execute_search(request: SearchRequest):
     
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v30:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v36:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -146,9 +146,6 @@ async def execute_search(request: SearchRequest):
     matrix = extract_semantic_matrix(query_text)
     core_query = matrix["core_query"]
 
-    # =========================================================================
-    # 🧠 AI PART 2: LLM EMBEDDINGS
-    # =========================================================================
     if query_text:
         try:
             resp = await openai_client.embeddings.create(input=query_text, model="text-embedding-3-small")
@@ -156,9 +153,6 @@ async def execute_search(request: SearchRequest):
         except Exception as e:
             logger.error(f"❌ OpenAI Embedding Failed: {e}")
 
-    # =========================================================================
-    # 🛡️ HARD FILTERS
-    # =========================================================================
     filters = [{"term": {"in_stock": True}}]
     must_nots = []
     
@@ -188,9 +182,6 @@ async def execute_search(request: SearchRequest):
     if request.sort == "price_asc": sort_query = [{"price": "asc"}]
     elif request.sort == "price_desc": sort_query = [{"price": "desc"}]
 
-    # =========================================================================
-    # ⚖️ AI PART 3: THE "NUCLEAR OVERRIDES" FOR HYBRID SCORING
-    # =========================================================================
     semantic_shoulds = []
     
     if vector:
@@ -202,7 +193,7 @@ async def execute_search(request: SearchRequest):
             "multi_match": {
                 "query": core_query, 
                 "fields": ["name^5", "brand^4", "category^3"],
-                "boost": 2.0 # OS Fuzziness strictly disabled to prevent crashing
+                "boost": 2.0
             }
         },
         {"match_phrase": {"brand": {"query": core_query, "boost": 5000.0}}},    
@@ -214,14 +205,8 @@ async def execute_search(request: SearchRequest):
     
     if not matrix["has_accessory_intent"]:
         for acc in matrix["accessory_keywords"]:
-            score_functions.append({
-                "filter": {"match": {"name": acc}},
-                "weight": 0.001 
-            })
-            score_functions.append({
-                "filter": {"match": {"category": acc}},
-                "weight": 0.001 
-            })
+            score_functions.append({"filter": {"match": {"name": acc}}, "weight": 0.001})
+            score_functions.append({"filter": {"match": {"category": acc}}, "weight": 0.001})
 
     if vector or core_query:
         query_body = {
@@ -244,7 +229,6 @@ async def execute_search(request: SearchRequest):
     else:
         query_body = {"query": {"bool": {"must": [{"match_all": {}}], "filter": filters, "must_not": must_nots}}}
 
-    # 🟢 OS Ags reduced to just Category since Brand filter is gone from the UI
     os_query = {
         "from": from_val, "size": request.page_size,
         **query_body,
@@ -341,40 +325,41 @@ async def execute_search(request: SearchRequest):
     return final_response
 
 # =========================================================================
-# ✨ AI ASSISTANT CHAT LOGIC (DYNAMIC SHIFTING) ✨
+# ✨ AI ASSISTANT CHAT LOGIC (DYNAMIC SHIFTING & SUGGESTIONS) ✨
 # =========================================================================
 async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     current_filters = current_state.filters.model_dump() if current_state.filters else {}
     
-    # 🟢 NO COMMENTS IN PROMPT: Guarantees json.loads() never crashes
     system_prompt = f"""
-    You are ATHERA, an intelligent e-commerce AI shopping assistant.
+    You are the bclouds AI, an intelligent e-commerce shopping assistant.
     
     CURRENT CONTEXT:
     - User is searching for: "{current_state.query}"
-    - Active UI Sidebar Filters applied: {json.dumps(current_filters)}
+    - Active UI Filters applied: {json.dumps(current_filters)}
 
     NEW USER MESSAGE: "{chat_message}"
 
     YOUR TASK:
     Analyze the message. Decide if the user wants to:
-    1. REFINE the current search.
-    2. Start a NEW SEARCH.
+    1. REFINE the current search (e.g. they typed "red" or "under $100").
+    2. Start a NEW SEARCH (e.g. they typed "bags", or a phrase like "nike shoes red between $100 to $200").
 
-    Output ONLY a valid JSON object matching this exact structure. Leave arrays completely empty [] if the user did not explicitly mention a filter. DO NOT output placeholder text.
+    Output ONLY a valid JSON object matching this exact structure. Leave arrays completely empty [] if the user did not mention a filter.
     {{
-        "intent": "refine",
-        "search_query": "The core product noun ONLY.",
+        "intent": "refine" | "new_search",
+        "search_query": "The product and brand (e.g., 'nike shoes', 'apple laptop'). NEVER include colors or price in this field.",
         "filters": {{
             "color": [], 
             "price": {{"min": null, "max": null}}
         }},
-        "ai_message": "Friendly 1-sentence reply."
+        "ai_message": "Friendly 1-sentence reply. E.g. 'Searching for red Nike shoes between $100 and $200!'",
+        "suggestions": [
+            "Generate 3 to 4 related follow-up search queries the user could click next, formatted as natural statements like 'Find bags under $200' or 'Show me running shoes'"
+        ]
     }}
     """
 
     try:
-        # 🟢 FORCE 0125 MODEL: Optimized for strict JSON adherence
         llm_response = await openai_client.chat.completions.create(
             model="gpt-3.5-turbo-0125",
             response_format={ "type": "json_object" },
@@ -422,19 +407,23 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
 
         final_results_dict = await execute_search(updated_request)
         
-        # 🟢 PREVENT CRASH: Remove empty ai_message before initializing Pydantic model
         if "ai_message" in final_results_dict:
             del final_results_dict["ai_message"]
             
         ai_reply = parsed_intent.get("ai_message", "")
         if not ai_reply or not isinstance(ai_reply, str):
-            ai_reply = "Here are the highly matched products I found for you."
+            ai_reply = "Here are the matches I found."
+            
+        suggestions = parsed_intent.get("suggestions", [])
+        if not isinstance(suggestions, list):
+            suggestions = ["Show me shoes", "Find jackets", "I'm looking for bags"]
         
         return AIAssistantResponse(
             **final_results_dict, 
             ai_message=ai_reply, 
             updated_query=updated_request.query, 
-            updated_filters=new_filters_obj.model_dump() 
+            updated_filters=new_filters_obj.model_dump(),
+            suggestions=suggestions[:4]
         )
 
     except Exception as e:
@@ -442,7 +431,8 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         fail_results = await execute_search(current_state)
         if "ai_message" in fail_results:
             del fail_results["ai_message"]
-        return AIAssistantResponse(**fail_results, ai_message="Sorry, I encountered an error. Please try adjusting your search terms!")
+        return AIAssistantResponse(**fail_results, ai_message="Sorry, I encountered an error.", suggestions=["Show me shoes", "I'm looking for bags"])
+
 
 # =========================================================================
 # 🔎 AUTOCOMPLETE ROUTE
@@ -523,7 +513,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                         "query": core_query, 
                         "fields": ["name^5", "brand^4", "category^3"],
                         "operator": "and",
-                        "boost": 5.0 # OS Fuzziness disabled
+                        "boost": 5.0
                     }
                 })
             
@@ -583,6 +573,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         dynamic_cats = []
 
     products_html = ""
+    dynamic_brands_set = set()
     
     if not hits:
         products_html = "<div style='padding: 20px; color: #666;'>No products found.</div>"
@@ -591,6 +582,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             source = hit.get("_source", {})
             name = source.get("name", "Unknown Product")
             brand_display = get_smart_brand(source)
+            if brand_display != "UNKNOWN BRAND" and brand_display != "UNKNOWN": dynamic_brands_set.add(brand_display)
             price = float(source.get("price", 0.0))
             raw_sale = source.get("sale_price")
             sale_price = float(raw_sale) if raw_sale is not None else 0.0
@@ -599,20 +591,20 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 
             if sale_price > 0 and sale_price < price:
                 badge_html = '<div style="position: absolute; top: -6px; right: -6px; background: #CC0000; color: white; font-size: 9px; font-weight: bold; padding: 2px 6px; border-radius: 3px; z-index: 10; text-transform: uppercase; letter-spacing: 0.5px;">Sale</div>'
-                price_html = f'<div class="ath-prod-price"><span style="color: #CC0000; font-weight: 800;">${sale_price:.2f}</span> <del style="color: #888; font-size: 13px; font-weight: 600; margin-left: 4px;">${price:.2f}</del></div>'
+                price_html = f'<div class="bclouds-prod-price"><span style="color: #CC0000; font-weight: 800;">${sale_price:.2f}</span> <del style="color: #888; font-size: 13px; font-weight: 600; margin-left: 4px;">${price:.2f}</del></div>'
             else:
                 badge_html = ""
-                price_html = f'<div class="ath-prod-price">${price:.2f}</div>'
+                price_html = f'<div class="bclouds-prod-price">${price:.2f}</div>'
 
             products_html += f"""
-            <div class="ath-prod-row" onclick="document.getElementById('search_query').value='{name}'; document.getElementById('searchBtn').click();">
-                <div class="ath-prod-img" style="position: relative;">
+            <div class="bclouds-prod-row" onclick="document.getElementById('search_query').value='{name}'; document.getElementById('searchBtn').click();">
+                <div class="bclouds-prod-img" style="position: relative;">
                     {badge_html}
                     <img src="{img_url}" alt="{name}">
                 </div>
-                <div class="ath-prod-info">
-                    <div class="ath-prod-brand">{brand_display}</div>
-                    <div class="ath-prod-title" title="{name}">{name}</div>
+                <div class="bclouds-prod-info">
+                    <div class="bclouds-prod-brand">{brand_display}</div>
+                    <div class="bclouds-prod-title" title="{name}">{name}</div>
                     {price_html}
                 </div>
             </div>
@@ -621,10 +613,10 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     sidebar_html = ""
     if clean_query:
         sidebar_html += f"""
-        <button id='ai-toggle' type='button' class='ath-assistant-box'>
-            <div class='ath-assistant-left'>
-                <i class='fas fa-magic ath-assistant-icon'></i>
-                <div class='ath-assistant-text'>
+        <button id='ai-toggle' type='button' class='bclouds-assistant-box'>
+            <div class='bclouds-assistant-left'>
+                <i class='fas fa-magic bclouds-assistant-icon'></i>
+                <div class='bclouds-assistant-text'>
                     Open "<span>{clean_query}</span>"<br>in Assistant
                 </div>
             </div>
@@ -635,19 +627,19 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     if recent_searches:
         recent_list = recent_searches.split("||")[:3]
         if recent_list and recent_list[0]:
-            sidebar_html += "<div class='ath-side-title'>RECENT SEARCHES</div>"
+            sidebar_html += "<div class='bclouds-side-title'>RECENT SEARCHES</div>"
             for r in recent_list:
                 sidebar_html += f"""
-                <div class='ath-side-item' onclick='document.getElementById("search_query").value="{r}"; document.getElementById('searchBtn').click();'>
+                <div class='bclouds-side-item' onclick='document.getElementById("search_query").value="{r}"; document.getElementById('searchBtn').click();'>
                     <div style="display:flex; align-items:center; gap:12px;"><i class='far fa-clock'></i> <span>{r}</span></div>
                     <div style="display:flex; gap:8px; color:#999;"><i class="fas fa-arrow-up" style="transform: rotate(45deg); font-size:10px;"></i></div>
                 </div>"""
 
     if dynamic_cats:
-        sidebar_html += "<div class='ath-side-title' style='margin-top:24px;'>POPULAR SEARCHES</div>"
+        sidebar_html += "<div class='bclouds-side-title' style='margin-top:24px;'>POPULAR SEARCHES</div>"
         for c in dynamic_cats[:3]:
             sidebar_html += f"""
-            <div class='ath-side-item' onclick='document.getElementById("search_query").value="{c}"; document.getElementById('searchBtn').click();'>
+            <div class='bclouds-side-item' onclick='document.getElementById("search_query").value="{c}"; document.getElementById('searchBtn').click();'>
                 <div style='display:flex; align-items:center; gap:12px;'><i class='fas fa-search'></i> <span>{c}</span></div>
                 <i class="fas fa-arrow-up" style="transform: rotate(45deg); font-size:10px; color:#999;"></i>
             </div>
@@ -659,40 +651,40 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 
     master_html = f"""
     <style>
-        .ath-mega-menu {{ display: flex; width: 100%; max-width: 900px; height: 500px; background: white; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.15); font-family: 'Inter', sans-serif; text-align: left; overflow: hidden; border: 1px solid #e5e7eb; }}
-        .ath-left-col {{ width: 320px; background: #fdfdfd; padding: 24px; border-right: 1px solid #f0f0f0; overflow-y: auto; }}
-        .ath-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); width: 100%; text-align: left; font-family: inherit; }}
-        .ath-assistant-box:hover {{ border-color: #d1d5db; box-shadow: 0 4px 6px rgba(0,0,0,0.05); background: #fdfdfd; }}
-        .ath-assistant-left {{ display: flex; align-items: center; gap: 12px; }}
-        .ath-assistant-icon {{ font-size: 16px; color: #111; }}
-        .ath-assistant-text {{ font-size: 13px; font-weight: 500; color: #111; line-height: 1.4; }}
-        .ath-assistant-text span {{ font-style: italic; font-weight: 700; }}
-        .ath-side-title {{ font-size: 12px; font-weight: 700; color: #111; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }}
-        .ath-side-item {{ font-size: 14px; color: #111; padding: 10px 0; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: background 0.2s; }}
-        .ath-side-item i {{ color: #111; font-size: 14px; }}
-        .ath-side-item:hover {{ background: #f5f5f5; border-radius: 4px; }}
-        .ath-right-col {{ flex: 1; padding: 24px 32px; background: white; overflow-y: auto; }}
-        .ath-prod-header {{ display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px; }}
-        .ath-prod-header h3 {{ font-size: 14px; font-weight: 700; color: #111; text-transform: uppercase; letter-spacing: 0.5px; margin: 0; }}
-        .ath-prod-header span {{ font-size: 13px; color: #111; cursor: pointer; font-weight: 500; }}
-        .ath-prod-header span:hover {{ text-decoration: underline; }}
-        .ath-prod-row {{ display: flex; align-items: flex-start; gap: 20px; padding: 16px 0; border-bottom: 1px solid #f5f5f5; cursor: pointer; transition: 0.2s; }}
-        .ath-prod-row:hover {{ background: #fafafa; }}
-        .ath-prod-row:last-child {{ border-bottom: none; }}
-        .ath-prod-img {{ width: 60px; height: 60px; background: white; display: flex; align-items: center; justify-content: center; }}
-        .ath-prod-img img {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
-        .ath-prod-info {{ flex: 1; overflow: hidden; }}
-        .ath-prod-brand {{ font-size: 13px; font-weight: 800; color: #000; text-transform: uppercase; margin-bottom: 4px; letter-spacing: 0.5px; }}
-        .ath-prod-title {{ font-size: 14px; color: #444; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-        .ath-prod-price {{ font-size: 14px; font-weight: 700; color: #111; }}
+        .bclouds-mega-menu {{ display: flex; width: 100%; max-width: 900px; height: 500px; background: white; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.15); font-family: 'Inter', sans-serif; text-align: left; overflow: hidden; border: 1px solid #e5e7eb; }}
+        .bclouds-left-col {{ width: 320px; background: #fdfdfd; padding: 24px; border-right: 1px solid #f0f0f0; overflow-y: auto; }}
+        .bclouds-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); width: 100%; text-align: left; font-family: inherit; }}
+        .bclouds-assistant-box:hover {{ border-color: #d1d5db; box-shadow: 0 4px 6px rgba(0,0,0,0.05); background: #fdfdfd; }}
+        .bclouds-assistant-left {{ display: flex; align-items: center; gap: 12px; }}
+        .bclouds-assistant-icon {{ font-size: 16px; color: #111; }}
+        .bclouds-assistant-text {{ font-size: 13px; font-weight: 500; color: #111; line-height: 1.4; }}
+        .bclouds-assistant-text span {{ font-style: italic; font-weight: 700; }}
+        .bclouds-side-title {{ font-size: 12px; font-weight: 700; color: #111; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }}
+        .bclouds-side-item {{ font-size: 14px; color: #111; padding: 10px 0; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: background 0.2s; }}
+        .bclouds-side-item i {{ color: #111; font-size: 14px; }}
+        .bclouds-side-item:hover {{ background: #f5f5f5; border-radius: 4px; }}
+        .bclouds-right-col {{ flex: 1; padding: 24px 32px; background: white; overflow-y: auto; }}
+        .bclouds-prod-header {{ display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px; }}
+        .bclouds-prod-header h3 {{ font-size: 14px; font-weight: 700; color: #111; text-transform: uppercase; letter-spacing: 0.5px; margin: 0; }}
+        .bclouds-prod-header span {{ font-size: 13px; color: #111; cursor: pointer; font-weight: 500; }}
+        .bclouds-prod-header span:hover {{ text-decoration: underline; }}
+        .bclouds-prod-row {{ display: flex; align-items: flex-start; gap: 20px; padding: 16px 0; border-bottom: 1px solid #f5f5f5; cursor: pointer; transition: 0.2s; }}
+        .bclouds-prod-row:hover {{ background: #fafafa; }}
+        .bclouds-prod-row:last-child {{ border-bottom: none; }}
+        .bclouds-prod-img {{ width: 60px; height: 60px; background: white; display: flex; align-items: center; justify-content: center; }}
+        .bclouds-prod-img img {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
+        .bclouds-prod-info {{ flex: 1; overflow: hidden; }}
+        .bclouds-prod-brand {{ font-size: 13px; font-weight: 800; color: #000; text-transform: uppercase; margin-bottom: 4px; letter-spacing: 0.5px; }}
+        .bclouds-prod-title {{ font-size: 14px; color: #444; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+        .bclouds-prod-price {{ font-size: 14px; font-weight: 700; color: #111; }}
     </style>
 
-    <div class="ath-mega-menu">
-        <div class="ath-left-col">
+    <div class="bclouds-mega-menu">
+        <div class="bclouds-left-col">
             {sidebar_html}
         </div>
-        <div class="ath-right-col">
-            <div class="ath-prod-header">
+        <div class="bclouds-right-col">
+            <div class="bclouds-prod-header">
                 <h3>PRODUCTS</h3>
                 {see_all_text}
             </div>
@@ -701,3 +693,50 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     </div>
     """
     return {"html": master_html}
+
+# =========================================================================
+# ✨ FULLY DYNAMIC AI WELCOME ENGINE ✨
+# =========================================================================
+async def generate_ai_welcome(current_query: str):
+    system_prompt = f"""
+    You are the bclouds AI, a high-end, intelligent e-commerce shopping assistant.
+    The user just opened the AI chat panel. 
+    
+    CURRENT SEARCH CONTEXT: "{current_query}"
+    
+    YOUR TASK:
+    Generate a highly dynamic, conversational welcome message and 3-4 clickable suggestion chips.
+    
+    RULES:
+    1. If CURRENT SEARCH CONTEXT is empty (or ""), write a general, stylish welcome. Suggest popular categories. E.g., "Welcome! Ready to explore some great fashion finds?"
+    2. If CURRENT SEARCH CONTEXT contains a product (e.g., "iphone" or "dress"), acknowledge it and offer highly relevant refinements or complementary accessories specifically for that product! E.g., for "iphone", suggest "Show iPhone cases" or "Compare iPhone models". For "dress", suggest "Show summer dresses" or "Party dresses".
+    3. The "suggestions" array MUST contain 3 to 4 realistic, clickable follow-up questions formatted as natural user requests.
+    
+    Output ONLY a valid JSON object matching this structure:
+    {{
+        "ai_message": "Your conversational welcome text.",
+        "suggestions": ["Suggestion 1", "Suggestion 2", "Suggestion 3"]
+    }}
+    """
+
+    try:
+        llm_response = await openai_client.chat.completions.create(
+            model="gpt-3.5-turbo-0125",
+            response_format={ "type": "json_object" },
+            messages=[{"role": "system", "content": system_prompt}],
+            temperature=0.7 
+        )
+        
+        parsed = json.loads(llm_response.choices[0].message.content)
+        
+        return {
+            "ai_message": parsed.get("ai_message", "Welcome to bclouds! How can I help you today?"),
+            "suggestions": parsed.get("suggestions", ["Show me new arrivals", "Find shoes", "I need a dress"])[:4]
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ AI Welcome Error: {e}")
+        return {
+            "ai_message": "Welcome to bclouds! Ready to explore some great finds?",
+            "suggestions": ["Show me dresses", "Find shoes", "Looking for bags"]
+        }
