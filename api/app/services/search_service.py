@@ -811,89 +811,51 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     if total_products > 0:
         see_all_text = f"<span onclick='document.getElementById(\"search_query\").value=\"{clean_query}\"; document.getElementById(\"searchBtn\").click();'>See all {total_products:,} results &rarr;</span>"
 
-master_html = f"""
+    master_html = f"""
     <style>
-    .bclouds-mega-menu {{
-        display: -webkit-box;
-        display: -ms-flexbox;
-        display: flex;
-        width: 1495px;
-        max-width: 95%;
-        height: 500px;
-        background: white;
-        border-radius: 8px;
-        -webkit-box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
-        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
-        font-family: 'Inter', sans-serif;
-        text-align: left;
-        overflow: hidden;
-        border: 1px solid #e5e7eb;
-        margin: 133px auto 0;
-    }}
+   .bclouds-mega-menu {{
+    display: -webkit-box;
+    display: -ms-flexbox;
+    display: flex;
+    width: 1495px;
+    max-width: 95%;
+    height: 500px;
+    background: white;
+    border-radius: 8px;
+    -webkit-box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+    font-family: 'Inter', sans-serif;
+    text-align: left;
+    overflow: hidden;
+    border: 1px solid #e5e7eb;
+    margin: 133px auto 0;}}
     
-    .glowAni {{
-        --border-angle: 0deg;
-        border-radius: 12px;
-        width: 100px;
-        height: 100px;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        box-shadow: 0px 2px 4px hsl(0 0% 0% / 25%);
-        animation: border-angle-rotate 2s infinite linear;
-        border: 0.2rem solid transparent;
-        background: 
-            linear-gradient(white, white) padding-box,
-            conic-gradient(
-                from var(--border-angle),
-                oklch(100% 100% 0deg),
-                oklch(100% 100% 45deg),
-                oklch(100% 100% 90deg),
-                oklch(100% 100% 135deg),
-                oklch(100% 100% 180deg),
-                oklch(100% 100% 225deg),
-                oklch(100% 100% 270deg),
-                oklch(100% 100% 315deg),
-                oklch(100% 100% 360deg)
-            ) border-box;
-    }}
-
-    @keyframes border-angle-rotate {{
-        from {{ --border-angle: 0deg; }}
-        to {{ --border-angle: 360deg; }}
-    }}
-
-    @property --border-angle {{
-        syntax: "<angle>";
-        initial-value: 0deg;
-        inherits: false;
-    }}
-
-    .bclouds-left-col {{ width: 320px; background: #fdfdfd; padding: 24px; border-right: 1px solid #f0f0f0; overflow-y: auto; }}
-    .bclouds-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); width: 100%; text-align: left; font-family: inherit; }}
-    .bclouds-assistant-box:hover {{ border-color: #d1d5db; box-shadow: 0 4px 6px rgba(0,0,0,0.05); background: #fdfdfd; }}
-    .bclouds-assistant-left {{ display: flex; align-items: center; gap: 12px; }}
-    .bclouds-assistant-icon {{ font-size: 16px; color: #111; }}
-    .bclouds-assistant-text {{ font-size: 13px; font-weight: 500; color: #111; line-height: 1.4; }}
-    .bclouds-assistant-text span {{ font-style: italic; font-weight: 700; }}
-    .bclouds-side-title {{ font-size: 12px; font-weight: 700; color: #111; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }}
-    .bclouds-side-item {{ font-size: 14px; color: #111; padding: 10px 0; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: background 0.2s; }}
-    .bclouds-side-item i {{ color: #111; font-size: 14px; }}
-    .bclouds-side-item:hover {{ background: #f5f5f5; border-radius: 4px; }}
-    .bclouds-right-col {{ flex: 1; padding: 24px 32px; background: white; overflow-y: auto; }}
-    .bclouds-prod-header {{ display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px; }}
-    .bclouds-prod-header h3 {{ font-size: 14px; font-weight: 700; color: #111; text-transform: uppercase; letter-spacing: 0.5px; margin: 0; }}
-    .bclouds-prod-header span {{ font-size: 13px; color: #111; cursor: pointer; font-weight: 500; }}
-    .bclouds-prod-header span:hover {{ text-decoration: underline; }}
-    .bclouds-prod-row {{ display: flex; align-items: flex-start; gap: 20px; padding: 16px 0; border-bottom: 1px solid #f5f5f5; cursor: pointer; transition: 0.2s; }}
-    .bclouds-prod-row:hover {{ background: #fafafa; }}
-    .bclouds-prod-row:last-child {{ border-bottom: none; }}
-    .bclouds-prod-img {{ width: 60px; height: 60px; background: white; display: flex; align-items: center; justify-content: center; }}
-    .bclouds-prod-img img {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
-    .bclouds-prod-info {{ flex: 1; overflow: hidden; }}
-    .bclouds-prod-brand {{ font-size: 13px; font-weight: 800; color: #000; text-transform: uppercase; margin-bottom: 4px; letter-spacing: 0.5px; }}
-    .bclouds-prod-title {{ font-size: 14px; color: #444; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-    .bclouds-prod-price {{ font-size: 14px; font-weight: 700; color: #111; }}
+    
+        .bclouds-left-col {{ width: 320px; background: #fdfdfd; padding: 24px; border-right: 1px solid #f0f0f0; overflow-y: auto; }}
+        .bclouds-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); width: 100%; text-align: left; font-family: inherit; }}
+        .bclouds-assistant-box:hover {{ border-color: #d1d5db; box-shadow: 0 4px 6px rgba(0,0,0,0.05); background: #fdfdfd; }}
+        .bclouds-assistant-left {{ display: flex; align-items: center; gap: 12px; }}
+        .bclouds-assistant-icon {{ font-size: 16px; color: #111; }}
+        .bclouds-assistant-text {{ font-size: 13px; font-weight: 500; color: #111; line-height: 1.4; }}
+        .bclouds-assistant-text span {{ font-style: italic; font-weight: 700; }}
+        .bclouds-side-title {{ font-size: 12px; font-weight: 700; color: #111; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }}
+        .bclouds-side-item {{ font-size: 14px; color: #111; padding: 10px 0; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: background 0.2s; }}
+        .bclouds-side-item i {{ color: #111; font-size: 14px; }}
+        .bclouds-side-item:hover {{ background: #f5f5f5; border-radius: 4px; }}
+        .bclouds-right-col {{ flex: 1; padding: 24px 32px; background: white; overflow-y: auto; }}
+        .bclouds-prod-header {{ display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px; }}
+        .bclouds-prod-header h3 {{ font-size: 14px; font-weight: 700; color: #111; text-transform: uppercase; letter-spacing: 0.5px; margin: 0; }}
+        .bclouds-prod-header span {{ font-size: 13px; color: #111; cursor: pointer; font-weight: 500; }}
+        .bclouds-prod-header span:hover {{ text-decoration: underline; }}
+        .bclouds-prod-row {{ display: flex; align-items: flex-start; gap: 20px; padding: 16px 0; border-bottom: 1px solid #f5f5f5; cursor: pointer; transition: 0.2s; }}
+        .bclouds-prod-row:hover {{ background: #fafafa; }}
+        .bclouds-prod-row:last-child {{ border-bottom: none; }}
+        .bclouds-prod-img {{ width: 60px; height: 60px; background: white; display: flex; align-items: center; justify-content: center; }}
+        .bclouds-prod-img img {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
+        .bclouds-prod-info {{ flex: 1; overflow: hidden; }}
+        .bclouds-prod-brand {{ font-size: 13px; font-weight: 800; color: #000; text-transform: uppercase; margin-bottom: 4px; letter-spacing: 0.5px; }}
+        .bclouds-prod-title {{ font-size: 14px; color: #444; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+        .bclouds-prod-price {{ font-size: 14px; font-weight: 700; color: #111; }}
     </style>
 
     <div class="bclouds-mega-menu">
@@ -908,7 +870,9 @@ master_html = f"""
             {products_html}
         </div>
     </div>
-"""
+    """
+    return {"html": master_html}
+
 # =========================================================================
 # ✨ FULLY DYNAMIC AI WELCOME ENGINE ✨
 # =========================================================================
