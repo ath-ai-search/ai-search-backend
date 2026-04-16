@@ -813,12 +813,12 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     background-color: #f5f5f5;
 }}
 .bclouds-prod-row {{
-    display: flex;
     padding: 16px 0;
     border-bottom: 1px solid #f5f5f5;
     width: 25%;
     flex-wrap: wrap;
     border: 1px solid #ddd;
+
 }}   
 
     .bclouds-prod-img {{ width: 60px; height: 60px; display: flex; align-items: center; justify-content: center; }}
