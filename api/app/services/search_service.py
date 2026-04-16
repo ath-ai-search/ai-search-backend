@@ -714,7 +714,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                     <img src="{img_url}" alt="{name}">
                 </div>
                 <div class="bclouds-prod-info">
-                    <div class="bclouds-prod-brand">{brand_display}</div>
                     <div class="bclouds-prod-title" title="{name}">{name}</div>
                     {price_html}
                 </div>
@@ -790,7 +789,13 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     .bclouds-side-item {{ font-size: 14px; padding: 10px 0; cursor: pointer; display: flex; justify-content: space-between; }}
     .bclouds-side-item:hover {{ background: #f5f5f5; border-radius: 4px; }}
 
-    .bclouds-right-col {{ position: relative; flex: 1; padding: 75px 32px 24px 32px; overflow-y: auto; }}
+    .bclouds-right-col {{ position: relative;
+    flex: 1;
+    padding: 75px 32px 24px 32px;
+    overflow-y: auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start; }}
 
     .bclouds-prod-header h3 {{
     margin-top: 21px;
@@ -813,18 +818,16 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     background-color: #f5f5f5;
 }}
 .bclouds-prod-row {{
-    padding: 16px 0;
     border-bottom: 1px solid #f5f5f5;
-    width: 25%;
     flex-wrap: wrap;
     border: 1px solid #ddd;
-
+    padding: 15px;
+    width: calc(25% - 8px);
 }}   
 
     .bclouds-prod-img {{ width: 60px; height: 60px; display: flex; align-items: center; justify-content: center; }}
     .bclouds-prod-img img {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
 
-    .bclouds-prod-brand {{ font-size: 13px; font-weight: 800; }}
     .bclouds-prod-title {{ font-size: 14px; color: #444; }}
     .bclouds-prod-price {{ font-size: 14px; font-weight: 700; }}
 
@@ -864,6 +867,15 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         initial-value: 0deg;
         inherits: false;
     }}
+
+    .bclouds-prod-title {{
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    -webkit-line-clamp: 1;
+    cursor: pointer;
+}}
     </style>
 
     <div class="bclouds-mega-menu">
