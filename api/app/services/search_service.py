@@ -752,7 +752,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             img_url = images[0] if isinstance(images, list) and images else "https://placehold.co/100x100?text=No+Image"
 
             if sale_price > 0 and sale_price < price:
-                badge_html = '<div style="position: absolute; top: -6px; right: -6px; background: #CC0000; color: white; font-size: 9px; font-weight: bold; padding: 2px 6px; border-radius: 3px; z-index: 10; text-transform: uppercase; letter-spacing: 0.5px;">Sale</div>'
+                badge_html = '<div class="bc-ai-srch-wrap">Sale</div>'
                 price_html = f'<div class="bclouds-prod-price"><span style="color: #CC0000; font-weight: 800;">${sale_price:.2f}</span> <del style="color: #888; font-size: 13px; font-weight: 600; margin-left: 4px;">${price:.2f}</del></div>'
             else:
                 badge_html = ""
