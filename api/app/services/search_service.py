@@ -586,7 +586,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     
     if not clean_query:
         os_query = {
-            "size": 4, "query": {"match_all": {}}, "sort": [{"_score": {"order": "desc"}}],
+            "size": 8, "query": {"match_all": {}}, "sort": [{"_score": {"order": "desc"}}],
             "track_total_hits": True, 
             "aggs": {"top_categories": {"terms": {"field": "category", "size": 3}}}
         }
@@ -635,7 +635,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                     score_functions.append({"filter": {"match": {"category": acc}}, "weight": 0.001})
 
             os_query = {
-                "size": 4,
+                "size": 8,
                 "query": {
                     "function_score": {
                         "query": {
@@ -657,7 +657,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             }
         else:
             os_query = {
-                "size": 4,
+                "size": 8,
                 "query": {
                     "bool": {
                         "must": [{"match_all": {}}],
@@ -775,6 +775,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         overflow: hidden;
         border: 1px solid #e5e7eb;
         margin: 133px auto 0;
+        background-color: #f9f9f9;
     }}
 
     .bclouds-left-col {{ width: 320px; background: #fdfdfd; padding: 24px; border-right: 1px solid #f0f0f0; overflow-y: auto; }}
@@ -824,6 +825,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     border: 1px solid #ddd;
     padding: 15px;
     width: calc(25% - 8px);
+    background-color: #fff;
 }}   
 
     .bclouds-prod-img {{  width: 100%;
