@@ -767,7 +767,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         display: flex;
         width: 1495px;
         max-width: 95%;
-        height: 661px;
+        height: 623px;
         background: white;
         border-radius: 8px;
         box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
