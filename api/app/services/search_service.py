@@ -583,7 +583,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         return AIAssistantResponse(
             **final_results_dict, 
             ai_message=ai_reply, 
-            updated_query=updated_request.query.replace("|", " and "), # Shows 'and' in the UI!
+            updated_query=updated_request.query.replace("|", " "), # Clean UI display
             updated_filters=new_filters_obj.model_dump(),
             updated_sort=updated_request.sort, 
             suggestions=suggestions[:4]
