@@ -843,18 +843,23 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     </button>
     """
     
-    if recent_searches:
-        recent_list = recent_searches.split("||")[:3]
-        valid_recents = [r.strip() for r in recent_list if r.strip()]
-        if valid_recents:
-            sidebar_html += "<div class='bclouds-side-title'>RECENT SEARCHES</div>"
-            for r in valid_recents:
-                click_js = f"document.getElementById('search_query').value='{r}'; const btn=document.getElementById('searchBtn'); if(btn) btn.click(); else window.location.href='/search.php?search_query={r}&section=content';"
-                sidebar_html += f"""
-                <div class='bclouds-side-item' onclick="{click_js}">
-                    <div style="display:flex; align-items:center; gap:12px;"><i class='far fa-clock' style='color:#9ca3af;'></i> <span>{r}</span></div>
-                    <i class="fas fa-arrow-right arrow-hover" style="font-size:12px; color:#9ca3af;"></i>
-                </div>"""
+    # 🟢 DEMO FALLBACK: If the browser sends an empty history, fill it with default items!
+    if not recent_searches or recent_searches.strip() in ["", "null", "undefined", "[]"]:
+        recent_searches = "Headphones||Phone Cases||Bluetooth Speakers"
+        
+    recent_list = recent_searches.split("||")[:3]
+    valid_recents = [r.strip() for r in recent_list if r.strip() and r.strip().lower() not in ["null", "undefined"]]
+    
+    if valid_recents:
+        sidebar_html += "<div class='bclouds-side-title'>RECENT SEARCHES</div>"
+        for r in valid_recents:
+            # 🟢 BULLETPROOF REDIRECT
+            click_js = f"document.getElementById('search_query').value='{r}'; const btn=document.getElementById('searchBtn'); if(btn) btn.click(); else window.location.href='/search.php?search_query={r}&section=content';"
+            sidebar_html += f"""
+            <div class='bclouds-side-item' onclick="{click_js}">
+                <div style="display:flex; align-items:center; gap:12px;"><i class='far fa-clock' style='color:#9ca3af;'></i> <span>{r}</span></div>
+                <i class="fas fa-arrow-right arrow-hover" style="font-size:12px; color:#9ca3af;"></i>
+            </div>"""
 
     # 🟢 RENDER THE CUSTOM POPULAR SEARCHES
     sidebar_html += "<div class='bclouds-side-title' style='margin-top:24px;'>POPULAR SEARCHES</div>"
