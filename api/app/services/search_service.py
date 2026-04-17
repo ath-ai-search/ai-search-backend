@@ -16,12 +16,10 @@ to guarantee a flawless, 0-dead-end user experience:
    - Solves the Polysemy Problem (e.g. "Watch Cap" vs "Wrist Watch") by applying a 
      massive 200x boost if the query perfectly matches the product's official Category.
 
-6. 🔥 LLM Chat Agent (Context-Aware Gender, Brand, & Filter Engine):
-   - Strict JSON extraction now includes Gender Nodes.
-   - Domain Context: Strictly prevents "Apple" from being treated as a fruit.
-   - Intent Translation: Translates "Men's Dress" into "Suits | Dress Shirts".
-   - 4-Tier Fallback dynamically drops restrictive filters (Size, Color, Gender) and 
-     rewrites the chat message to ensure total UI transparency.
+6. 🔥 LLM Chat Agent (Context-Aware Gender, Brand, & Price Engine):
+   - Strict JSON extraction now includes Gender Nodes and secure Float casting for Prices.
+   - Domain Context: "Apple" triggers automatic brand filtering to block 3rd-party cases.
+   - Heavy Accessory Demotion (0.00001x multiplier) for searches lacking accessory intent.
 =====================================================================================
 """
 
@@ -112,12 +110,13 @@ def extract_semantic_matrix(query_string):
     smart_min_price, smart_max_price, smart_discount = None, None, None
     is_sale_intent = False
 
+    # 🟢 FIXED: Enhanced Price Regex to explicitly grab "between X and Y", "under X"
     range_match = re.search(r'(?:between|from)?\s*\$?\s*(\d+)\s*(?:to|and|-)\s*\$?\s*(\d+)', query_lower)
     if range_match:
         smart_min_price, smart_max_price = float(range_match.group(1)), float(range_match.group(2))
         core_query = core_query.replace(range_match.group(0), '')
     else:
-        max_match = re.search(r'(?:under|less than|below|<)\s*\$?\s*(\d+)', query_lower)
+        max_match = re.search(r'(?:under|less than|below|cheaper than|<)\s*\$?\s*(\d+)', query_lower)
         if max_match: 
             smart_max_price = float(max_match.group(1))
             core_query = core_query.replace(max_match.group(0), '')
@@ -159,10 +158,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V110 Redis Key: Flushes cache to activate Domain Logic Fixes
+    # ⚡ V115 Redis Key: Flushes cache to apply the strict Price and Accessory logic
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v110:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v115:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -243,6 +242,17 @@ async def execute_search(request: SearchRequest):
 
         if getattr(request.filters, "brand", None):
             filters.append({"terms": {"brand": [b.upper() for b in request.filters.brand[:5]]}})
+            
+        # 🟢 SECURE PRICE CASTING
+        if getattr(request.filters, "price", None):
+            p_range = {}
+            if getattr(request.filters.price, "min", None) is not None: 
+                try: p_range["gte"] = float(request.filters.price.min)
+                except Exception: pass
+            if getattr(request.filters.price, "max", None) is not None: 
+                try: p_range["lte"] = float(request.filters.price.max)
+                except Exception: pass
+            if p_range: filters.append({"range": {"price": p_range}})
 
     sort_query = [{"_score": "desc"}]
     if request.sort == "price_asc": sort_query = [{"price": "asc"}]
@@ -296,10 +306,11 @@ async def execute_search(request: SearchRequest):
 
     score_functions = []
     
+    # 🟢 FIXED: Heavy Accessory Demotion (0.00001x) to crush cases when searching for iPhones
     if not matrix["has_accessory_intent"]:
         for acc in matrix["accessory_keywords"]:
-            score_functions.append({"filter": {"match": {"name": acc}}, "weight": 0.001})
-            score_functions.append({"filter": {"match": {"category": acc}}, "weight": 0.001})
+            score_functions.append({"filter": {"match": {"name": acc}}, "weight": 0.00001})
+            score_functions.append({"filter": {"match": {"category": acc}}, "weight": 0.00001})
 
     if vector or core_query:
         query_body = {
@@ -420,10 +431,11 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     Analyze the message and decide if the user wants to REFINE their current search or start a completely NEW SEARCH.
 
     🔥 CRITICAL LOGIC RULES:
-    1. FILTERING (Refine): If the user types a color, size, price, or GENDER (e.g. "for men", "womens") and DOES NOT name a completely different product, set intent to "refine". You MUST KEEP the 'search_query' exactly as "{current_state.query}" and extract the variables into the filters array.
-    2. NEW SEARCH: If the user types a completely new product (e.g., current context is "shoes" but they type "dress"), set intent to "new_search". Change the 'search_query' to the new product (e.g., "dress") and DO NOT carry over old filters.
-    3. BRAND AWARENESS: "Apple" ALWAYS means the technology company (MacBook, iPhone, iPad). NEVER treat it as a fruit.
-    4. MENSWEAR TRANSLATION: If the user explicitly asks for "men's dresses" or "dress for men", change the 'search_query' to "suits | dress shirts" and set gender to "men" (because men do not traditionally wear dresses in our catalog).
+    1. FILTERING (Refine): If the user types a color, size, price (e.g., "under 50"), or GENDER and DOES NOT name a completely different product, set intent to "refine". KEEP the 'search_query' exactly as "{current_state.query}" and extract the variables into the filters array.
+    2. NEW SEARCH: If the user types a new product (e.g., current context is "shoes" but they type "iphone"), set intent to "new_search". Change 'search_query' to the new product and clear old filters.
+    3. BRAND & ACCESSORY AWARENESS: If the query is "iphone", "macbook", or "ipad", you MUST set the brand filter to ["Apple"] to block third-party phone cases. 
+    4. MENSWEAR TRANSLATION: If the user asks for "men's dresses", translate 'search_query' to "suits | dress shirts" and set gender to "men".
+    5. PRICE PARSING: If the user says "under 50", "less than 20", set price.max. If "between 10 and 20", set price.min and price.max.
 
     Output ONLY a valid JSON object:
     {{
@@ -433,11 +445,11 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             "color": [], 
             "size": [], 
             "brand": [], 
-            "gender": [], 
+            "gender": [], // Only set if explicitly requested
             "on_sale": false, 
-            "price": {{"min": null, "max": null}}
+            "price": {{"min": null, "max": null}} // Extract numerical limits here
         }},
-        "ai_message": "Friendly 1-sentence reply WITH FUN EMOJIS! E.g. 'Looking for red {current_state.query}! 🎨'",
+        "ai_message": "Friendly 1-sentence reply WITH FUN EMOJIS! E.g. 'Looking for {current_state.query} under $50! 💸'",
         "suggestions": ["Follow-up query 1", "Follow-up query 2", "Follow-up query 3"]
     }}
     """
@@ -501,6 +513,18 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         if extracted_filters.get("gender"):
             genders = [str(g).lower() for g in extracted_filters["gender"] if str(g).lower() not in bad_words]
             new_filters_obj.gender = list(set(getattr(new_filters_obj, "gender", []) + genders))
+            
+        # 🟢 SAFE PRICE EXTRACTION FROM LLM
+        if extracted_filters.get("price"):
+            p_data = extracted_filters["price"]
+            if isinstance(p_data, dict):
+                try:
+                    min_p = float(p_data.get("min")) if p_data.get("min") is not None else None
+                    max_p = float(p_data.get("max")) if p_data.get("max") is not None else None
+                    if min_p is not None or max_p is not None:
+                        new_filters_obj.price = PriceFilter(min=min_p, max=max_p)
+                except Exception:
+                    pass
 
         updated_request.filters = new_filters_obj
         if new_filters_obj.on_sale:
@@ -938,10 +962,9 @@ async def generate_ai_welcome(current_query: str):
     Generate a highly dynamic, conversational welcome message and 3-4 clickable suggestion chips.
     
     RULES:
-    1. STORE KNOWLEDGE BASE: "Apple" ALWAYS refers to the tech brand (MacBook, iPhone, iPad, Watch), NEVER the fruit. "Dress for men" or "Men's dress" refers to men's suits, dress shirts, or formal wear.
-    2. If CURRENT SEARCH CONTEXT is empty (or ""), write a general, stylish welcome. E.g., "Welcome! Ready to explore some great fashion finds? ✨"
-    3. If CURRENT SEARCH CONTEXT contains a product, acknowledge it and offer highly relevant refinements or complementary accessories specifically for that product! 
-    4. The "suggestions" array MUST contain 3 to 4 realistic, clickable follow-up questions formatted as natural user requests.
+    1. If CURRENT SEARCH CONTEXT is empty (or ""), write a general, stylish welcome. E.g., "Welcome! Ready to explore some great fashion finds? ✨"
+    2. If CURRENT SEARCH CONTEXT contains a product, acknowledge it and offer highly relevant refinements or complementary accessories specifically for that product! 
+    3. The "suggestions" array MUST contain 3 to 4 realistic, clickable follow-up questions formatted as natural user requests.
     
     Output ONLY a valid JSON object matching this structure:
     {{
