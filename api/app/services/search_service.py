@@ -16,8 +16,10 @@ to guarantee a flawless, 0-dead-end user experience:
    - Solves the Polysemy Problem (e.g. "Watch Cap" vs "Wrist Watch") by applying a 
      massive 200x boost if the query perfectly matches the product's official Category.
 
-6. 🔥 LLM Chat Agent (Context-Aware Gender & Filter Engine):
+6. 🔥 LLM Chat Agent (Context-Aware Gender, Brand, & Filter Engine):
    - Strict JSON extraction now includes Gender Nodes.
+   - Domain Context: Strictly prevents "Apple" from being treated as a fruit.
+   - Intent Translation: Translates "Men's Dress" into "Suits | Dress Shirts".
    - 4-Tier Fallback dynamically drops restrictive filters (Size, Color, Gender) and 
      rewrites the chat message to ensure total UI transparency.
 =====================================================================================
@@ -157,10 +159,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V105 Redis Key
+    # ⚡ V110 Redis Key: Flushes cache to activate Domain Logic Fixes
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v105:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v110:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -226,7 +228,6 @@ async def execute_search(request: SearchRequest):
                 })
             filters.append({"bool": {"should": size_shoulds, "minimum_should_match": 1}})
         
-        # 🟢 NEW: GENDER NODE FILTERING
         if getattr(request.filters, "gender", None):
             gender_shoulds = []
             for g in request.filters.gender[:3]:
@@ -265,7 +266,6 @@ async def execute_search(request: SearchRequest):
                     }
                 }
             },
-            # 🟢 NEW: POLYSEMY FIX (Forces "Watches" to beat "Watch Caps")
             {
                 "match": {
                     "category": {
@@ -422,21 +422,23 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     🔥 CRITICAL LOGIC RULES:
     1. FILTERING (Refine): If the user types a color, size, price, or GENDER (e.g. "for men", "womens") and DOES NOT name a completely different product, set intent to "refine". You MUST KEEP the 'search_query' exactly as "{current_state.query}" and extract the variables into the filters array.
     2. NEW SEARCH: If the user types a completely new product (e.g., current context is "shoes" but they type "dress"), set intent to "new_search". Change the 'search_query' to the new product (e.g., "dress") and DO NOT carry over old filters.
+    3. BRAND AWARENESS: "Apple" ALWAYS means the technology company (MacBook, iPhone, iPad). NEVER treat it as a fruit.
+    4. MENSWEAR TRANSLATION: If the user explicitly asks for "men's dresses" or "dress for men", change the 'search_query' to "suits | dress shirts" and set gender to "men" (because men do not traditionally wear dresses in our catalog).
 
     Output ONLY a valid JSON object:
     {{
         "intent": "refine" | "new_search",
-        "search_query": "The core product. If refining, keep exactly as '{current_state.query}'. If new search, change to the new product.",
+        "search_query": "The core product.",
         "filters": {{
             "color": [], 
             "size": [], 
             "brand": [], 
-            "gender": [], // 🟢 NEW: Extract gender if mentioned (e.g., ["men", "women", "kids", "unisex", "mens"])
+            "gender": [], 
             "on_sale": false, 
             "price": {{"min": null, "max": null}}
         }},
         "ai_message": "Friendly 1-sentence reply WITH FUN EMOJIS! E.g. 'Looking for red {current_state.query}! 🎨'",
-        "suggestions": ["Follow-up query 1 about the CURRENT product", "Follow-up query 2", "Follow-up query 3"]
+        "suggestions": ["Follow-up query 1", "Follow-up query 2", "Follow-up query 3"]
     }}
     """
 
@@ -476,7 +478,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             new_filters_obj.brand = current_state.filters.brand or []
             new_filters_obj.color = current_state.filters.color or []
             new_filters_obj.size = current_state.filters.size or []
-            new_filters_obj.gender = getattr(current_state.filters, "gender", []) or [] # Keep gender memory!
+            new_filters_obj.gender = getattr(current_state.filters, "gender", []) or [] 
             new_filters_obj.price = current_state.filters.price
             new_filters_obj.in_stock = current_state.filters.in_stock
             if getattr(current_state.filters, "on_sale", False) and extracted_filters.get("on_sale") is not False:
@@ -496,7 +498,6 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             brands = [str(b).upper() for b in extracted_filters["brand"] if str(b).lower() not in bad_words]
             new_filters_obj.brand = list(set(new_filters_obj.brand + brands))
             
-        # 🟢 Extract the new Gender Node
         if extracted_filters.get("gender"):
             genders = [str(g).lower() for g in extracted_filters["gender"] if str(g).lower() not in bad_words]
             new_filters_obj.gender = list(set(getattr(new_filters_obj, "gender", []) + genders))
@@ -598,7 +599,7 @@ async def execute_autocomplete(query_string: str):
     return final_response
 
 # =========================================================================
-# 🌐 HTML MEGA MENU ROUTE (Generates full dropdown GUI)
+# 🌐 HTML MEGA MENU ROUTE
 # =========================================================================
 async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     clean_query = query_string.strip().lower()
@@ -860,7 +861,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     .bclouds-prod-title {{ font-size: 14px; color: #444; padding: 8px 0 5px 0; }}
     .bclouds-prod-price {{ font-size: 14px; font-weight: 700; font-size: 16px; }}
 
-    /* 🔥 GLOW ANIMATION (Properly Escaped for Python) */
+    /* 🔥 GLOW ANIMATION */
     .glowAni {{
         --border-angle: 0deg;
         border-radius: 12px;
@@ -937,9 +938,10 @@ async def generate_ai_welcome(current_query: str):
     Generate a highly dynamic, conversational welcome message and 3-4 clickable suggestion chips.
     
     RULES:
-    1. If CURRENT SEARCH CONTEXT is empty (or ""), write a general, stylish welcome. E.g., "Welcome! Ready to explore some great fashion finds? ✨"
-    2. If CURRENT SEARCH CONTEXT contains a product, acknowledge it and offer highly relevant refinements or complementary accessories specifically for that product! 
-    3. The "suggestions" array MUST contain 3 to 4 realistic, clickable follow-up questions formatted as natural user requests.
+    1. STORE KNOWLEDGE BASE: "Apple" ALWAYS refers to the tech brand (MacBook, iPhone, iPad, Watch), NEVER the fruit. "Dress for men" or "Men's dress" refers to men's suits, dress shirts, or formal wear.
+    2. If CURRENT SEARCH CONTEXT is empty (or ""), write a general, stylish welcome. E.g., "Welcome! Ready to explore some great fashion finds? ✨"
+    3. If CURRENT SEARCH CONTEXT contains a product, acknowledge it and offer highly relevant refinements or complementary accessories specifically for that product! 
+    4. The "suggestions" array MUST contain 3 to 4 realistic, clickable follow-up questions formatted as natural user requests.
     
     Output ONLY a valid JSON object matching this structure:
     {{
