@@ -682,7 +682,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     
     # 🟢 COMPETITOR INTERCEPTOR: Change searches for competitors to high-value items!
     if clean_query == "best buy":
-        clean_query = "iphone"
+        clean_query = "tv"  # Changed from iphone
     elif clean_query == "amazon":
         clean_query = "macbook"
     
@@ -824,8 +824,8 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             </div>
             """
 
-    # 🟢 EXACT POPULAR SEARCHES YOU REQUESTED
-    popular_searches = ["iPhone", "MacBook", "Dresses", "Sunglasses", "Home & Kitchen", "Watches"]
+    # 🟢 EXACT POPULAR SEARCHES YOU REQUESTED (iPhone removed)
+    popular_searches = ["MacBook", "Dresses", "Sunglasses", "Home & Kitchen", "Watches"]
 
     sidebar_html = ""
     
