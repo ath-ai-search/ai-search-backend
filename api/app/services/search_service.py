@@ -930,6 +930,19 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         -webkit-line-clamp: 1;
         cursor: pointer;
     }}
+
+    @media (max-width: 768px) {{
+        .bclouds-left-col {{
+           display: inline-block;
+           width: 100%;
+}}
+.bclouds-right-col {{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  width: 100%;
+}}
+    }}
     </style>
 
     <div class="bclouds-mega-menu">
