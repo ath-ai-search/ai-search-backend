@@ -817,18 +817,21 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             """
 
     sidebar_html = ""
-    if clean_query:
-        sidebar_html += f"""
-        <button id='ai-toggle' type='button' class='bclouds-assistant-box glowAni'>
-            <div class='bclouds-assistant-left'>
-                <i class='fas fa-magic bclouds-assistant-icon'></i>
-                <div class='bclouds-assistant-text'>
-                    Open "<span>{clean_query}</span>"<br>in Assistant
-                </div>
+    
+    # 🟢 FIXED: Handle the "*" wildcard cleanly
+    display_text = f'Open "<span>{clean_query}</span>"<br>in Assistant' if clean_query and clean_query != "*" else 'Open <span>AI Assistant</span><br>to explore'
+    
+    sidebar_html += f"""
+    <button id='ai-toggle' type='button' class='bclouds-assistant-box glowAni'>
+        <div class='bclouds-assistant-left'>
+            <i class='fas fa-magic bclouds-assistant-icon'></i>
+            <div class='bclouds-assistant-text'>
+                {display_text}
             </div>
-            <i class='fas fa-arrow-right' style='font-size: 14px; color: #111;'></i>
-        </button>
-        """
+        </div>
+        <i class='fas fa-arrow-right' style='font-size: 14px; color: #111;'></i>
+    </button>
+    """
     
     if recent_searches:
         recent_list = recent_searches.split("||")[:3]
