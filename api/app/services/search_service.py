@@ -24,20 +24,18 @@ to guarantee a flawless, 0-dead-end user experience:
      pollute the results with "iPhone Cases". Our NPQ logic actively penalizes 
      (demotes) accessory keywords unless the user explicitly asked for them.
 
-5. 🔥 "The Equalizer" (Lexical Term Splitter with BM25 Relevance):
+5. 🔥 "The Equalizer" (Lexical Term Splitter):
    - If a user searches for disjoint items ("macbook and iphone"), vector math tries 
      to "average" them, usually dropping one. The Equalizer explicitly splits the 
-     query ("macbook | iphone") and applies Heavy BM25 Lexical Boosting to both 
-     independently. This mixes both items on Page 1 while preserving natural 
-     "Best Match" sorting so exact title matches beat generic description matches.
+     query ("macbook | iphone") and applies a Constant Score Boost to both independently, 
+     mathematically forcing BOTH items to mix evenly on Page 1.
 
-6. 🔥 LLM Chat Agent (4-Tier Cascade Fallback):
-   - The `process_ai_assistant` acts as the brain. It extracts strict JSON filters.
-   - 4-Tier Fallback: If a strict filter (e.g., Size 9 + Red) returns 0 results, 
-     the engine programmatically drops the strictest filters and retries the search 
-     in the background. This mathematically prevents "0 Products Found" screens.
-   - Dynamic Acknowledgment: The AI dynamically rewrites its message to tell the user
-     exactly which filter it dropped to keep the UX transparent.
+6. 🔥 LLM Chat Agent (Context-Aware Intent Engine):
+   - The `process_ai_assistant` acts as the brain. It strictly differentiates between
+     REFINING a current search (e.g. typing "red" while looking at shoes) and PIVOTING
+     to a new search (e.g. typing "dress" while looking at shoes).
+   - 4-Tier Fallback: If a strict filter returns 0 results, the engine programmatically 
+     drops the strictest filters and retries.
 =====================================================================================
 """
 
@@ -124,12 +122,17 @@ def build_pagination_html(total_pages: int, current_page: int) -> str:
 # 🧠 NLP: SEMANTIC MATRIX EXTRACTION
 # =========================================================================
 def extract_semantic_matrix(query_string):
+    """
+    [NLP ENGINE]
+    Parses natural language to separate strict numerical filters from semantic text.
+    """
     query_lower = query_string.lower()
     core_query = query_lower
     
     smart_min_price, smart_max_price, smart_discount = None, None, None
     is_sale_intent = False
 
+    # Extract Price Boundaries
     range_match = re.search(r'(?:between|from)?\s*\$?\s*(\d+)\s*(?:to|and|-)\s*\$?\s*(\d+)', query_lower)
     if range_match:
         smart_min_price, smart_max_price = float(range_match.group(1)), float(range_match.group(2))
@@ -144,6 +147,7 @@ def extract_semantic_matrix(query_string):
             smart_min_price = float(min_match.group(1))
             core_query = core_query.replace(min_match.group(0), '')
 
+    # Extract Sale/Discount Intents
     disc_match = re.search(r'(\d+)%\s*(?:off|discount|sale)', query_lower)
     if disc_match: 
         smart_discount = int(disc_match.group(1))
@@ -153,7 +157,7 @@ def extract_semantic_matrix(query_string):
         is_sale_intent = True
         core_query = re.sub(r'\b(?:with\s+sale|on\s+sale|sale|clearance|discount)\b', '', core_query)
 
-    # Convert natural delimiters into the Equalizer Pipe `|`
+    # 🟢 PRO-FIX: Convert natural delimiters into the Equalizer Pipe `|`
     core_query = re.sub(r'\b\s+and\s+\b', ' | ', core_query)
     core_query = re.sub(r'[,&]', ' | ', core_query)
     core_query = re.sub(r'\s+', ' ', core_query).strip()
@@ -161,6 +165,7 @@ def extract_semantic_matrix(query_string):
     if not core_query:
         core_query = query_lower 
 
+    # [NPQ Prep] Detect if the user actually wants an accessory to avoid penalizing them later
     accessory_keywords = ["case", "cover", "charger", "cable", "bag", "protector", "strap", "band", "adapter", "mount", "holder"]
     has_accessory_intent = any(acc in query_lower for acc in accessory_keywords)
 
@@ -178,10 +183,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V95 Redis Key: Flushes cache to activate the new BM25 relevance equalizer
+    # ⚡ V100 Redis Key
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v95:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v100:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -207,6 +212,7 @@ async def execute_search(request: SearchRequest):
         multi_items = [core_query]
         core_query_for_vector = core_query
 
+    # Generate Embeddings
     if core_query_for_vector:
         try:
             resp = await openai_client.embeddings.create(input=core_query_for_vector, model="text-embedding-3-small")
@@ -263,14 +269,14 @@ async def execute_search(request: SearchRequest):
         k_val = max(200, from_val + request.page_size + 100)
         semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": k_val}}})
         
-    # 🟢 THE EQUALIZER LOGIC (Upgraded for True BM25 Relevance)
+    # 🟢 THE EQUALIZER LOGIC
     for item in multi_items:
         semantic_shoulds.extend([
             {
                 "match_phrase": {
                     "name": {
                         "query": item,
-                        "boost": 100.0 # Exact Title Match
+                        "boost": 100.0 
                     }
                 }
             },
@@ -280,7 +286,7 @@ async def execute_search(request: SearchRequest):
                     "fields": ["name^10", "brand^5", "category^3", "description"],
                     "type": "cross_fields",
                     "operator": "and",
-                    "boost": 20.0 # All keywords present
+                    "boost": 20.0 
                 }
             },
             {
@@ -289,14 +295,13 @@ async def execute_search(request: SearchRequest):
                     "fields": ["name^5", "brand^3", "category^2", "description"],
                     "type": "best_fields",
                     "fuzziness": "AUTO",
-                    "boost": 5.0 # Partial/Typo tolerance
+                    "boost": 5.0 
                 }
             }
         ])
 
     score_functions = []
     
-    # NPQ Scoring
     if not matrix["has_accessory_intent"]:
         for acc in matrix["accessory_keywords"]:
             score_functions.append({"filter": {"match": {"name": acc}}, "weight": 0.001})
@@ -403,39 +408,46 @@ async def execute_search(request: SearchRequest):
     return final_response
 
 # =========================================================================
-# ✨ LLM AGENT ROUTER 
+# ✨ LLM AGENT ROUTER (Context-Aware Intent Engine)
 # =========================================================================
 async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
+    """
+    [LLM AGENT]
+    Acts as the brain of the assistant. Distinguishes between Filtering the 
+    current page, or pivoting to a totally new search.
+    """
     current_filters = current_state.filters.model_dump() if current_state.filters else {}
     
     system_prompt = f"""
     You are the bclouds AI, an intelligent e-commerce shopping assistant.
     
-    CURRENT CONTEXT:
-    - User is searching for: "{current_state.query}"
-    - Active Filters: {json.dumps(current_filters)}
+    CURRENT SEARCH CONTEXT:
+    - User is currently searching for: "{current_state.query}"
+    - Active Filters applied: {json.dumps(current_filters)}
 
     NEW USER MESSAGE: "{chat_message}"
 
     YOUR TASK:
-    Analyze the message. Decide if the user wants to REFINE the search or start a NEW SEARCH.
+    Analyze the message and decide if the user wants to REFINE their current search or start a completely NEW SEARCH.
 
-    🔥 CRITICAL RULE FOR MULTIPLE DISJOINT ITEMS:
-    If the user explicitly asks for completely different products in the same message (e.g. "iPhone and MacBook"), output them in 'search_query' separated by a pipe character '|' (e.g. "iphone | macbook"). Do NOT set any brand or category filters when doing this!
+    🔥 CRITICAL LOGIC RULES:
+    1. FILTERING (Refine): If the user types a color (e.g., "red"), size (e.g., "size 9"), or price, and DOES NOT name a completely different product, set intent to "refine". You MUST KEEP the 'search_query' exactly as "{current_state.query}" and extract the color/size into the filters array.
+    2. NEW SEARCH: If the user types a completely new product (e.g., current context is "shoes" but they type "dress" or "iphone"), set intent to "new_search". Change the 'search_query' to the new product (e.g., "dress") and DO NOT carry over old filters.
+    3. SUGGESTIONS: The "suggestions" array MUST contain 3 to 4 clickable follow-up queries specifically tailored to the NEW 'search_query' state. If they switched to 'iphone', suggest iPhone queries. If they are looking at 'red shoes', suggest other shoe styles.
 
     Output ONLY a valid JSON object:
     {{
         "intent": "refine" | "new_search",
-        "search_query": "The product/brand ONLY (e.g., 'nike shoes' or 'iphone | macbook'). NEVER include colors, sizes, or price.",
+        "search_query": "The core product. If refining, keep exactly as '{current_state.query}'. If new search, change to the new product.",
         "filters": {{
-            "color": [], 
-            "size": [], // Extract numbers/sizes (e.g., ["8", "9", "XL"])
-            "brand": [], // Only set if searching for a single brand
+            "color": [], // E.g., ["red"]
+            "size": [], // E.g., ["8", "9", "XL"]
+            "brand": [], 
             "on_sale": false, 
             "price": {{"min": null, "max": null}}
         }},
-        "ai_message": "Friendly 1-sentence reply WITH FUN EMOJIS! E.g. 'Searching for size 9 flip flops on sale! 🩴💸'",
-        "suggestions": ["Follow-up search query 1", "Follow-up query 2", "Follow-up query 3"]
+        "ai_message": "Friendly 1-sentence reply WITH FUN EMOJIS! E.g. 'Looking for red {current_state.query}! 🎨' or 'Switching to dresses! 👗'",
+        "suggestions": ["Follow-up query 1 about the CURRENT product", "Follow-up query 2 about the CURRENT product", "Follow-up query 3"]
     }}
     """
 
@@ -468,6 +480,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         new_filters_obj.size = [] 
         new_filters_obj.on_sale = extracted_filters.get("on_sale", False)
         
+        # [Context Preservation] If refining, we carry over their existing filters.
         if parsed_intent.get("intent") == "refine" and current_state.filters:
             new_filters_obj.category = current_state.filters.category or []
             new_filters_obj.brand = current_state.filters.brand or []
@@ -594,7 +607,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     
     if not clean_query:
         os_query = {
-            "size": 10, "query": {"match_all": {}}, "sort": [{"_score": {"order": "desc"}}],
+            "size": 8, "query": {"match_all": {}}, "sort": [{"_score": {"order": "desc"}}],
             "track_total_hits": True, 
             "aggs": {"top_categories": {"terms": {"field": "category", "size": 3}}}
         }
@@ -620,42 +633,21 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         if matrix["is_sale"]:
             filters.append({"range": {"sale_price": {"gt": 0}}})
 
-        if "|" in core_query:
-            multi_items = [item.strip() for item in core_query.split("|") if item.strip()]
-        else:
-            multi_items = [core_query]
-
         if vector:
-            semantic_shoulds = []
-            for item in multi_items:
-                semantic_shoulds.extend([
-                    {
-                        "match_phrase": {
-                            "name": {
-                                "query": item,
-                                "boost": 100.0
-                            }
-                        }
-                    },
-                    {
-                        "multi_match": {
-                            "query": item, 
-                            "fields": ["name^10", "brand^5", "category^3", "description"],
-                            "type": "cross_fields",
-                            "operator": "and",
-                            "boost": 20.0
-                        }
-                    },
-                    {
-                        "multi_match": {
-                            "query": item, 
-                            "fields": ["name^5", "brand^3", "category^2", "description"],
-                            "type": "best_fields",
-                            "fuzziness": "AUTO",
-                            "boost": 5.0
-                        }
+            semantic_shoulds = [
+                {"match_phrase": {"brand": {"query": core_query, "boost": 5000.0}}},
+                {"match": {"category": {"query": core_query, "boost": 3000.0}}},
+                {"match_phrase": {"name": {"query": core_query, "boost": 500.0}}}
+            ]
+            if core_query:
+                semantic_shoulds.append({
+                    "multi_match": {
+                        "query": core_query, 
+                        "fields": ["name^5", "brand^4", "category^3"],
+                        "operator": "and",
+                        "boost": 5.0
                     }
-                ])
+                })
             
             score_functions = []
             if not matrix["has_accessory_intent"]:
@@ -664,7 +656,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                     score_functions.append({"filter": {"match": {"category": acc}}, "weight": 0.001})
 
             os_query = {
-                "size": 10,
+                "size": 8,
                 "query": {
                     "function_score": {
                         "query": {
@@ -686,7 +678,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             }
         else:
             os_query = {
-                "size": 10,
+                "size": 8,
                 "query": {
                     "bool": {
                         "must": [{"match_all": {}}],
