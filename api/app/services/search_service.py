@@ -659,7 +659,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     
     if not clean_query:
         os_query = {
-            "size": 8, "query": {"match_all": {}}, "sort": [{"_score": {"order": "desc"}}],
+            "size": 10, "query": {"match_all": {}}, "sort": [{"_score": {"order": "desc"}}],
             "track_total_hits": True, 
             "aggs": {"top_categories": {"terms": {"field": "category", "size": 3}}}
         }
@@ -708,7 +708,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                     score_functions.append({"filter": {"match": {"category": acc}}, "weight": 0.001})
 
             os_query = {
-                "size": 8,
+                "size": 10,
                 "query": {
                     "function_score": {
                         "query": {
@@ -730,7 +730,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             }
         else:
             os_query = {
-                "size": 8,
+                "size": 10,
                 "query": {
                     "bool": {
                         "must": [{"match_all": {}}],
