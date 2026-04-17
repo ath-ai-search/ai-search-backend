@@ -684,7 +684,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         os_query = {
             "size": 10, "query": {"match_all": {}}, "sort": [{"_score": {"order": "desc"}}],
             "track_total_hits": True, 
-            "aggs": {"top_categories": {"terms": {"field": "category", "size": 3}}}
+            "aggs": {"top_categories": {"terms": {"field": "category", "size": 6}}} # 🟢 Pulled up to 6 categories
         }
     else:
         vector = None
@@ -749,7 +749,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                     }
                 },
                 "track_total_hits": True, 
-                "aggs": {"top_categories": {"terms": {"field": "category", "size": 3}}}
+                "aggs": {"top_categories": {"terms": {"field": "category", "size": 6}}} # 🟢 Pulled up to 6 categories
             }
         else:
             os_query = {
@@ -763,7 +763,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                 },
                 "sort": [{"_score": {"order": "desc"}}],
                 "track_total_hits": True, 
-                "aggs": {"top_categories": {"terms": {"field": "category", "size": 3}}}
+                "aggs": {"top_categories": {"terms": {"field": "category", "size": 6}}} # 🟢 Pulled up to 6 categories
             }
 
     try:
@@ -772,7 +772,8 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         total_products = response.get("hits", {}).get("total", {}).get("value", 0)
 
         cats_agg = response.get("aggregations", {}).get("top_categories", {}).get("buckets", [])
-        dynamic_cats = [str(c.get("key")) for c in cats_agg if str(c.get("key")).lower() != "none"]
+        # 🟢 Clean the categories and capitalize them nicely
+        dynamic_cats = [str(c.get("key")).title() for c in cats_agg if str(c.get("key")).lower() not in ["none", "uncategorized", ""]]
     except Exception as e:
         logger.error(f"❌ OpenSearch Mega Menu Error: {e}")
         hits = []
@@ -788,6 +789,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         for hit in hits:
             source = hit.get("_source", {})
             name = source.get("name", "Unknown Product")
+            prod_url = source.get("url", "#") # 🟢 FIXED: Grab the actual product URL
             brand_display = get_smart_brand(source)
             if brand_display != "UNKNOWN BRAND" and brand_display != "UNKNOWN": dynamic_brands_set.add(brand_display)
             price = float(source.get("price", 0.0))
@@ -803,22 +805,34 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                 badge_html = ""
                 price_html = f'<div class="bclouds-prod-price">${price:.2f}</div>'
 
+            # 🟢 FIXED: Redirects to URL and includes Sir's tracking tags
             products_html += f"""
-            <div class="bclouds-prod-row" onclick="document.getElementById('search_query').value='{name}'; document.getElementById('searchBtn').click();">
+            <div class="bclouds-prod-row" onclick="window.location.href='{prod_url}';" style="cursor: pointer;">
                 <div class="bclouds-prod-img" style="position: relative;">
                     {badge_html}
                     <img src="{img_url}" alt="{name}">
                 </div>
                 <div class="bclouds-prod-info">
-                    <div class="bclouds-prod-title" title="{name}">{name}</div>
+                    <h4 class="card-title" style="margin:0; padding:0; border:none;">
+                        <a href="{prod_url}" data-instantload data-event-type="product-click" class="bclouds-prod-title" title="{name}" style="text-decoration: none; color: inherit;">
+                            {name}
+                        </a>
+                    </h4>
                     {price_html}
                 </div>
             </div>
             """
 
+    # 🟢 FORCE 6 POPULAR SEARCHES (Fills in blanks if DB doesn't have enough)
+    default_popular = ["iPhone", "MacBook", "Men's Suits", "Dresses", "Smart Watches", "Sneakers"]
+    for default in default_popular:
+        if len(dynamic_cats) >= 6: break
+        if default not in dynamic_cats:
+            dynamic_cats.append(default)
+
     sidebar_html = ""
     
-    # 🟢 FIXED: Handle the "*" wildcard cleanly
+    # 🟢 Handle the "*" wildcard cleanly
     display_text = f'Open "<span>{clean_query}</span>"<br>in Assistant' if clean_query and clean_query != "*" else 'Open <span>AI Assistant</span><br>to explore'
     
     sidebar_html += f"""
@@ -835,29 +849,35 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     
     if recent_searches:
         recent_list = recent_searches.split("||")[:3]
-        if recent_list and recent_list[0]:
+        valid_recents = [r.strip() for r in recent_list if r.strip()]
+        if valid_recents:
             sidebar_html += "<div class='bclouds-side-title'>RECENT SEARCHES</div>"
-            for r in recent_list:
+            for r in valid_recents:
+                # 🟢 BULLETPROOF REDIRECT
+                click_js = f"document.getElementById('search_query').value='{r}'; const btn=document.getElementById('searchBtn'); if(btn) btn.click(); else window.location.href='/search.php?search_query={r}&section=content';"
                 sidebar_html += f"""
-                <div class='bclouds-side-item' onclick='document.getElementById("search_query").value="{r}"; document.getElementById('searchBtn').click();'>
-                    <div style="display:flex; align-items:center; gap:12px;"><i class='far fa-clock'></i> <span>{r}</span></div>
-                    <div style="display:flex; gap:8px; color:#999;"><i class="fas fa-arrow-up" style="transform: rotate(45deg); font-size:10px;"></i></div>
+                <div class='bclouds-side-item' onclick="{click_js}">
+                    <div style="display:flex; align-items:center; gap:12px;"><i class='far fa-clock' style='color:#9ca3af;'></i> <span>{r}</span></div>
+                    <i class="fas fa-arrow-right arrow-hover" style="font-size:11px; color:#9ca3af;"></i>
                 </div>"""
 
     if dynamic_cats:
         sidebar_html += "<div class='bclouds-side-title' style='margin-top:24px;'>POPULAR SEARCHES</div>"
-        for c in dynamic_cats[:3]:
+        for c in dynamic_cats[:6]:
+            # 🟢 BULLETPROOF REDIRECT
+            click_js = f"document.getElementById('search_query').value='{c}'; const btn=document.getElementById('searchBtn'); if(btn) btn.click(); else window.location.href='/search.php?search_query={c}&section=content';"
             sidebar_html += f"""
-            <div class='bclouds-side-item' onclick='document.getElementById("search_query").value="{c}"; document.getElementById('searchBtn').click();'>
-                <div style='display:flex; align-items:center; gap:12px;'><i class='fas fa-search'></i> <span>{c}</span></div>
-                <i class="fas fa-arrow-up" style="transform: rotate(45deg); font-size:10px; color:#999;"></i>
+            <div class='bclouds-side-item' onclick="{click_js}">
+                <div style='display:flex; align-items:center; gap:12px;'><i class='fas fa-search' style='color:#9ca3af;'></i> <span>{c}</span></div>
+                <i class="fas fa-arrow-right arrow-hover" style="font-size:11px; color:#9ca3af;"></i>
             </div>
             """
             
     see_all_text = ""
     if total_products > 0:
-        see_all_text = f"<span onclick='document.getElementById(\"search_query\").value=\"{clean_query}\"; document.getElementById(\"searchBtn\").click();'>See all {total_products:,} results &rarr;</span>"
-
+        # 🟢 FIXED: Pulled the logic out of the f-string so Python doesn't crash on quotes!
+        safe_query = clean_query if clean_query != "*" else ""
+        see_all_text = f"<span onclick='document.getElementById(\"search_query\").value=\"{safe_query}\"; document.getElementById(\"searchBtn\").click();'>See all {total_products:,} results &rarr;</span>"
     master_html = f"""
     <style>
     .bclouds-mega-menu {{
@@ -883,9 +903,9 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     .bclouds-assistant-text {{ font-size: 13px; font-weight: 500; color: #111; }}
     .bclouds-assistant-text span {{ font-style: italic; font-weight: 700; }}
 
-    .bclouds-side-title {{ font-size: 12px; font-weight: 700; margin-bottom: 16px; text-transform: uppercase; }}
-    .bclouds-side-item {{ font-size: 14px; padding: 10px 0; cursor: pointer; display: flex; justify-content: space-between; }}
-    .bclouds-side-item:hover {{ background: #f5f5f5; border-radius: 4px; }}
+    .bclouds-side-title {{ font-size: 12px; font-weight: 700; margin-bottom: 16px; text-transform: uppercase; color: #9ca3af; padding-left: 12px; }}
+    .bclouds-side-item {{ font-size: 14px; padding: 10px 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; border-radius: 6px; transition: all 0.2s ease; color: #374151; font-weight: 500; margin-bottom: 2px; }}
+    .bclouds-side-item:hover {{ background: #f3f4f6; color: #111827; }}
 
     .bclouds-right-col {{ position: relative;
     flex: 1;
@@ -918,7 +938,9 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     padding: 5px 15px;
     background-color: #f5f5f5;
     font-size: 14px;
+    cursor: pointer;
     }}
+    .bclouds-prod-header span:hover {{ background-color: #e5e5e5; }}
     
     .bclouds-prod-row {{
         border-bottom: 1px solid #f5f5f5;
@@ -927,7 +949,9 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         padding: 12px;
         width: calc(20% - 8px);
         background-color: #fff;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
     }}   
+    .bclouds-prod-row:hover {{ transform: translateY(-3px); box-shadow: 0 4px 12px rgba(0,0,0,0.08); }}
 
     .bclouds-prod-img {{  width: 100%;
     height: 140px;
@@ -990,61 +1014,61 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         .bclouds-left-col {{
            display: inline-block;
            width: 100%;
-}}
-.bclouds-right-col {{
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  width: 100%;
-  overflow: scroll;
-  height: 400px;
-}}
-.bclouds-mega-menu {{
-  margin: 94px auto 0;
-  height: 697px;
-  display: inline-block;
-}}
-.bclouds-prod-img {{
-  height: auto;
-  min-height: 60px;
-}}
+        }}
+        .bclouds-right-col {{
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          width: 100%;
+          overflow: scroll;
+          height: 400px;
+        }}
+        .bclouds-mega-menu {{
+          margin: 94px auto 0;
+          height: 697px;
+          display: inline-block;
+        }}
+        .bclouds-prod-img {{
+          height: auto;
+          min-height: 60px;
+        }}
     }}
 
       @media (max-width: 640px) {{ 
-.bclouds-prod-row {{
-  width: calc(33% - 6px);
-}}
- .bclouds-prod-price {{
-  font-size: 12px;
-}}
-.bclouds-prod-price span, .bclouds-prod-price del {{
-  font-size: 12px !important;
-}}
-.bclouds-prod-price del {{
-  margin-left: 0 !important;
-}}
-.glowAni{{
-    margin-bottom: 0;
-}}
-.bclouds-side-item, .bclouds-side-title {{
-  display: none;
-}}
-.bclouds-prod-img img {{
-  max-height: 60px;
-  }}
+        .bclouds-prod-row {{
+          width: calc(33% - 6px);
+        }}
+         .bclouds-prod-price {{
+          font-size: 12px;
+        }}
+        .bclouds-prod-price span, .bclouds-prod-price del {{
+          font-size: 12px !important;
+        }}
+        .bclouds-prod-price del {{
+          margin-left: 0 !important;
+        }}
+        .glowAni{{
+            margin-bottom: 0;
+        }}
+        .bclouds-side-item, .bclouds-side-title {{
+          display: none;
+        }}
+        .bclouds-prod-img img {{
+          max-height: 60px;
+          }}
 
-  .bclouds-right-col {{
-    height: 518px;
-  }}
-  .bclouds-prod-header h3 {{
-  font-size: 16px;
-}}
-.bclouds-prod-header span {{
-  height: 29px;
-  padding: 4px 10px;
-  font-size: 13px;
-  border-radius: 5px;
-}}
+          .bclouds-right-col {{
+            height: 518px;
+          }}
+          .bclouds-prod-header h3 {{
+          font-size: 16px;
+        }}
+        .bclouds-prod-header span {{
+          height: 29px;
+          padding: 4px 10px;
+          font-size: 13px;
+          border-radius: 5px;
+        }}
     }}
 
     </style>
@@ -1064,7 +1088,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     """
 
     return {"html": master_html}
-
 # =========================================================================
 # ✨ FULLY DYNAMIC AI WELCOME ENGINE ✨
 # =========================================================================
