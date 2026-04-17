@@ -843,12 +843,9 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     </button>
     """
     
-    # 🟢 DEMO FALLBACK: If the browser sends an empty history, fill it with default items!
-    if not recent_searches or recent_searches.strip() in ["", "null", "undefined", "[]"]:
-        recent_searches = "Headphones||Phone Cases||Bluetooth Speakers"
-        
-    recent_list = recent_searches.split("||")[:3]
-    valid_recents = [r.strip() for r in recent_list if r.strip() and r.strip().lower() not in ["null", "undefined"]]
+    # 🟢 REAL HISTORY: Only show recent searches if the user actually has them!
+    recent_list = recent_searches.split("||")[:3] if recent_searches else []
+    valid_recents = [r.strip() for r in recent_list if r.strip() and r.strip().lower() not in ["null", "undefined", "[]", ""]]
     
     if valid_recents:
         sidebar_html += "<div class='bclouds-side-title'>RECENT SEARCHES</div>"
