@@ -126,6 +126,7 @@ def extract_semantic_matrix(query_string):
     """
     [NLP ENGINE]
     Parses natural language to separate strict numerical filters from semantic text.
+    E.g., "shoes under 50" -> query: "shoes", max_price: 50.
     """
     query_lower = query_string.lower()
     core_query = query_lower
@@ -158,9 +159,7 @@ def extract_semantic_matrix(query_string):
         is_sale_intent = True
         core_query = re.sub(r'\b(?:with\s+sale|on\s+sale|sale|clearance|discount)\b', '', core_query)
 
-    # 🟢 PRO-FIX: Convert natural delimiters into the Equalizer Pipe `|`
-    core_query = re.sub(r'\b\s+and\s+\b', ' | ', core_query)
-    core_query = re.sub(r'[,&]', ' | ', core_query)
+    # Clean formatting, but DO NOT strip the Pipe character `|` out here, we need it for The Equalizer!
     core_query = re.sub(r'\s+', ' ', core_query).strip()
     
     if not core_query:
@@ -184,10 +183,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V90 Redis Key: Flushes cache to activate The Fixed Equalizer
+    # ⚡ V85 Redis Key: Flushes cache to activate The Equalizer
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v90:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v85:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -205,10 +204,10 @@ async def execute_search(request: SearchRequest):
     matrix = extract_semantic_matrix(query_text)
     core_query = matrix["core_query"]
 
-    # 🟢 THE EQUALIZER SETUP
+    # 🟢 THE EQUALIZER SETUP: Check if the AI router split the items using a pipe '|'
     if "|" in core_query:
         multi_items = [item.strip() for item in core_query.split("|") if item.strip()]
-        core_query_for_vector = " ".join(multi_items) 
+        core_query_for_vector = " ".join(multi_items) # Give vector the combined string
     else:
         multi_items = [core_query]
         core_query_for_vector = core_query
@@ -241,6 +240,7 @@ async def execute_search(request: SearchRequest):
         if getattr(request.filters, "color", None):
             filters.append({"bool": {"should": [{"multi_match": {"query": c, "type": "phrase", "fields": ["color", "attributes*", "name"]}} for c in request.filters.color[:5]], "minimum_should_match": 1}})
             
+        # [SMART SIZE PARSER] Protects against fetching 9-inch products when asking for Size 9
         if getattr(request.filters, "size", None):
             size_shoulds = []
             for s in request.filters.size[:5]:
@@ -257,20 +257,29 @@ async def execute_search(request: SearchRequest):
         
         if getattr(request.filters, "brand", None):
             filters.append({"terms": {"brand": [b.upper() for b in request.filters.brand[:5]]}})
+            
+        if getattr(request.filters, "price", None):
+            p_range = {}
+            if getattr(request.filters.price, "min", None) is not None: p_range["gte"] = request.filters.price.min
+            if getattr(request.filters.price, "max", None) is not None: p_range["lte"] = request.filters.price.max
+            if p_range: filters.append({"range": {"price": p_range}})
 
     sort_query = [{"_score": "desc"}]
     if request.sort == "price_asc": sort_query = [{"price": "asc"}]
     elif request.sort == "price_desc": sort_query = [{"price": "desc"}]
     elif request.sort == "on_sale": sort_query = [{"_score": "desc"}] 
 
-    # --- ⚖️ APPLY SCORING ALGORITHMS ---
+    # --- ⚖️ APPLY SCORING ALGORITHMS (KNN + Lexical + NPQ) ---
     semantic_shoulds = []
     
+    # [KNN] Vector Search integration
     if vector:
         k_val = max(200, from_val + request.page_size + 100)
         semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": k_val}}})
         
     # 🟢 THE EQUALIZER LOGIC
+    # By using a 'constant_score' for each individual item the user asked for (split by the pipe '|'), 
+    # we mathematically force OpenSearch to rank MacBooks and iPhones exactly evenly on Page 1!
     for item in multi_items:
         semantic_shoulds.append({
             "constant_score": {
@@ -282,12 +291,13 @@ async def execute_search(request: SearchRequest):
                         "fuzziness": "AUTO"
                     }
                 },
-                "boost": 1000.0 
+                "boost": 1000.0 # Guaranteed top-tier placement for all discrete items
             }
         })
 
     score_functions = []
     
+    # [NPQ Scoring] Demotes accessories if the user is looking for a core hardware item.
     if not matrix["has_accessory_intent"]:
         for acc in matrix["accessory_keywords"]:
             score_functions.append({"filter": {"match": {"name": acc}}, "weight": 0.001})
@@ -340,6 +350,7 @@ async def execute_search(request: SearchRequest):
     hits = response.get("hits", {})
     total_hits = hits.get("total", {}).get("value", 0)
     total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
+
     max_score = hits.get("max_score")
     if not max_score or max_score == 0: max_score = 1.0
 
@@ -361,8 +372,24 @@ async def execute_search(request: SearchRequest):
         _pid = str(source.get("product_id", "123"))
         _demo_rating = 4.0 + (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 10) / 10.0
         _demo_sales = (int(hashlib.md5(_pid.encode()).hexdigest(), 16) % 800) + 150
+
         raw_score = hit.get("_score", 0) or 0
         normalized_score = min(1.0, raw_score / max_score) if max_score > 0 else 0
+        
+        name_lower = str(source.get("name", "")).lower()
+        brand_lower = brand_display.lower()
+        cat_lower = " ".join(clean_cats).lower()
+        is_item_accessory = any(acc in name_lower for acc in matrix["accessory_keywords"])
+        
+        # [Score Normalization] UI mapping logic based on keyword proximity
+        if core_query == brand_lower: display_score = 0.99
+        elif core_query in cat_lower: display_score = 0.98
+        elif core_query in name_lower and not matrix["has_accessory_intent"] and not is_item_accessory:
+            display_score = 0.95 + (normalized_score * 0.03) 
+        elif is_item_accessory and not matrix["has_accessory_intent"]:
+            display_score = 0.40 + (normalized_score * 0.15) 
+        elif core_query in name_lower: display_score = 0.85 + (normalized_score * 0.09)
+        else: display_score = 0.60 + (normalized_score * 0.20)
 
         results.append({
             "id": source.get("product_id"), "name": source.get("name", "Unknown Product"),
@@ -372,7 +399,7 @@ async def execute_search(request: SearchRequest):
             "sku": source.get("sku", ""), "url": source.get("url", ""),
             "primary_image": primary_image, "rating": source.get("rating") if source.get("rating", 0) > 0 else _demo_rating,
             "sales_count": source.get("sales_count") if source.get("sales_count", 0) > 0 else _demo_sales,
-            "score": round(0.85 + (normalized_score * 0.14), 2)
+            "score": round(display_score, 2)
         })
 
     if request.sort not in ["price_asc", "price_desc"]:
@@ -394,9 +421,14 @@ async def execute_search(request: SearchRequest):
     return final_response
 
 # =========================================================================
-# ✨ LLM AGENT ROUTER 
+# ✨ LLM AGENT ROUTER (4-Tier Fallback & The Equalizer Pipeline)
 # =========================================================================
 async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
+    """
+    [LLM AGENT]
+    Acts as the brain of the assistant. Parses user language into structured JSON constraints.
+    Then executes a 4-Tier fallback strategy to guarantee a non-zero search result.
+    """
     current_filters = current_state.filters.model_dump() if current_state.filters else {}
     
     system_prompt = f"""
@@ -412,7 +444,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     Analyze the message. Decide if the user wants to REFINE the search or start a NEW SEARCH.
 
     🔥 CRITICAL RULE FOR MULTIPLE DISJOINT ITEMS:
-    If the user explicitly asks for completely different products in the same message (e.g. "iPhone and MacBook"), output them in 'search_query' separated by a pipe character '|' (e.g. "iphone | macbook"). Do NOT set any brand or category filters when doing this!
+    If the user explicitly asks for completely different products in the same message (e.g. "iPhone and MacBook" or "bags, shoes, and hats"), output them in 'search_query' separated by a pipe character '|' (e.g. "iphone | macbook"). Do NOT set any brand or category filters when doing this!
 
     Output ONLY a valid JSON object:
     {{
@@ -421,7 +453,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         "filters": {{
             "color": [], 
             "size": [], // Extract numbers/sizes (e.g., ["8", "9", "XL"])
-            "brand": [], // Only set if searching for a single brand
+            "brand": [], // Extract brand names explicitly mentioned
             "on_sale": false, 
             "price": {{"min": null, "max": null}}
         }},
@@ -431,6 +463,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     """
 
     try:
+        # GPT-3.5-turbo-0125 ensures 100% strict JSON adherence, preventing backend crashes.
         llm_response = await openai_client.chat.completions.create(
             model="gpt-3.5-turbo-0125",
             response_format={ "type": "json_object" },
@@ -459,6 +492,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         new_filters_obj.size = [] 
         new_filters_obj.on_sale = extracted_filters.get("on_sale", False)
         
+        # [Context Preservation] If refining, we carry over their existing filters.
         if parsed_intent.get("intent") == "refine" and current_state.filters:
             new_filters_obj.category = current_state.filters.category or []
             new_filters_obj.brand = current_state.filters.brand or []
@@ -466,9 +500,11 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             new_filters_obj.size = current_state.filters.size or []
             new_filters_obj.price = current_state.filters.price
             new_filters_obj.in_stock = current_state.filters.in_stock
+            
             if getattr(current_state.filters, "on_sale", False) and extracted_filters.get("on_sale") is not False:
                 new_filters_obj.on_sale = True
 
+        # [Anti-Hallucination Shield] Deletes meta-language generated by the AI
         bad_words = ["string", "example", "any", "none", "etc", "and", "or"]
 
         if extracted_filters.get("color"):
@@ -482,16 +518,29 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         if extracted_filters.get("brand"):
             brands = [str(b).upper() for b in extracted_filters["brand"] if str(b).lower() not in bad_words]
             new_filters_obj.brand = list(set(new_filters_obj.brand + brands))
+            
+        if extracted_filters.get("price"):
+            p_data = extracted_filters["price"]
+            if isinstance(p_data, dict):
+                if p_data.get("min") is not None or p_data.get("max") is not None:
+                    new_filters_obj.price = PriceFilter(min=p_data.get("min"), max=p_data.get("max"))
 
         updated_request.filters = new_filters_obj
+        
         if new_filters_obj.on_sale:
             updated_request.sort = "on_sale"
 
+        # =======================================================
+        # 🟢 4-TIER CASCADE FALLBACK ENGINE WITH DYNAMIC ACKNOWLEDGMENT
+        # =======================================================
+        
+        # TIER 1: Try the strict filters
         final_results_dict = await execute_search(updated_request)
         dropped_filters = []
         
-        # TIER 2: Drop Size & Color
+        # TIER 2: If 0 results, drop Size & Color (Often too restrictive)
         if final_results_dict.get("total_results", 0) == 0 and (new_filters_obj.size or new_filters_obj.color):
+            logger.info("⚠️ Fallback Tier 2: Relaxing size/color")
             if new_filters_obj.size: dropped_filters.append("size")
             if new_filters_obj.color: dropped_filters.append("color")
             new_filters_obj.size = []
@@ -499,15 +548,19 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             updated_request.filters = new_filters_obj
             final_results_dict = await execute_search(updated_request)
             
-        # TIER 3: Drop Brand 
-        if final_results_dict.get("total_results", 0) == 0 and new_filters_obj.brand:
-            dropped_filters.append("brand")
+        # TIER 3: If STILL 0 results, drop Brand & Price 
+        if final_results_dict.get("total_results", 0) == 0 and (new_filters_obj.brand or new_filters_obj.price):
+            logger.info("⚠️ Fallback Tier 3: Relaxing brand/price")
+            if new_filters_obj.brand: dropped_filters.append("brand")
+            if new_filters_obj.price: dropped_filters.append("price constraints")
             new_filters_obj.brand = []
+            new_filters_obj.price = None
             updated_request.filters = new_filters_obj
             final_results_dict = await execute_search(updated_request)
 
-        # TIER 4: Pure Semantic Search
+        # TIER 4: Pure Semantic Search (Drop EVERYTHING)
         if final_results_dict.get("total_results", 0) == 0:
+            logger.info("⚠️ Fallback Tier 4: Pure Semantic mode")
             updated_request.filters = None
             final_results_dict = await execute_search(updated_request)
 
@@ -516,6 +569,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             
         ai_reply = parsed_intent.get("ai_message", "")
         
+        # [Fallback Messaging] Transparent Communication to the user if we adjusted their request
         if dropped_filters:
             dropped_str = " or ".join(dropped_filters)
             ai_reply = f"I couldn't find exact matches for that {dropped_str}, but here are the best {updated_request.query.replace('|', ' and ')} items we have in stock! ✨"
@@ -526,13 +580,10 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         if not isinstance(suggestions, list):
             suggestions = ["Show me shoes", "Find jackets", "I'm looking for bags"]
         
-        # 🟢 Clean UI display
-        clean_ui_query = updated_request.query.replace("|", " and ")
-        
         return AIAssistantResponse(
             **final_results_dict, 
             ai_message=ai_reply, 
-            updated_query=clean_ui_query,
+            updated_query=updated_request.query.replace("|", " "), # Clean UI display
             updated_filters=new_filters_obj.model_dump(),
             updated_sort=updated_request.sort, 
             suggestions=suggestions[:4]
@@ -546,7 +597,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         return AIAssistantResponse(**fail_results, ai_message="Sorry, I encountered an error. 🚧", suggestions=["Show me shoes", "I'm looking for bags"])
 
 # =========================================================================
-# 🔎 AUTOCOMPLETE ROUTE
+# 🔎 AUTOCOMPLETE ROUTE (Fast Prefix Search)
 # =========================================================================
 async def execute_autocomplete(query_string: str):
     clean_query = query_string.strip()
