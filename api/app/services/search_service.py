@@ -19,8 +19,8 @@ to guarantee a flawless, 0-dead-end user experience:
 6. 🔥 LLM Chat Agent (Context-Aware Gender, Brand, & Price Engine):
    - Strict JSON extraction now includes Gender Nodes.
    - Bulletproof Float Casting: Aggressively strips $ and text from AI price outputs.
-   - Domain Context: "Apple" triggers automatic brand filtering to block 3rd-party cases.
-   - Heavy Accessory Demotion (0.00001x multiplier) for searches lacking accessory intent.
+   - Bulletproof Menswear Interceptor: Prevents "Dress Socks" from showing up when 
+     searching for Men's Dresses by hard-forcing the query to "suits | dress shirts".
 =====================================================================================
 """
 
@@ -158,10 +158,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V120 Redis Key: Flushes cache to apply strict Price Float Logic
+    # ⚡ V125 Redis Key: Flushes cache to apply the strict Menswear Override
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v120:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v125:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -243,7 +243,6 @@ async def execute_search(request: SearchRequest):
         if getattr(request.filters, "brand", None):
             filters.append({"terms": {"brand": [b.upper() for b in request.filters.brand[:5]]}})
             
-        # 🟢 BULLETPROOF PRICE CASTING (Ignores dirty frontend data)
         if getattr(request.filters, "price", None):
             p_range = {}
             if getattr(request.filters.price, "min", None) is not None: 
@@ -437,7 +436,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     1. FILTERING (Refine): If the user types a color, size, price (e.g., "under 50"), or GENDER and DOES NOT name a completely different product, set intent to "refine". KEEP the 'search_query' exactly as "{current_state.query}" and extract the variables into the filters array.
     2. NEW SEARCH: If the user types a new product (e.g., current context is "shoes" but they type "iphone"), set intent to "new_search". Change 'search_query' to the new product and clear old filters.
     3. BRAND & ACCESSORY AWARENESS: If the query is "iphone", "macbook", or "ipad", you MUST set the brand filter to ["Apple"] to block third-party phone cases. 
-    4. MENSWEAR TRANSLATION: If the user asks for "men's dresses", translate 'search_query' to "suits | dress shirts" and set gender to "men".
+    4. MENSWEAR TRANSLATION: If the user looks for a "dress" but specifies "men" or "for men", you MUST translate 'search_query' to "suits | dress shirts" and set gender to ["men"]. NEVER say "men's dresses" in the chat, say "men's formal wear".
     5. PRICE PARSING: Extract numerical limits only. NO $ signs.
 
     Output ONLY a valid JSON object:
@@ -448,11 +447,11 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             "color": [], 
             "size": [], 
             "brand": [], 
-            "gender": [], 
+            "gender": [], // Only set if explicitly requested
             "on_sale": false, 
             "price": {{"min": null, "max": null}} // Extract numerical limits here (NUMBERS ONLY)
         }},
-        "ai_message": "Friendly 1-sentence reply WITH FUN EMOJIS!",
+        "ai_message": "Friendly 1-sentence reply WITH FUN EMOJIS! E.g. 'Looking for {current_state.query} under $50! 💸'",
         "suggestions": ["Follow-up query 1", "Follow-up query 2", "Follow-up query 3"]
     }}
     """
@@ -517,7 +516,6 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             genders = [str(g).lower() for g in extracted_filters["gender"] if str(g).lower() not in bad_words]
             new_filters_obj.gender = list(set(getattr(new_filters_obj, "gender", []) + genders))
             
-        # 🟢 BULLETPROOF PRICE EXTRACTION FROM LLM (STRIPS ALL $ SIGNS OR TEXT)
         if extracted_filters.get("price"):
             p_data = extracted_filters["price"]
             if isinstance(p_data, dict):
@@ -543,6 +541,17 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         updated_request.filters = new_filters_obj
         if new_filters_obj.on_sale:
             updated_request.sort = "on_sale"
+
+        # 🟢 BULLETPROOF MENSWEAR INTERCEPTOR
+        # If the AI hallucinates and tries to search for "dress" + "men", this forces 
+        # it to search for suits/shirts so you don't get "dress socks" or women's clothing.
+        current_genders = [str(g).lower() for g in getattr(new_filters_obj, "gender", [])]
+        is_male = any(g in ["men", "mens", "male"] for g in current_genders)
+        
+        if "dress" in updated_request.query.lower() and is_male:
+            updated_request.query = "suits | dress shirts"
+            parsed_intent["ai_message"] = "Let's find some sharp men's formal wear! 👔✨"
+            parsed_intent["suggestions"] = ["Show me men's suits", "Looking for dress shirts", "Find formal ties"]
 
         final_results_dict = await execute_search(updated_request)
         dropped_filters = []
