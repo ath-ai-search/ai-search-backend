@@ -11,17 +11,18 @@ to guarantee a flawless, 0-dead-end user experience:
 3. KNN (K-Nearest Neighbors) Semantic Search
 4. NPQ (Negative Predictive Querying / Demotion Scoring)
 
-5. 🔥 "The Equalizer" & Brand/Category Boosting:
-   - Brand Boosting: Fixes the "Marykay Apple" issue by applying a 300x multiplier 
-     if the search term perfectly matches the product's official Brand.
-   - Category Boosting: Solves the Polysemy Problem (e.g. "Watch Cap" vs "Wrist Watch").
+5. 🔥 "The Equalizer" & Category Boosting:
+   - Splits multi-items ("macbook | iphone") to guarantee equal billing.
+   - Solves the Polysemy Problem (e.g. "Watch Cap" vs "Wrist Watch") by applying a 
+     massive 200x boost if the query perfectly matches the product's official Category.
 
 6. 🔥 LLM Chat Agent (Context-Aware Gender, Brand, & Price Engine):
-   - Dynamic Accessory Awareness: Applies Apple brand filters to hardware, but smartly 
-     DROPS the brand filter if the user asks for "cases" or "accessories".
+   - Strict JSON extraction now includes Gender Nodes.
    - Bulletproof Float Casting: Aggressively strips $ and text from AI price outputs.
    - Bulletproof Menswear Interceptor: Prevents "Dress Socks" from showing up when 
      searching for Men's Dresses by hard-forcing the query to "suits | dress shirts".
+   - 🔥 NEW Bulletproof Brand Filter: Forces case-insensitivity on all brand filters 
+     to prevent the Fallback Engine from dropping brands like "Apple" vs "APPLE".
 =====================================================================================
 """
 
@@ -142,7 +143,7 @@ def extract_semantic_matrix(query_string):
     if not core_query:
         core_query = query_lower 
 
-    accessory_keywords = ["case", "cover", "charger", "cable", "bag", "protector", "strap", "band", "adapter", "mount", "holder", "accessories"]
+    accessory_keywords = ["case", "cover", "charger", "cable", "bag", "protector", "strap", "band", "adapter", "mount", "holder"]
     has_accessory_intent = any(acc in query_lower for acc in accessory_keywords)
 
     return {
@@ -159,10 +160,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V130 Redis Key: Flushes cache to apply the strict Brand Boost Fix
+    # ⚡ V135 Redis Key: Flushes cache to apply the strict Case-Insensitive Brand Fix
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v130:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v135:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -241,8 +242,18 @@ async def execute_search(request: SearchRequest):
                 })
             filters.append({"bool": {"should": gender_shoulds, "minimum_should_match": 1}})
 
+        # 🟢 FIXED: Case-Insensitive Bulletproof Brand Filter
         if getattr(request.filters, "brand", None):
-            filters.append({"terms": {"brand": [b.upper() for b in request.filters.brand[:5]]}})
+            brand_shoulds = []
+            for b in request.filters.brand[:5]:
+                b_str = str(b).strip()
+                brand_shoulds.extend([
+                    {"match_phrase": {"brand": b_str}},
+                    {"term": {"brand": b_str}},
+                    {"term": {"brand": b_str.upper()}},
+                    {"term": {"brand": b_str.title()}}
+                ])
+            filters.append({"bool": {"should": brand_shoulds, "minimum_should_match": 1}})
             
         if getattr(request.filters, "price", None):
             p_range = {}
@@ -280,7 +291,6 @@ async def execute_search(request: SearchRequest):
                     }
                 }
             },
-            # 🟢 NEW: MASSIVE BRAND BOOST to stop Marykay Apple from beating Apple
             {
                 "match_phrase": {
                     "brand": {
@@ -445,9 +455,8 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     🔥 CRITICAL LOGIC RULES:
     1. FILTERING (Refine): If the user types a color, size, price (e.g., "under 50"), or GENDER and DOES NOT name a completely different product, set intent to "refine". KEEP the 'search_query' exactly as "{current_state.query}" and extract the variables into the filters array.
     2. NEW SEARCH: If the user types a new product (e.g., current context is "shoes" but they type "iphone"), set intent to "new_search". Change 'search_query' to the new product and clear old filters.
-    3. BRAND & ACCESSORY AWARENESS: If the user searches for hardware ("iphone", "macbook", "ipad"), set brand to ["Apple"] to block junk. HOWEVER, if the user explicitly asks for "cases", "covers", or "accessories", DO NOT set the brand filter to Apple (allow all brands like OtterBox).
-    4. MENSWEAR TRANSLATION: If the user asks for "men's dresses", translate 'search_query' to "suits | dress shirts" and set gender to "men".
-    5. PRICE PARSING: Extract numerical limits only. NO $ signs.
+    3. BRAND AWARENESS: "Apple" ALWAYS refers to the technology company (MacBook, iPhone, iPad). NEVER treat it as a fruit.
+    4. PRICE PARSING: Extract numerical limits only. NO $ signs.
 
     Output ONLY a valid JSON object:
     {{
@@ -548,10 +557,6 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
                 except Exception as e:
                     logger.error(f"AI Price extraction error: {e}")
 
-        updated_request.filters = new_filters_obj
-        if new_filters_obj.on_sale:
-            updated_request.sort = "on_sale"
-
         # 🟢 BULLETPROOF MENSWEAR INTERCEPTOR
         current_genders = [str(g).lower() for g in getattr(new_filters_obj, "gender", [])]
         is_male = any(g in ["men", "mens", "male"] for g in current_genders)
@@ -560,6 +565,24 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             updated_request.query = "suits | dress shirts"
             parsed_intent["ai_message"] = "Let's find some sharp men's formal wear! 👔✨"
             parsed_intent["suggestions"] = ["Show me men's suits", "Looking for dress shirts", "Find formal ties"]
+            
+        # 🟢 BULLETPROOF APPLE HARDWARE INTERCEPTOR
+        clean_q = updated_request.query.lower()
+        is_apple_device = any(x in clean_q for x in ["iphone", "macbook", "ipad", "apple watch", "apple tv", "iphones"])
+        is_apple_brand = clean_q == "apple"
+        is_accessory = any(x in clean_q for x in ["case", "cover", "charger", "cable", "protector", "accessories"])
+        
+        if (is_apple_device or is_apple_brand) and not is_accessory:
+            new_filters_obj.brand = ["Apple"]
+            if is_apple_brand:
+                parsed_intent["ai_message"] = "Here are the best Apple products we have in stock! 🍏✨"
+                parsed_intent["suggestions"] = ["Show me iPhones", "Looking for MacBooks", "Check out iPads"]
+            else:
+                parsed_intent["ai_message"] = f"Exciting choice! Searching for the best {updated_request.query} items for you! 📱✨"
+
+        updated_request.filters = new_filters_obj
+        if new_filters_obj.on_sale:
+            updated_request.sort = "on_sale"
 
         final_results_dict = await execute_search(updated_request)
         dropped_filters = []
@@ -959,7 +982,8 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         -webkit-line-clamp: 1;
         cursor: pointer;
     }}
-     @media (max-width: 768px) {{
+
+      @media (max-width: 768px) {{
         .bclouds-left-col {{
            display: inline-block;
            width: 100%;
@@ -1052,10 +1076,9 @@ async def generate_ai_welcome(current_query: str):
     Generate a highly dynamic, conversational welcome message and 3-4 clickable suggestion chips.
     
     RULES:
-    1. STORE KNOWLEDGE BASE: "Apple" ALWAYS refers to the tech brand (MacBook, iPhone, iPad, Watch), NEVER the fruit. "Dress for men" or "Men's dress" refers to men's suits, dress shirts, or formal wear.
-    2. If CURRENT SEARCH CONTEXT is empty (or ""), write a general, stylish welcome. E.g., "Welcome! Ready to explore some great fashion finds? ✨"
-    3. If CURRENT SEARCH CONTEXT contains a product, acknowledge it and offer highly relevant refinements or complementary accessories specifically for that product! 
-    4. The "suggestions" array MUST contain 3 to 4 realistic, clickable follow-up questions formatted as natural user requests.
+    1. If CURRENT SEARCH CONTEXT is empty (or ""), write a general, stylish welcome. E.g., "Welcome! Ready to explore some great fashion finds? ✨"
+    2. If CURRENT SEARCH CONTEXT contains a product, acknowledge it and offer highly relevant refinements or complementary accessories specifically for that product! 
+    3. The "suggestions" array MUST contain 3 to 4 realistic, clickable follow-up questions formatted as natural user requests.
     
     Output ONLY a valid JSON object matching this structure:
     {{
