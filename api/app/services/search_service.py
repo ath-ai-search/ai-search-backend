@@ -947,6 +947,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 .bclouds-mega-menu {{
   margin: 94px auto 0;
   height: 697px;
+  display: inline-block;
 }}
     }}
     </style>
