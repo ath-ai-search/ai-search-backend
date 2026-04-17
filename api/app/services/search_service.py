@@ -985,7 +985,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 
       @media (max-width: 640px) {{ 
 .bclouds-prod-row {{
-  width: calc(25% - 8px);
+  width: calc(33% - 6px);
 }}
  .bclouds-prod-price {{
   font-size: 12px;
@@ -995,6 +995,28 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 }}
 .bclouds-prod-price del {{
   margin-left: 0 !important;
+}}
+.glowAni{{
+    margin-bottom: 0;
+}}
+.bclouds-side-item, .bclouds-side-title {{
+  display: none;
+}}
+.bclouds-prod-img img {{
+  max-height: 60px;
+  }}
+
+  .bclouds-right-col {{
+    height: 518px;
+  }}
+  .bclouds-prod-header h3 {{
+  font-size: 16px;
+}}
+.bclouds-prod-header span {{
+  height: 29px;
+  padding: 4px 10px;
+  font-size: 13px;
+  border-radius: 5px;
 }}
     }}
 
