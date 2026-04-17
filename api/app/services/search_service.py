@@ -1009,6 +1009,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         text-overflow: ellipsis;
         -webkit-line-clamp: 1;
         cursor: pointer;
+        height: 29px;
     }}
 
       @media (max-width: 768px) {{
