@@ -17,7 +17,8 @@ to guarantee a flawless, 0-dead-end user experience:
      massive 200x boost if the query perfectly matches the product's official Category.
 
 6. 🔥 LLM Chat Agent (Context-Aware Gender, Brand, & Price Engine):
-   - Strict JSON extraction now includes Gender Nodes and secure Float casting for Prices.
+   - Strict JSON extraction now includes Gender Nodes.
+   - Bulletproof Float Casting: Aggressively strips $ and text from AI price outputs.
    - Domain Context: "Apple" triggers automatic brand filtering to block 3rd-party cases.
    - Heavy Accessory Demotion (0.00001x multiplier) for searches lacking accessory intent.
 =====================================================================================
@@ -110,7 +111,6 @@ def extract_semantic_matrix(query_string):
     smart_min_price, smart_max_price, smart_discount = None, None, None
     is_sale_intent = False
 
-    # 🟢 FIXED: Enhanced Price Regex to explicitly grab "between X and Y", "under X"
     range_match = re.search(r'(?:between|from)?\s*\$?\s*(\d+)\s*(?:to|and|-)\s*\$?\s*(\d+)', query_lower)
     if range_match:
         smart_min_price, smart_max_price = float(range_match.group(1)), float(range_match.group(2))
@@ -158,10 +158,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V115 Redis Key: Flushes cache to apply the strict Price and Accessory logic
+    # ⚡ V120 Redis Key: Flushes cache to apply strict Price Float Logic
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v115:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v120:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -243,14 +243,18 @@ async def execute_search(request: SearchRequest):
         if getattr(request.filters, "brand", None):
             filters.append({"terms": {"brand": [b.upper() for b in request.filters.brand[:5]]}})
             
-        # 🟢 SECURE PRICE CASTING
+        # 🟢 BULLETPROOF PRICE CASTING (Ignores dirty frontend data)
         if getattr(request.filters, "price", None):
             p_range = {}
             if getattr(request.filters.price, "min", None) is not None: 
-                try: p_range["gte"] = float(request.filters.price.min)
+                try: 
+                    clean_min = re.sub(r'[^\d.]', '', str(request.filters.price.min))
+                    if clean_min: p_range["gte"] = float(clean_min)
                 except Exception: pass
             if getattr(request.filters.price, "max", None) is not None: 
-                try: p_range["lte"] = float(request.filters.price.max)
+                try: 
+                    clean_max = re.sub(r'[^\d.]', '', str(request.filters.price.max))
+                    if clean_max: p_range["lte"] = float(clean_max)
                 except Exception: pass
             if p_range: filters.append({"range": {"price": p_range}})
 
@@ -306,7 +310,6 @@ async def execute_search(request: SearchRequest):
 
     score_functions = []
     
-    # 🟢 FIXED: Heavy Accessory Demotion (0.00001x) to crush cases when searching for iPhones
     if not matrix["has_accessory_intent"]:
         for acc in matrix["accessory_keywords"]:
             score_functions.append({"filter": {"match": {"name": acc}}, "weight": 0.00001})
@@ -435,7 +438,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     2. NEW SEARCH: If the user types a new product (e.g., current context is "shoes" but they type "iphone"), set intent to "new_search". Change 'search_query' to the new product and clear old filters.
     3. BRAND & ACCESSORY AWARENESS: If the query is "iphone", "macbook", or "ipad", you MUST set the brand filter to ["Apple"] to block third-party phone cases. 
     4. MENSWEAR TRANSLATION: If the user asks for "men's dresses", translate 'search_query' to "suits | dress shirts" and set gender to "men".
-    5. PRICE PARSING: If the user says "under 50", "less than 20", set price.max. If "between 10 and 20", set price.min and price.max.
+    5. PRICE PARSING: Extract numerical limits only. NO $ signs.
 
     Output ONLY a valid JSON object:
     {{
@@ -445,11 +448,11 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             "color": [], 
             "size": [], 
             "brand": [], 
-            "gender": [], // Only set if explicitly requested
+            "gender": [], 
             "on_sale": false, 
-            "price": {{"min": null, "max": null}} // Extract numerical limits here
+            "price": {{"min": null, "max": null}} // Extract numerical limits here (NUMBERS ONLY)
         }},
-        "ai_message": "Friendly 1-sentence reply WITH FUN EMOJIS! E.g. 'Looking for {current_state.query} under $50! 💸'",
+        "ai_message": "Friendly 1-sentence reply WITH FUN EMOJIS!",
         "suggestions": ["Follow-up query 1", "Follow-up query 2", "Follow-up query 3"]
     }}
     """
@@ -514,17 +517,28 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             genders = [str(g).lower() for g in extracted_filters["gender"] if str(g).lower() not in bad_words]
             new_filters_obj.gender = list(set(getattr(new_filters_obj, "gender", []) + genders))
             
-        # 🟢 SAFE PRICE EXTRACTION FROM LLM
+        # 🟢 BULLETPROOF PRICE EXTRACTION FROM LLM (STRIPS ALL $ SIGNS OR TEXT)
         if extracted_filters.get("price"):
             p_data = extracted_filters["price"]
             if isinstance(p_data, dict):
                 try:
-                    min_p = float(p_data.get("min")) if p_data.get("min") is not None else None
-                    max_p = float(p_data.get("max")) if p_data.get("max") is not None else None
+                    raw_min = p_data.get("min")
+                    raw_max = p_data.get("max")
+                    
+                    min_p = None
+                    if raw_min is not None and str(raw_min).strip() not in ["", "null", "None"]:
+                        clean_min = re.sub(r'[^\d.]', '', str(raw_min))
+                        if clean_min: min_p = float(clean_min)
+                        
+                    max_p = None
+                    if raw_max is not None and str(raw_max).strip() not in ["", "null", "None"]:
+                        clean_max = re.sub(r'[^\d.]', '', str(raw_max))
+                        if clean_max: max_p = float(clean_max)
+                        
                     if min_p is not None or max_p is not None:
                         new_filters_obj.price = PriceFilter(min=min_p, max=max_p)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error(f"AI Price extraction error: {e}")
 
         updated_request.filters = new_filters_obj
         if new_filters_obj.on_sale:
@@ -553,6 +567,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
 
         # TIER 4: Pure Semantic Search
         if final_results_dict.get("total_results", 0) == 0:
+            dropped_filters.append("strict price limits")
             updated_request.filters = None
             final_results_dict = await execute_search(updated_request)
 
@@ -885,7 +900,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     .bclouds-prod-title {{ font-size: 14px; color: #444; padding: 8px 0 5px 0; }}
     .bclouds-prod-price {{ font-size: 14px; font-weight: 700; font-size: 16px; }}
 
-    /* 🔥 GLOW ANIMATION */
+    /* 🔥 GLOW ANIMATION (Properly Escaped for Python) */
     .glowAni {{
         --border-angle: 0deg;
         border-radius: 12px;
@@ -930,8 +945,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         -webkit-line-clamp: 1;
         cursor: pointer;
     }}
-
-    @media (max-width: 768px) {{
+      @media (max-width: 768px) {{
         .bclouds-left-col {{
            display: inline-block;
            width: 100%;
