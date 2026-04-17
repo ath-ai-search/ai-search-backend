@@ -811,11 +811,11 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                     <img src="{img_url}" alt="{name}">
                 </div>
                 <div class="bclouds-prod-info">
-                    <h4 class="card-title" style="margin:0; padding:0; border:none;">
-                        <a href="{prod_url}" data-instantload data-event-type="product-click" class="bclouds-prod-title" title="{name}" style="text-decoration: none; color: inherit;">
-                            {name}
-                        </a>
-                    </h4>
+                   <h4 class="card-title" style="margin:0; padding:0; border:none;">
+    <a href="{prod_url}" data-instantload data-event-type="product-click" class="bclouds-prod-title" title="{name}" style="text-decoration: none; color: inherit;">
+        {name}
+    </a>
+</h4>
                     {price_html}
                 </div>
             </div>
