@@ -11,13 +11,14 @@ to guarantee a flawless, 0-dead-end user experience:
 3. KNN (K-Nearest Neighbors) Semantic Search
 4. NPQ (Negative Predictive Querying / Demotion Scoring)
 
-5. 🔥 "The Equalizer" & Category Boosting:
-   - Splits multi-items ("macbook | iphone") to guarantee equal billing.
-   - Solves the Polysemy Problem (e.g. "Watch Cap" vs "Wrist Watch") by applying a 
-     massive 200x boost if the query perfectly matches the product's official Category.
+5. 🔥 "The Equalizer" & Brand/Category Boosting:
+   - Brand Boosting: Fixes the "Marykay Apple" issue by applying a 300x multiplier 
+     if the search term perfectly matches the product's official Brand.
+   - Category Boosting: Solves the Polysemy Problem (e.g. "Watch Cap" vs "Wrist Watch").
 
 6. 🔥 LLM Chat Agent (Context-Aware Gender, Brand, & Price Engine):
-   - Strict JSON extraction now includes Gender Nodes.
+   - Dynamic Accessory Awareness: Applies Apple brand filters to hardware, but smartly 
+     DROPS the brand filter if the user asks for "cases" or "accessories".
    - Bulletproof Float Casting: Aggressively strips $ and text from AI price outputs.
    - Bulletproof Menswear Interceptor: Prevents "Dress Socks" from showing up when 
      searching for Men's Dresses by hard-forcing the query to "suits | dress shirts".
@@ -141,7 +142,7 @@ def extract_semantic_matrix(query_string):
     if not core_query:
         core_query = query_lower 
 
-    accessory_keywords = ["case", "cover", "charger", "cable", "bag", "protector", "strap", "band", "adapter", "mount", "holder"]
+    accessory_keywords = ["case", "cover", "charger", "cable", "bag", "protector", "strap", "band", "adapter", "mount", "holder", "accessories"]
     has_accessory_intent = any(acc in query_lower for acc in accessory_keywords)
 
     return {
@@ -158,10 +159,10 @@ def extract_semantic_matrix(query_string):
 async def execute_search(request: SearchRequest):
     request.page_size = 25 if request.page_size != 10 else 10
     
-    # ⚡ V125 Redis Key: Flushes cache to apply the strict Menswear Override
+    # ⚡ V130 Redis Key: Flushes cache to apply the strict Brand Boost Fix
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
-    cache_key = f"search:ai:v125:{hashlib.md5(request_str.encode()).hexdigest()}"
+    cache_key = f"search:ai:v130:{hashlib.md5(request_str.encode()).hexdigest()}"
 
     try:
         cached_result = await redis_client.get(cache_key)
@@ -276,6 +277,15 @@ async def execute_search(request: SearchRequest):
                     "name": {
                         "query": item,
                         "boost": 100.0 
+                    }
+                }
+            },
+            # 🟢 NEW: MASSIVE BRAND BOOST to stop Marykay Apple from beating Apple
+            {
+                "match_phrase": {
+                    "brand": {
+                        "query": item,
+                        "boost": 300.0 
                     }
                 }
             },
@@ -435,8 +445,8 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     🔥 CRITICAL LOGIC RULES:
     1. FILTERING (Refine): If the user types a color, size, price (e.g., "under 50"), or GENDER and DOES NOT name a completely different product, set intent to "refine". KEEP the 'search_query' exactly as "{current_state.query}" and extract the variables into the filters array.
     2. NEW SEARCH: If the user types a new product (e.g., current context is "shoes" but they type "iphone"), set intent to "new_search". Change 'search_query' to the new product and clear old filters.
-    3. BRAND & ACCESSORY AWARENESS: If the query is "iphone", "macbook", or "ipad", you MUST set the brand filter to ["Apple"] to block third-party phone cases. 
-    4. MENSWEAR TRANSLATION: If the user looks for a "dress" but specifies "men" or "for men", you MUST translate 'search_query' to "suits | dress shirts" and set gender to ["men"]. NEVER say "men's dresses" in the chat, say "men's formal wear".
+    3. BRAND & ACCESSORY AWARENESS: If the user searches for hardware ("iphone", "macbook", "ipad"), set brand to ["Apple"] to block junk. HOWEVER, if the user explicitly asks for "cases", "covers", or "accessories", DO NOT set the brand filter to Apple (allow all brands like OtterBox).
+    4. MENSWEAR TRANSLATION: If the user asks for "men's dresses", translate 'search_query' to "suits | dress shirts" and set gender to "men".
     5. PRICE PARSING: Extract numerical limits only. NO $ signs.
 
     Output ONLY a valid JSON object:
@@ -447,11 +457,11 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             "color": [], 
             "size": [], 
             "brand": [], 
-            "gender": [], // Only set if explicitly requested
+            "gender": [], 
             "on_sale": false, 
-            "price": {{"min": null, "max": null}} // Extract numerical limits here (NUMBERS ONLY)
+            "price": {{"min": null, "max": null}} 
         }},
-        "ai_message": "Friendly 1-sentence reply WITH FUN EMOJIS! E.g. 'Looking for {current_state.query} under $50! 💸'",
+        "ai_message": "Friendly 1-sentence reply WITH FUN EMOJIS!",
         "suggestions": ["Follow-up query 1", "Follow-up query 2", "Follow-up query 3"]
     }}
     """
@@ -543,8 +553,6 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             updated_request.sort = "on_sale"
 
         # 🟢 BULLETPROOF MENSWEAR INTERCEPTOR
-        # If the AI hallucinates and tries to search for "dress" + "men", this forces 
-        # it to search for suits/shirts so you don't get "dress socks" or women's clothing.
         current_genders = [str(g).lower() for g in getattr(new_filters_obj, "gender", [])]
         is_male = any(g in ["men", "mens", "male"] for g in current_genders)
         
@@ -556,7 +564,6 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
         final_results_dict = await execute_search(updated_request)
         dropped_filters = []
         
-        # 🟢 TIER 2: Drop Size, Color, & Gender
         if final_results_dict.get("total_results", 0) == 0 and (new_filters_obj.size or new_filters_obj.color or getattr(new_filters_obj, "gender", [])):
             if new_filters_obj.size: dropped_filters.append("size")
             if new_filters_obj.color: dropped_filters.append("color")
@@ -567,14 +574,12 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
             updated_request.filters = new_filters_obj
             final_results_dict = await execute_search(updated_request)
             
-        # TIER 3: Drop Brand 
         if final_results_dict.get("total_results", 0) == 0 and new_filters_obj.brand:
             dropped_filters.append("brand")
             new_filters_obj.brand = []
             updated_request.filters = new_filters_obj
             final_results_dict = await execute_search(updated_request)
 
-        # TIER 4: Pure Semantic Search
         if final_results_dict.get("total_results", 0) == 0:
             dropped_filters.append("strict price limits")
             updated_request.filters = None
@@ -954,7 +959,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         -webkit-line-clamp: 1;
         cursor: pointer;
     }}
-      @media (max-width: 768px) {{
+     @media (max-width: 768px) {{
         .bclouds-left-col {{
            display: inline-block;
            width: 100%;
@@ -1025,9 +1030,10 @@ async def generate_ai_welcome(current_query: str):
     Generate a highly dynamic, conversational welcome message and 3-4 clickable suggestion chips.
     
     RULES:
-    1. If CURRENT SEARCH CONTEXT is empty (or ""), write a general, stylish welcome. E.g., "Welcome! Ready to explore some great fashion finds? ✨"
-    2. If CURRENT SEARCH CONTEXT contains a product, acknowledge it and offer highly relevant refinements or complementary accessories specifically for that product! 
-    3. The "suggestions" array MUST contain 3 to 4 realistic, clickable follow-up questions formatted as natural user requests.
+    1. STORE KNOWLEDGE BASE: "Apple" ALWAYS refers to the tech brand (MacBook, iPhone, iPad, Watch), NEVER the fruit. "Dress for men" or "Men's dress" refers to men's suits, dress shirts, or formal wear.
+    2. If CURRENT SEARCH CONTEXT is empty (or ""), write a general, stylish welcome. E.g., "Welcome! Ready to explore some great fashion finds? ✨"
+    3. If CURRENT SEARCH CONTEXT contains a product, acknowledge it and offer highly relevant refinements or complementary accessories specifically for that product! 
+    4. The "suggestions" array MUST contain 3 to 4 realistic, clickable follow-up questions formatted as natural user requests.
     
     Output ONLY a valid JSON object matching this structure:
     {{
