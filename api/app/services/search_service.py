@@ -803,19 +803,14 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                 badge_html = ""
                 price_html = f'<div class="bclouds-prod-price">${price:.2f}</div>'
 
-           # 🟢 FIXED: Added your Sir's tracking tags (data-instantload & data-event-type)
             products_html += f"""
-            <div class="bclouds-prod-row" onclick="window.location.href='{prod_url}';" style="cursor: pointer;">
+            <div class="bclouds-prod-row" onclick="document.getElementById('search_query').value='{name}'; document.getElementById('searchBtn').click();">
                 <div class="bclouds-prod-img" style="position: relative;">
                     {badge_html}
                     <img src="{img_url}" alt="{name}">
                 </div>
                 <div class="bclouds-prod-info">
-                   <h4 class="card-title" style="margin:0; padding:0; border:none;">
-    <a href="{prod_url}" data-instantload data-event-type="product-click" class="bclouds-prod-title" title="{name}" style="text-decoration: none; color: inherit;">
-        {name}
-    </a>
-</h4>
+                    <div class="bclouds-prod-title" title="{name}">{name}</div>
                     {price_html}
                 </div>
             </div>
