@@ -972,7 +972,27 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
   height: 697px;
   display: inline-block;
 }}
+.bclouds-prod-img {{
+  height: auto;
+  min-height: 60px;
+}}
     }}
+
+      @media (max-width: 640px) {{ 
+.bclouds-prod-row {{
+  width: calc(25% - 8px);
+}}
+ .bclouds-prod-price {{
+  font-size: 12px;
+}}
+.bclouds-prod-price span, .bclouds-prod-price del {{
+  font-size: 12px !important;
+}}
+.bclouds-prod-price del {{
+  margin-left: 0 !important;
+}}
+    }}
+
     </style>
 
     <div class="bclouds-mega-menu">
