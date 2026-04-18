@@ -679,14 +679,27 @@ async def execute_autocomplete(query_string: str):
 # =========================================================================
 async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     clean_query = query_string.strip().lower()
+    if clean_query == "*":
+        clean_query = ""
+
+    # 🟢 1. PULL IN THE BROWSER HISTORY (Backend Only!)
+    recent_list = recent_searches.split("||")[:3] if recent_searches else []
+    valid_recents = [r.strip() for r in recent_list if r.strip() and r.strip().lower() not in ["null", "undefined", "[]", ""]]
+
+    # 🟢 2. SET THE ACTIVE SEARCH TERM
+    active_search_term = clean_query
+    # If the search bar is empty, but they have history, use their history!
+    if not active_search_term and valid_recents:
+        active_search_term = valid_recents[0].lower()
+
+    # 🟢 3. COMPETITOR INTERCEPTOR
+    if active_search_term == "best buy":
+        active_search_term = "tv"
+    elif active_search_term == "amazon":
+        active_search_term = "macbook"
     
-    # 🟢 COMPETITOR INTERCEPTOR: Change searches for competitors to high-value items!
-    if clean_query == "best buy":
-        clean_query = "tv"  # Changed from iphone
-    elif clean_query == "amazon":
-        clean_query = "macbook"
-    
-    if not clean_query:
+    if not active_search_term:
+        # ONLY show 10 random items if they have NO history and typed nothing
         os_query = {
             "size": 10, "query": {"match_all": {}}, "sort": [{"_score": {"order": "desc"}}],
             "track_total_hits": True, 
@@ -695,11 +708,13 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     else:
         vector = None
         try:
-            resp = await openai_client.embeddings.create(input=clean_query, model="text-embedding-3-small")
+            # 🟢 Send active_search_term to OpenAI
+            resp = await openai_client.embeddings.create(input=active_search_term, model="text-embedding-3-small")
             vector = resp.data[0].embedding
         except Exception: pass
 
-        matrix = extract_semantic_matrix(clean_query)
+        # 🟢 Extract semantic matrix using active_search_term
+        matrix = extract_semantic_matrix(active_search_term)
         core_query = matrix["core_query"]
             
         filters = [{"term": {"in_stock": True}}]
@@ -860,8 +875,12 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             
     see_all_text = ""
     if total_products > 0:
-        safe_query = clean_query if clean_query != "*" else ""
+        # 🟢 Fix the "See All" button to use the active search term
+        safe_query = active_search_term if active_search_term != "*" else ""
         see_all_text = f"<span onclick='document.getElementById(\"search_query\").value=\"{safe_query}\"; document.getElementById(\"searchBtn\").click();'>See all {total_products:,} results &rarr;</span>"
+
+    # 🟢 Create a dynamic title based on whether they typed something or we used their history
+    products_header = "BASED ON YOUR LAST SEARCH" if not clean_query and valid_recents else "PRODUCTS"
     
     master_html = f"""
     <style>
@@ -1070,7 +1089,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         </div>
         <div class="bclouds-right-col">
             <div class="bclouds-prod-header">
-                <h3>PRODUCTS</h3>
+                <h3>{products_header}</h3>
                 {see_all_text}
             </div>
             {products_html}
