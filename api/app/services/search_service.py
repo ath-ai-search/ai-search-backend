@@ -833,10 +833,14 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 
     sidebar_html = ""
     
-    display_text = f'Open "<span>{clean_query}</span>"<br>in Assistant' if clean_query and clean_query != "*" else 'Open <span>AI Assistant</span><br>to explore'
+    # 🟢 MAKE THE AI BOX USE THE ACTIVE SEARCH TERM (Recent History)
+    display_text = f'Open "<span>{active_search_term}</span>"<br>in Assistant' if active_search_term and active_search_term != "*" else 'Open <span>AI Assistant</span><br>to explore'
     
+    # 🟢 FIX THE CLICK ACTION: If they click the button, secretly fill the search bar with their history!
+    ai_click_js = f"document.getElementById('search_query').value='{active_search_term}';" if active_search_term else ""
+
     sidebar_html += f"""
-    <button id='ai-toggle' type='button' class='bclouds-assistant-box glowAni'>
+    <button id='ai-toggle' type='button' class='bclouds-assistant-box glowAni' onclick="{ai_click_js}">
         <div class='bclouds-assistant-left'>
             <i class='fas fa-magic bclouds-assistant-icon'></i>
             <div class='bclouds-assistant-text'>
@@ -875,12 +879,8 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             
     see_all_text = ""
     if total_products > 0:
-        # 🟢 Fix the "See All" button to use the active search term
         safe_query = active_search_term if active_search_term != "*" else ""
         see_all_text = f"<span onclick='document.getElementById(\"search_query\").value=\"{safe_query}\"; document.getElementById(\"searchBtn\").click();'>See all {total_products:,} results &rarr;</span>"
-
-    # 🟢 Create a dynamic title based on whether they typed something or we used their history
-    products_header = "BASED ON YOUR LAST SEARCH" if not clean_query and valid_recents else "PRODUCTS"
     
     master_html = f"""
     <style>
@@ -1089,7 +1089,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         </div>
         <div class="bclouds-right-col">
             <div class="bclouds-prod-header">
-                <h3>{products_header}</h3>
+                <h3>PRODUCTS</h3>
                 {see_all_text}
             </div>
             {products_html}
