@@ -823,15 +823,56 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             </div>
             """
 
-    # 🟢 EXACT POPULAR SEARCHES YOU REQUESTED (iPhone removed)
-    popular_searches = ["MacBook", "Dresses", "Sunglasses", "Home & Kitchen", "Watches"]
+    # 🤖 AI-GENERATED SUGGESTIONS (replaces recent + popular searches)
+    ai_suggestions = []
+    try:
+        llm_suggestion_response = await openai_client.chat.completions.create(
+            model="gpt-3.5-turbo-0125",
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an e-commerce search autocomplete engine. "
+                        "Generate realistic, diverse search query completions. "
+                        "Return ONLY valid JSON with a 'suggestions' key containing an array of exactly 7 short strings."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f'Generate 7 autocomplete search suggestions for: "{active_search_term}". '
+                        'Include variations like "for men", "for women", "kids", specific popular brands, '
+                        'style types, or use cases. Keep each suggestion short and natural.'
+                    )
+                }
+            ],
+            temperature=0.4,
+            max_tokens=250
+        )
+        parsed_suggestions = json.loads(llm_suggestion_response.choices[0].message.content)
+        ai_suggestions = parsed_suggestions.get("suggestions", [])[:7]
+    except Exception as e:
+        logger.error(f"❌ AI Suggestion Error: {e}")
+        # Sensible fallback if AI call fails
+        ai_suggestions = [
+            f"{active_search_term} for men",
+            f"{active_search_term} for women",
+            f"{active_search_term} kids",
+            f"best {active_search_term}",
+            f"{active_search_term} on sale",
+            f"branded {active_search_term}",
+            f"cheap {active_search_term}",
+        ]
 
     sidebar_html = ""
-    
-    # 🟢 MAKE THE AI BOX USE THE ACTIVE SEARCH TERM (Recent History)
-    display_text = f'Open "<span>{active_search_term}</span>"<br>in Assistant' if active_search_term and active_search_term != "*" else 'Open <span>AI Assistant</span><br>to explore'
-    
-    # 🟢 FIX THE CLICK ACTION: If they click the button, secretly fill the search bar with their history!
+
+    # ✨ AI ASSISTANT BUTTON (rainbow glow — keep as-is)
+    display_text = (
+        f'Open "<span>{active_search_term}</span>"<br>in Assistant'
+        if active_search_term and active_search_term != "*"
+        else 'Open <span>AI Assistant</span><br>to explore'
+    )
     ai_click_js = f"document.getElementById('search_query').value='{active_search_term}';" if active_search_term else ""
 
     sidebar_html += f"""
@@ -845,32 +886,27 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         <i class='fas fa-arrow-right' style='font-size: 14px; color: #111;'></i>
     </button>
     """
-    
-    # 🟢 REAL HISTORY: Only show recent searches if the user actually has them!
-    recent_list = recent_searches.split("||")[:3] if recent_searches else []
-    valid_recents = [r.strip() for r in recent_list if r.strip() and r.strip().lower() not in ["null", "undefined", "[]", ""]]
-    
-    if valid_recents:
-        sidebar_html += "<div class='bclouds-side-title'>RECENT SEARCHES</div>"
-        for r in valid_recents:
-            # 🟢 BULLETPROOF REDIRECT
-            click_js = f"document.getElementById('search_query').value='{r}'; const btn=document.getElementById('searchBtn'); if(btn) btn.click(); else window.location.href='/search.php?search_query={r}&section=content';"
+
+    # 🤖 AI SUGGESTIONS (no recent / no popular — fully dynamic)
+    if ai_suggestions:
+        sidebar_html += "<div class='bclouds-side-title'>SUGGESTIONS</div>"
+        for suggestion in ai_suggestions:
+            safe_suggestion = suggestion.replace("'", "\\'")
+            click_js = (
+                f"document.getElementById('search_query').value='{safe_suggestion}'; "
+                f"const btn=document.getElementById('searchBtn'); "
+                f"if(btn) btn.click(); "
+                f"else window.location.href='/search.php?search_query={safe_suggestion}&section=content';"
+            )
             sidebar_html += f"""
             <div class='bclouds-side-item' onclick="{click_js}">
-                <div style="display:flex; align-items:center; gap:12px;"><i class='far fa-clock' style='color:#9ca3af;'></i> <span>{r}</span></div>
+                <div style='display:flex; align-items:center; gap:12px;'>
+                    <i class='fas fa-search' style='color:#9ca3af;'></i>
+                    <span>{suggestion}</span>
+                </div>
                 <i class="fas fa-arrow-right arrow-hover" style="font-size:12px; color:#9ca3af;"></i>
-            </div>"""
-
-    # 🟢 RENDER THE CUSTOM POPULAR SEARCHES
-    sidebar_html += "<div class='bclouds-side-title' style='margin-top:24px;'>POPULAR SEARCHES</div>"
-    for c in popular_searches:
-        click_js = f"document.getElementById('search_query').value='{c}'; const btn=document.getElementById('searchBtn'); if(btn) btn.click(); else window.location.href='/search.php?search_query={c}&section=content';"
-        sidebar_html += f"""
-        <div class='bclouds-side-item' onclick="{click_js}">
-            <div style='display:flex; align-items:center; gap:12px;'><i class='fas fa-search' style='color:#9ca3af;'></i> <span>{c}</span></div>
-            <i class="fas fa-arrow-right arrow-hover" style="font-size:12px; color:#9ca3af;"></i>
-        </div>
-        """
+            </div>
+            """
             
     see_all_text = ""
     if total_products > 0:
@@ -1055,8 +1091,13 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         .glowAni{{
             margin-bottom: 0;
         }}
-        .bclouds-side-item, .bclouds-side-title {{
-          display: none;
+        .bclouds-side-item {{
+          font-size: 14px;
+          padding: 9px 10px;
+        }}
+        .bclouds-side-title {{
+          font-size: 11px;
+          margin-bottom: 10px;
         }}
         .bclouds-prod-img img {{
           max-height: 60px;
