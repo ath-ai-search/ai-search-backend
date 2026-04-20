@@ -917,9 +917,9 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     <style>
     .bclouds-mega-menu {{
         display: flex;
-        width: 1495px;
+        width: 380px;
         max-width: 95%;
-        height: 547px;
+        height: auto;
         background: white;
         border-radius: 8px;
         box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
@@ -946,8 +946,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     .bclouds-side-item .arrow-hover {{ opacity: 0; transform: translateX(-5px); transition: all 0.2s ease; }}
     .bclouds-side-item:hover .arrow-hover {{ opacity: 1; transform: translateX(0); color: #111827; }}
 
-    .bclouds-right-col {{ position: relative; width: 100%; padding: 57px 32px 24px 32px; overflow-y: auto; display: flex; flex-wrap: wrap; gap:10px; align-items: flex-start; }}
-
+    .bclouds-right-col {{ display: none; }}
     .bclouds-prod-header h3 {{
        margin-top: 10px;
        font-size: 18px;
@@ -1111,13 +1110,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     </style>
 
     <div class="bclouds-mega-menu">
-        <div class="bclouds-right-col">
-            <div class="bclouds-prod-header">
-                <h3>PRODUCTS</h3>
-                {see_all_text}
-            </div>
-            {products_html}
-        </div>
+        
     </div>
     """
 
