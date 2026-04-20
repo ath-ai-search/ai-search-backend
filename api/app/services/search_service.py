@@ -930,7 +930,8 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         background-color: #f9f9f9;
     }}
 
-    .bclouds-left-col {{ display: none; }}    .bclouds-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); width: 100%; }}
+    .bclouds-left-col {{ width: 380px; background: #fdfdfd; padding: 24px; overflow-y: auto; }}
+    .bclouds-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); width: 100%; }}
     .bclouds-assistant-box:hover {{ border-color: #d1d5db; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }}
     .bclouds-assistant-left {{ display: flex; align-items: center; gap: 12px; }}
     .bclouds-assistant-icon {{ font-size: 16px; color: #111; }}
@@ -1110,7 +1111,9 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     </style>
 
     <div class="bclouds-mega-menu">
-        
+        <div class="bclouds-left-col">
+            {sidebar_html}
+        </div>
     </div>
     """
 
