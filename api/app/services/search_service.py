@@ -781,354 +781,191 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         hits = []
         total_products = 0
 
-    products_html = ""
-    dynamic_brands_set = set()
-    
-    if not hits:
-        products_html = "<div style='padding: 20px; color: #666;'>No products found.</div>"
-    else:
-        for hit in hits:
-            source = hit.get("_source", {})
-            name = source.get("name", "Unknown Product")
-            prod_url = source.get("url", "#") 
-            brand_display = get_smart_brand(source)
-            if brand_display != "UNKNOWN BRAND" and brand_display != "UNKNOWN": dynamic_brands_set.add(brand_display)
-            price = float(source.get("price", 0.0))
-            raw_sale = source.get("sale_price")
-            sale_price = float(raw_sale) if raw_sale is not None else 0.0
-            images = source.get("images", [])
-            img_url = images[0] if isinstance(images, list) and images else "https://placehold.co/100x100?text=No+Image"
+    # =========================================================
+    # 🟢 NEW UI: SLEEK AUTOCOMPLETE DROPDOWN LIST
+    # =========================================================
+    suggestions_html = ""
+    seen_phrases = set()
 
-            if sale_price > 0 and sale_price < price:
-                badge_html = '<div style="position: absolute; top: -6px; right: -6px; background: #CC0000; color: white; font-size: 9px; font-weight: bold; padding: 2px 6px; border-radius: 3px; z-index: 10; text-transform: uppercase; letter-spacing: 0.5px;">Sale</div>'
-                price_html = f'<div class="bclouds-prod-price"><span style="color: #CC0000; font-weight: 800;">${sale_price:.2f}</span> <del style="color: #888; font-size: 13px; font-weight: 600; margin-left: 4px;">${price:.2f}</del></div>'
-            else:
-                badge_html = ""
-                price_html = f'<div class="bclouds-prod-price">${price:.2f}</div>'
+    # 🟢 INJECT JAVASCRIPT FOR DELETING HISTORY
+    suggestions_html += """
+    <script>
+    function removeRecentSearch(term, event) {
+        event.stopPropagation(); // Stop the row click from triggering a search!
+        
+        // 1. Remove from browser memory
+        let recents = JSON.parse(localStorage.getItem("bclouds_recent") || "[]");
+        recents = recents.filter(r => r.toLowerCase() !== term.toLowerCase());
+        localStorage.setItem("bclouds_recent", JSON.stringify(recents));
+        
+        // 2. Hide the row instantly so it feels super fast
+        event.target.closest('.bclouds-list-item').style.display = 'none';
+        
+        // 3. Tell the backend to quietly refresh the list
+        const input = document.getElementById("search_query");
+        if(input) {
+            input.dispatchEvent(new Event('input'));
+        }
+    }
+    </script>
+    """
 
-            products_html += f"""
-            <div class="bclouds-prod-row" onclick="window.location.href='{prod_url}';" style="cursor: pointer;">
-                <div class="bclouds-prod-img" style="position: relative;">
-                    {badge_html}
-                    <img src="{img_url}" alt="{name}">
-                </div>
-                <div class="bclouds-prod-info">
-                    <h4 class="card-title" style="margin:0; padding:0; border:none;">
-                        <a href="{prod_url}" data-instantload data-event-type="product-click" class="bclouds-prod-title" title="{name}" style="text-decoration: none; color: inherit;">
-                            {name}
-                        </a>
-                    </h4>
-                    {price_html}
-                </div>
-            </div>
-            """
-
-    # 🤖 AI-GENERATED SUGGESTIONS (replaces recent + popular searches)
-    ai_suggestions = []
-    try:
-        llm_suggestion_response = await openai_client.chat.completions.create(
-            model="gpt-3.5-turbo-0125",
-            response_format={"type": "json_object"},
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an e-commerce search autocomplete engine. "
-                        "Generate realistic, diverse search query completions. "
-                        "Return ONLY valid JSON with a 'suggestions' key containing an array of exactly 10 short strings."
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f'Generate 10 autocomplete search suggestions for: "{active_search_term}". '
-                        'Include variations like "for men", "for women", "kids", specific popular brands, '
-                        'style types, or use cases. Keep each suggestion short and natural.'
-                    )
-                }
-            ],
-            temperature=0.4,
-            max_tokens=400
-        )
-        parsed_suggestions = json.loads(llm_suggestion_response.choices[0].message.content)
-        ai_suggestions = parsed_suggestions.get("suggestions", [])[:10]
-    except Exception as e:
-        logger.error(f"❌ AI Suggestion Error: {e}")
-        # Sensible fallback if AI call fails
-        ai_suggestions = [
-            f"{active_search_term} for men",
-            f"{active_search_term} for women",
-            f"{active_search_term} kids",
-            f"best {active_search_term}",
-            f"{active_search_term} on sale",
-            f"branded {active_search_term}",
-            f"cheap {active_search_term}",
-        ]
-
-    sidebar_html = ""
-
-    
-    # 🖼️ Get product thumbnails from already-fetched hits
-    product_thumbs = []
-    for hit in hits[:3]:
-        source = hit.get("_source", {})
-        name = source.get("name", "")
-        images = source.get("images", [])
-        thumb = images[0] if isinstance(images, list) and images else None
-        if name and thumb:
-            product_thumbs.append({"text": name, "thumbnail": thumb})
-
-    # 🤖 AI SUGGESTIONS with product images mixed in
-    if ai_suggestions:
-        sidebar_html += ""
-
-        # Track which AI suggestion indexes get a product image
-        thumb_indexes = [0, 3] if len(product_thumbs) >= 2 else ([0] if len(product_thumbs) == 1 else [])
-        thumb_used = 0
-
-        for i, suggestion in enumerate(ai_suggestions):
-            safe_suggestion = suggestion.replace("'", "\\'")
-            click_js = (
-                f"document.getElementById('search_query').value='{safe_suggestion}'; "
-                f"const btn=document.getElementById('searchBtn'); "
-                f"if(btn) btn.click(); "
-                f"else window.location.href='/search.php?search_query={safe_suggestion}&section=content';"
-            )
-
-            # Show product thumbnail image for some rows
-            if i in thumb_indexes and thumb_used < len(product_thumbs):
-                thumb_url = product_thumbs[thumb_used]["thumbnail"]
-                thumb_used += 1
-                icon_html = f'<img src="{thumb_url}" style="width:28px; height:28px; object-fit:contain; border-radius:3px; flex-shrink:0;">'
-            else:
-                icon_html = '<i class="fas fa-search" style="color:#9ca3af; width:20px; text-align:center;"></i>'
-
-            # Bold the typed part in the suggestion
-            q = active_search_term.lower()
-            s_lower = suggestion.lower()
-            if q in s_lower:
-                idx = s_lower.index(q)
-                highlighted = (
-                    f"<b>{suggestion[:idx+len(q)]}</b>" +
-                    suggestion[idx+len(q):]
-                )
-            else:
-                highlighted = f"<b>{suggestion}</b>"
-
-            sidebar_html += f"""
-            <div class='bclouds-side-item' onclick="{click_js}">
-                <div style='display:flex; align-items:center; gap:14px;'>
-                    {icon_html}
-                    <span>{highlighted}</span>
-                </div>
-            </div>
-            """
+    # 1. 🕒 SHOW RECENT SEARCHES (Only if search box is empty!)
+    if not clean_query and valid_recents:
+        for r in valid_recents:
+            safe_r = r.replace("'", "\\'")
+            seen_phrases.add(r.lower())
             
-    see_all_text = ""
-    if total_products > 0:
-        safe_query = active_search_term if active_search_term != "*" else ""
-        see_all_text = f"<span onclick='document.getElementById(\"search_query\").value=\"{safe_query}\"; document.getElementById(\"searchBtn\").click();'>See all {total_products:,} results &rarr;</span>"
-    
+            # Colored purple with an 'X' button just like Amazon!
+            suggestions_html += f"""
+            <div class="bclouds-list-item" style="justify-content: space-between; padding-right: 15px;">
+                <div style="display:flex; align-items:center; flex:1;" onclick="document.getElementById('search_query').value='{safe_r}'; document.getElementById('searchBtn').click();">
+                    <div class="bclouds-list-text" style="color: #8b5cf6; font-weight: 700;">{r}</div>
+                </div>
+                <div onclick="removeRecentSearch('{safe_r}', event)" style="padding: 5px 10px; cursor: pointer; color: #6b7280; font-size: 18px; transition: color 0.2s;" onmouseover="this.style.color='#111'" onmouseout="this.style.color='#6b7280'">
+                    ✕
+                </div>
+            </div>
+            """
+
+    # 2. Always show exactly what they typed at the top
+    if clean_query:
+        suggestions_html += f"""
+        <div class="bclouds-list-item" onclick="document.getElementById('search_query').value='{clean_query}'; document.getElementById('searchBtn').click();">
+            <i class="fas fa-search bclouds-list-icon"></i>
+            <div class="bclouds-list-text"><span>{clean_query}</span></div>
+        </div>
+        """
+        seen_phrases.add(clean_query)
+
+    # 3. Extract smart text completions from the actual OpenSearch hits
+    for hit in hits:
+        source = hit.get("_source", {})
+        
+        # Grab categories to use as smart suggestions
+        cats = source.get("category", [])
+        if isinstance(cats, str): cats = [cats]
+        
+        for c in cats:
+            c_str = str(c).strip().lower()
+            if c_str and c_str != "none":
+                
+                # 🟢 SMART COMBINER
+                suggestion = ""
+                if not clean_query:
+                    suggestion = c_str
+                elif clean_query in c_str:
+                    suggestion = c_str
+                else:
+                    suggestion = f"{clean_query} {c_str}"
+                
+                if suggestion not in seen_phrases:
+                    seen_phrases.add(suggestion)
+                    
+                    if clean_query and clean_query in suggestion:
+                        predicted_part = suggestion.replace(clean_query, "", 1).strip()
+                        if predicted_part:
+                            display_text = f"<span>{clean_query}</span> <b>{predicted_part}</b>"
+                        else:
+                            display_text = f"<span>{clean_query}</span>"
+                    else:
+                        display_text = f"<span>{suggestion}</span>"
+
+                    img_url = source.get("images", [""])[0] if source.get("images") else ""
+                    if img_url and len(seen_phrases) % 2 == 1: 
+                        icon_html = f'<img src="{img_url}" class="bclouds-list-thumb">'
+                    else:
+                        icon_html = '<i class="fas fa-search bclouds-list-icon"></i>'
+
+                    suggestions_html += f"""
+                    <div class="bclouds-list-item" onclick="document.getElementById('search_query').value='{suggestion}'; document.getElementById('searchBtn').click();">
+                        {icon_html}
+                        <div class="bclouds-list-text">{display_text}</div>
+                    </div>
+                    """
+            if len(seen_phrases) >= 8: break # Show up to 8 suggestions!
+        if len(seen_phrases) >= 8: break
+
+    # =========================================================
+    # 🟢 THE AI ASSISTANT BUTTON (Seamlessly inside the box)
+    # =========================================================
+    display_text = f'Open "<span>{active_search_term}</span>" in Assistant' if active_search_term and active_search_term != "*" else 'Open <span>AI Assistant</span> to explore'
+    ai_click_js = f"document.getElementById('search_query').value='{active_search_term}';" if active_search_term else ""
+
+    ai_button_html = f"""
+    <div id='ai-toggle' class="bclouds-list-item ai-integrated-box" onclick="{ai_click_js}">
+        <i class='fas fa-magic bclouds-list-icon' style="color: #8b5cf6; font-size: 18px;"></i>
+        <div class="bclouds-list-text" style="flex: 1; font-weight: 500;">
+            {display_text}
+        </div>
+        <i class='fas fa-arrow-right' style='font-size: 14px; color: #9ca3af;'></i>
+    </div>
+    """
+
+    # =========================================================
+    # 🟢 NEW RESPONSIVE CSS & MASTER HTML
+    # =========================================================
     master_html = f"""
     <style>
     .bclouds-mega-menu {{
         display: flex;
-        width: 860px;
-        max-width: 95%;
-        height: auto;
+        flex-direction: column;
+        width: 100%;
         background: white;
-        border-radius: 0 0 8px 8px;
-        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+        border-radius: 0 0 12px 12px;
+        box-shadow: 0 15px 40px rgba(0, 0, 0, 0.12);
         font-family: 'Inter', sans-serif;
         overflow: hidden;
         border: 1px solid #e5e7eb;
         border-top: none;
-        margin: 84px auto 0;
-        background-color: #ffffff;
+        margin: 0; 
     }}
 
-    .bclouds-left-col {{ width: 100%; background: #ffffff; padding: 8px 0; overflow-y: auto; }}    .bclouds-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); width: 100%; }}
-    .bclouds-assistant-box:hover {{ border-color: #d1d5db; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }}
-    .bclouds-assistant-left {{ display: flex; align-items: center; gap: 12px; }}
-    .bclouds-assistant-icon {{ font-size: 16px; color: #111; }}
-    .bclouds-assistant-text {{ font-size: 13px; font-weight: 500; color: #111; }}
-    .bclouds-assistant-text span {{ font-style: italic; font-weight: 700; }}
-
-    /* 🟢 MADE SIDEBAR TEXT BIGGER AND BOLDER */
-    .bclouds-side-title {{ font-size: 13px; font-weight: 800; margin-bottom: 16px; text-transform: uppercase; color: #9ca3af; padding-left: 12px; letter-spacing: 0.5px; }}
-    .bclouds-side-item {{ font-size: 15px; padding: 11px 16px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; border-radius: 0; transition: background 0.15s ease; color: #111; font-weight: 400; margin-bottom: 0; border-bottom: 1px solid #f5f5f5; }}
-    .bclouds-side-item:hover {{ background: #f3f4f6; }}
-    .bclouds-side-item b {{ font-weight: 700; }}
-    
-    /* 🟢 ADDED ARROW HOVER EFFECT BACK */
-    .bclouds-side-item .arrow-hover {{ opacity: 0; transform: translateX(-5px); transition: all 0.2s ease; }}
-    .bclouds-side-item:hover .arrow-hover {{ opacity: 1; transform: translateX(0); color: #111827; }}
-
-    .bclouds-right-col {{ display: none; }}
-    .bclouds-prod-header h3 {{
-       margin-top: 10px;
-       font-size: 18px;
-    }}
-
-    .bclouds-prod-header {{   display: flex;
-    justify-content: space-between;
-    margin-bottom: 16px;
-    position: absolute;
-    width: calc(100% - 66px);
-    top: 12px; }}
-
-    .bclouds-prod-header span {{
-    display: inline-block;
-    height: 33px;
-    margin-top: 4px;
-    border: 1px solid #ccc;
-    border-radius: 3px;
-    padding: 5px 15px;
-    background-color: #f5f5f5;
-    font-size: 14px;
-    cursor: pointer;
-    }}
-    .bclouds-prod-header span:hover {{ background-color: #e5e5e5; }}
-    
-    .bclouds-prod-row {{
-        border-bottom: 1px solid #f5f5f5;
-        flex-wrap: wrap;
-        border: 1px solid #ddd;
-        padding: 12px;
-        width: calc(20% - 8px);
-        background-color: #fff;
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
-    }}   
-    .bclouds-prod-row:hover {{ transform: translateY(-3px); box-shadow: 0 4px 12px rgba(0,0,0,0.08); }}
-
-    .bclouds-prod-img {{  width: 100%;
-    height: 140px;
-    display: flex;
-    align-items: center;
-    justify-content: center; }}
-
-    .bclouds-prod-img img {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
-
-    .bclouds-prod-title {{ font-size: 14px; color: #444; padding: 8px 0 5px 0; }}
-    .bclouds-prod-price {{ font-size: 14px; font-weight: 700; font-size: 16px; }}
-
-    /* 🔥 GLOW ANIMATION */
-    .glowAni {{
-        --border-angle: 0deg;
-        border-radius: 12px;
+    /* Smart Suggestions Styling */
+    .bclouds-list-item {{
         display: flex;
-        justify-content: space-between;
         align-items: center;
-        box-shadow: 0px 2px 4px hsl(0 0% 0% / 25%);
-        animation: border-angle-rotate 2s infinite linear;
-        border: 0.2rem solid transparent;
-        background: 
-            linear-gradient(white, white) padding-box,
-            conic-gradient(
-                from var(--border-angle),
-                oklch(100% 100% 0deg),
-                oklch(100% 100% 45deg),
-                oklch(100% 100% 90deg),
-                oklch(100% 100% 135deg),
-                oklch(100% 100% 180deg),
-                oklch(100% 100% 225deg),
-                oklch(100% 100% 270deg),
-                oklch(100% 100% 315deg),
-                oklch(100% 100% 360deg)
-            ) border-box;
-    }}
-
-    @keyframes border-angle-rotate {{
-        from {{ --border-angle: 0deg; }}
-        to {{ --border-angle: 360deg; }}
-    }}
-
-    @property --border-angle {{
-        syntax: "<angle>";
-        initial-value: 0deg;
-        inherits: false;
-    }}
-
-    .bclouds-prod-title {{
-        display: -webkit-box;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        -webkit-line-clamp: 1;
+        padding: 12px 20px;
         cursor: pointer;
-        height: 29px;
+        border-bottom: 1px solid #f9fafb;
+        transition: background 0.2s ease;
+    }}
+    .bclouds-list-item:hover {{
+        background: #f3f4f6;
+    }}
+    .bclouds-list-icon {{ color: #9ca3af; font-size: 15px; width: 34px; text-align: center; margin-right: 12px; }}
+    .bclouds-list-thumb {{ width: 34px; height: 34px; object-fit: contain; margin-right: 12px; border-radius: 6px; background: #fff; border: 1px solid #e5e7eb; padding: 2px; }}
+    
+    .bclouds-list-text {{ font-size: 15px; color: #374151; }}
+    .bclouds-list-text span {{ font-weight: 400; }}
+    .bclouds-list-text b {{ font-weight: 700; color: #111827; }}
+
+    /* AI Button Seamless Integration */
+    .ai-integrated-box {{
+        background: linear-gradient(90deg, #fdfbfb 0%, #ebedee 100%);
+        border-bottom: none;
+        padding: 16px 20px;
+    }}
+    .ai-integrated-box:hover {{
+        background: linear-gradient(90deg, #f3e7ff 0%, #fdfbfb 100%);
+    }}
+    .ai-integrated-box .bclouds-list-text span {{
+        font-style: italic;
+        font-weight: 800;
+        color: #111;
     }}
 
-      @media (max-width: 768px) {{
-        .bclouds-left-col {{
-           display: block;
-           width: 100%;
-        }}
-        .bclouds-mega-menu {{
-          position: absolute;
-          left: 0;
-          transform: none;
-          width: 100%;
-          max-width: 100%;
-          height: auto;
-          max-height: 80vh;
-          overflow-y: auto;
-          border-radius: 0 0 8px 8px;
-        }}
-        .bclouds-prod-img {{
-          height: auto;
-          min-height: 60px;
-        }}
+    /* Responsive Design for Mobile/Tablets */
+    @media (max-width: 768px) {{
+        .bclouds-mega-menu {{ border-radius: 0; border: none; box-shadow: 0 10px 20px rgba(0,0,0,0.1); }}
+        .bclouds-list-item {{ padding: 14px 16px; }}
+        .bclouds-list-text {{ font-size: 14px; }}
     }}
-
-      @media (max-width: 640px) {{ 
-        .bclouds-prod-row {{
-          width: calc(33% - 6px);
-        }}
-         .bclouds-prod-price {{
-          font-size: 12px;
-        }}
-        .bclouds-prod-price span, .bclouds-prod-price del {{
-          font-size: 12px !important;
-        }}
-        .bclouds-prod-price del {{
-          margin-left: 0 !important;
-        }}
-        .glowAni{{
-            margin-bottom: 0;
-        }}
-        .bclouds-side-item {{
-          font-size: 14px;
-          padding: 9px 10px;
-        }}
-        .bclouds-side-title {{
-          font-size: 11px;
-          margin-bottom: 10px;
-        }}
-        .bclouds-prod-img img {{
-          max-height: 60px;
-          }}
-
-          .bclouds-right-col {{
-            height: 518px;
-          }}
-          .bclouds-prod-header h3 {{
-          font-size: 16px;
-        }}
-        .bclouds-prod-header span {{
-          height: 29px;
-          padding: 4px 10px;
-          font-size: 13px;
-          border-radius: 5px;
-        }}
-    }}
-
     </style>
 
     <div class="bclouds-mega-menu">
-        <div class="bclouds-left-col">
-            {sidebar_html}
-        </div>
+        {suggestions_html}
+        {ai_button_html}
     </div>
     """
 
