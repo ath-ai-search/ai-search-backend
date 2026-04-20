@@ -887,10 +887,25 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     </button>
     """
 
-    # 🤖 AI SUGGESTIONS (no recent / no popular — fully dynamic)
+    # 🖼️ Get product thumbnails from already-fetched hits
+    product_thumbs = []
+    for hit in hits[:3]:
+        source = hit.get("_source", {})
+        name = source.get("name", "")
+        images = source.get("images", [])
+        thumb = images[0] if isinstance(images, list) and images else None
+        if name and thumb:
+            product_thumbs.append({"text": name, "thumbnail": thumb})
+
+    # 🤖 AI SUGGESTIONS with product images mixed in
     if ai_suggestions:
         sidebar_html += "<div class='bclouds-side-title'>SUGGESTIONS</div>"
-        for suggestion in ai_suggestions:
+
+        # Track which AI suggestion indexes get a product image
+        thumb_indexes = [0, 3] if len(product_thumbs) >= 2 else ([0] if len(product_thumbs) == 1 else [])
+        thumb_used = 0
+
+        for i, suggestion in enumerate(ai_suggestions):
             safe_suggestion = suggestion.replace("'", "\\'")
             click_js = (
                 f"document.getElementById('search_query').value='{safe_suggestion}'; "
@@ -898,10 +913,19 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                 f"if(btn) btn.click(); "
                 f"else window.location.href='/search.php?search_query={safe_suggestion}&section=content';"
             )
+
+            # Show product thumbnail image for some rows
+            if i in thumb_indexes and thumb_used < len(product_thumbs):
+                thumb_url = product_thumbs[thumb_used]["thumbnail"]
+                thumb_used += 1
+                icon_html = f'<img src="{thumb_url}" style="width:28px; height:28px; object-fit:contain; border-radius:3px; flex-shrink:0;">'
+            else:
+                icon_html = '<i class="fas fa-search" style="color:#9ca3af; width:20px; text-align:center;"></i>'
+
             sidebar_html += f"""
             <div class='bclouds-side-item' onclick="{click_js}">
                 <div style='display:flex; align-items:center; gap:12px;'>
-                    <i class='fas fa-search' style='color:#9ca3af;'></i>
+                    {icon_html}
                     <span>{suggestion}</span>
                 </div>
                 <i class="fas fa-arrow-right arrow-hover" style="font-size:12px; color:#9ca3af;"></i>
