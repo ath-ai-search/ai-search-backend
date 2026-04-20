@@ -682,111 +682,94 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     if clean_query == "*":
         clean_query = ""
 
-    # 🟢 1. PULL IN THE BROWSER HISTORY (Backend Only!)
+    # 🟢 1. PULL IN THE BROWSER HISTORY
     recent_list = recent_searches.split("||")[:3] if recent_searches else []
     valid_recents = [r.strip() for r in recent_list if r.strip() and r.strip().lower() not in ["null", "undefined", "[]", ""]]
 
     # 🟢 2. SET THE ACTIVE SEARCH TERM
     active_search_term = clean_query
+    
     # If the search bar is empty, but they have history, use their history!
     if not active_search_term and valid_recents:
         active_search_term = valid_recents[0].lower()
 
-    # 🟢 3. THE "NEW USER" FIX: Set a default high-end product!
+    # 🟢 3. NEW USER FIX: Force it to Luxury Sunglasses!
     if not active_search_term:
-        active_search_term = "luxury sunglasses"  # <--- Change this word to whatever default you want!
+        active_search_term = "luxury sunglasses"
 
     # 🟢 4. COMPETITOR INTERCEPTOR
-    if active_search_term == "best buy":
-        active_search_term = "tv"# 🟢 2. SET THE ACTIVE SEARCH TERM
-    active_search_term = clean_query
-    # If the search bar is empty, but they have history, use their history!
-    if not active_search_term and valid_recents:
-        active_search_term = valid_recents[0].lower()
-
-    # 🟢 3. COMPETITOR INTERCEPTOR
     if active_search_term == "best buy":
         active_search_term = "tv"
     elif active_search_term == "amazon":
         active_search_term = "macbook"
     
-    if not active_search_term:
-        # ONLY show 10 random items if they have NO history and typed nothing
-        os_query = {
-            "size": 10, "query": {"match_all": {}}, "sort": [{"_score": {"order": "desc"}}],
-            "track_total_hits": True, 
-            "aggs": {"top_categories": {"terms": {"field": "category", "size": 6}}} 
-        }
-    else:
-        vector = None
-        try:
-            # 🟢 Send active_search_term to OpenAI
-            resp = await openai_client.embeddings.create(input=active_search_term, model="text-embedding-3-small")
-            vector = resp.data[0].embedding
-        except Exception: pass
+    vector = None
+    try:
+        resp = await openai_client.embeddings.create(input=active_search_term, model="text-embedding-3-small")
+        vector = resp.data[0].embedding
+    except Exception: pass
 
-        # 🟢 Extract semantic matrix using active_search_term
-        matrix = extract_semantic_matrix(active_search_term)
-        core_query = matrix["core_query"]
-            
-        filters = [{"term": {"in_stock": True}}]
-        must_nots = []
+    matrix = extract_semantic_matrix(active_search_term)
+    core_query = matrix["core_query"]
         
-        if matrix["min_price"] is not None or matrix["max_price"] is not None:
-            price_range = {}
-            if matrix["min_price"] is not None: price_range["gte"] = matrix["min_price"]
-            if matrix["max_price"] is not None: price_range["lte"] = matrix["max_price"]
-            filters.append({"range": {"price": price_range}})
+    filters = [{"term": {"in_stock": True}}]
+    must_nots = []
+    
+    if matrix["min_price"] is not None or matrix["max_price"] is not None:
+        price_range = {}
+        if matrix["min_price"] is not None: price_range["gte"] = matrix["min_price"]
+        if matrix["max_price"] is not None: price_range["lte"] = matrix["max_price"]
+        filters.append({"range": {"price": price_range}})
 
-        if matrix["is_sale"]:
-            filters.append({"range": {"sale_price": {"gt": 0}}})
+    if matrix["is_sale"]:
+        filters.append({"range": {"sale_price": {"gt": 0}}})
 
-        # 🟢 FIXED: Unified the query so it NEVER falls back to match_all (4,708)
-        semantic_shoulds = []
-        if vector:
-            semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": 200}}})
-            
-        semantic_shoulds.extend([
-            {"match_phrase": {"brand": {"query": core_query, "boost": 5000.0}}},
-            {"match": {"category": {"query": core_query, "boost": 3000.0}}},
-            {"match_phrase": {"name": {"query": core_query, "boost": 500.0}}}
-        ])
-        if core_query:
-            semantic_shoulds.append({
-                "multi_match": {
-                    "query": core_query, 
-                    "fields": ["name^5", "brand^4", "category^3"],
-                    "operator": "and",
-                    "boost": 5.0
-                }
-            })
+    semantic_shoulds = []
+    if vector:
+        semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": 200}}})
         
-        score_functions = []
-        if not matrix["has_accessory_intent"]:
-            for acc in matrix["accessory_keywords"]:
-                score_functions.append({"filter": {"match": {"name": acc}}, "weight": 0.001})
-                score_functions.append({"filter": {"match": {"category": acc}}, "weight": 0.001})
+    semantic_shoulds.extend([
+        {"match_phrase": {"brand": {"query": core_query, "boost": 5000.0}}},
+        {"match": {"category": {"query": core_query, "boost": 3000.0}}},
+        {"match_phrase": {"name": {"query": core_query, "boost": 500.0}}}
+    ])
+    
+    if core_query:
+        semantic_shoulds.append({
+            "multi_match": {
+                "query": core_query, 
+                "fields": ["name^5", "brand^4", "category^3"],
+                "operator": "and",
+                "boost": 5.0
+            }
+        })
+    
+    score_functions = []
+    if not matrix["has_accessory_intent"]:
+        for acc in matrix["accessory_keywords"]:
+            score_functions.append({"filter": {"match": {"name": acc}}, "weight": 0.001})
+            score_functions.append({"filter": {"match": {"category": acc}}, "weight": 0.001})
 
-        os_query = {
-            "size": 10,
-            "query": {
-                "function_score": {
-                    "query": {
-                        "bool": {
-                            "should": semantic_shoulds,
-                            "minimum_should_match": 1,  # 🟢 Forces OpenSearch to only count REAL matches!
-                            "filter": filters,
-                            "must_not": must_nots
-                        }
-                    },
-                    "functions": score_functions,
-                    "score_mode": "multiply",
-                    "boost_mode": "multiply"
-                }
-            },
-            "track_total_hits": True, 
-            "aggs": {"top_categories": {"terms": {"field": "category", "size": 6}}} 
-        }
+    os_query = {
+        "size": 10,
+        "query": {
+            "function_score": {
+                "query": {
+                    "bool": {
+                        "should": semantic_shoulds,
+                        "minimum_should_match": 1,
+                        "filter": filters,
+                        "must_not": must_nots
+                    }
+                },
+                "functions": score_functions,
+                "score_mode": "multiply",
+                "boost_mode": "multiply"
+            }
+        },
+        "track_total_hits": True, 
+        "aggs": {"top_categories": {"terms": {"field": "category", "size": 6}}} 
+    }
 
     try:
         response = os_client.search(index=INDEX_NAME, body=os_query)
