@@ -868,22 +868,25 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     sidebar_html = ""
 
     
-    # 🖼️ Get product thumbnails from already-fetched hits
+    # 🖼️ Get unique product thumbnails from already-fetched hits
     product_thumbs = []
-    for hit in hits[:3]:
+    seen_thumbs = set()
+    for hit in hits:
         source = hit.get("_source", {})
-        name = source.get("name", "")
         images = source.get("images", [])
         thumb = images[0] if isinstance(images, list) and images else None
-        if name and thumb:
-            product_thumbs.append({"text": name, "thumbnail": thumb})
+        
+        # Ensure we don't repeat the same image for different suggestions
+        if thumb and thumb not in seen_thumbs:
+            seen_thumbs.add(thumb)
+            product_thumbs.append(thumb)
+            # Stop if we have enough images for all AI suggestions
+            if len(product_thumbs) >= len(ai_suggestions):
+                break
 
     # 🤖 AI SUGGESTIONS with product images mixed in
     if ai_suggestions:
         sidebar_html += ""
-
-        # Track which AI suggestion indexes get a product image
-        thumb_indexes = [0, 3] if len(product_thumbs) >= 2 else ([0] if len(product_thumbs) == 1 else [])
         thumb_used = 0
 
         for i, suggestion in enumerate(ai_suggestions):
@@ -895,13 +898,13 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                 f"else window.location.href='/search.php?search_query={safe_suggestion}&section=content';"
             )
 
-            # Show product thumbnail image for some rows
-            if i in thumb_indexes and thumb_used < len(product_thumbs):
-                thumb_url = product_thumbs[thumb_used]["thumbnail"]
+            # Show unique product thumbnail if available, otherwise fallback to search icon
+            if thumb_used < len(product_thumbs):
+                thumb_url = product_thumbs[thumb_used]
                 thumb_used += 1
-                icon_html = f'<img src="{thumb_url}" style="width:28px; height:28px; object-fit:contain; border-radius:3px; flex-shrink:0;">'
+                icon_html = f'<img src="{thumb_url}" style="width:24px; height:24px; object-fit:contain; border-radius:3px; flex-shrink:0;">'
             else:
-                icon_html = '<i class="fas fa-search" style="color:#9ca3af; width:20px; text-align:center;"></i>'
+                icon_html = '<i class="fas fa-search" style="color:#9ca3af; width:24px; font-size: 14px; text-align:center; display:inline-block;"></i>'
 
             # Bold the typed part in the suggestion
             q = active_search_term.lower()
@@ -919,7 +922,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             <div class='bclouds-side-item' onclick="{click_js}">
                 <div style='display:flex; align-items:center; gap:14px;'>
                     {icon_html}
-                    <span>{highlighted}</span>
+                    <span style="font-size: 15px;">{highlighted}</span>
                 </div>
             </div>
             """
