@@ -933,8 +933,8 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     <style>
     .bclouds-mega-menu {{
         display: flex;
-        width: 100%;
-        max-width: 860px;
+        width: 860px;
+        max-width: 95%;
         height: auto;
         background: white;
         border-radius: 0 0 8px 8px;
@@ -943,13 +943,8 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         overflow: hidden;
         border: 1px solid #e5e7eb;
         border-top: none;
-        margin: 0 auto;
+        margin: 84px auto 0;
         background-color: #ffffff;
-        position: absolute;
-        left: 50%;
-        transform: translateX(-50%);
-        top: 100%;
-        z-index: 99999;
     }}
 
     .bclouds-left-col {{ width: 100%; background: #ffffff; padding: 8px 0; overflow-y: auto; }}    .bclouds-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); width: 100%; }}
