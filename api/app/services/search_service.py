@@ -1130,6 +1130,144 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             {sidebar_html}
         </div>
     </div>
+
+    <script>
+    // ✅ Only run once — don't re-attach events every widget load
+    if (!window._venueHistoryInit) {{
+        window._venueHistoryInit = true;
+        let _historyCache = null;
+
+        window.saveSearchHistory = async function(query) {{
+            if (!query || query.trim().length < 2) return;
+            _historyCache = null;
+            await fetch('/search/history', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{ query: query.trim() }})
+            }});
+        }};
+
+        window.getSearchHistory = async function() {{
+            if (_historyCache !== null) return _historyCache;
+            try {{
+                const res = await fetch('/search/history');
+                const data = await res.json();
+                _historyCache = data.history || [];
+                return _historyCache;
+            }} catch {{ return []; }}
+        }};
+
+        window.removeHistoryItem = async function(query, e) {{
+            e.stopPropagation();
+            _historyCache = null;
+            await fetch('/search/history', {{
+                method: 'DELETE',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{ query: query }})
+            }});
+            window.showHistoryDropdown();
+        }};
+
+        window.showHistoryDropdown = async function() {{
+            const history = await window.getSearchHistory();
+            document.getElementById('venue-history-dropdown')?.remove();
+            if (history.length === 0) return;
+
+            const input = document.getElementById('search_query');
+            if (!input) return;
+            const rect = input.getBoundingClientRect();
+
+            const dropdown = document.createElement('div');
+            dropdown.id = 'venue-history-dropdown';
+            dropdown.style.cssText = `
+                position: fixed;
+                top: ${{rect.bottom}}px;
+                left: ${{rect.left}}px;
+                width: ${{rect.width}}px;
+                background: white;
+                border: 1px solid #e5e7eb;
+                border-top: none;
+                border-radius: 0 0 8px 8px;
+                box-shadow: 0 10px 40px rgba(0,0,0,0.15);
+                z-index: 99999;
+                font-family: Inter, sans-serif;
+                padding: 6px 0;
+            `;
+
+            history.forEach(query => {{
+                const row = document.createElement('div');
+                row.style.cssText = `
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    padding: 11px 16px;
+                    cursor: pointer;
+                    font-size: 15px;
+                    color: #111;
+                    border-bottom: 1px solid #f5f5f5;
+                `;
+                row.onmouseover = () => row.style.background = '#f3f4f6';
+                row.onmouseout = () => row.style.background = '';
+                row.onclick = () => {{
+                    input.value = query;
+                    document.getElementById('venue-history-dropdown')?.remove();
+                    window.saveSearchHistory(query);
+                    const btn = document.getElementById('searchBtn');
+                    if (btn) btn.click();
+                }};
+
+                const left = document.createElement('div');
+                left.style.cssText = 'display:flex; align-items:center; gap:12px;';
+                left.innerHTML = `<i class="fas fa-clock" style="color:#9ca3af;"></i> <span style="color:#c026d3; font-weight:700;">${{query}}</span>`;
+
+                const closeBtn = document.createElement('span');
+                closeBtn.innerHTML = '&times;';
+                closeBtn.style.cssText = 'font-size:20px; color:#9ca3af; cursor:pointer;';
+                closeBtn.onclick = (e) => window.removeHistoryItem(query, e);
+
+                row.appendChild(left);
+                row.appendChild(closeBtn);
+                dropdown.appendChild(row);
+            }});
+
+            document.body.appendChild(dropdown);
+        }};
+
+        // 🎯 ATTACH TO SEARCH BAR
+        const input = document.getElementById('search_query');
+        const searchBtn = document.getElementById('searchBtn');
+        if (input) {{
+            // Show history when bar is empty + clicked
+            input.addEventListener('focus', () => {{
+                if (input.value.trim() === '') window.showHistoryDropdown();
+            }});
+
+            // Hide history when typing
+            input.addEventListener('input', () => {{
+                document.getElementById('venue-history-dropdown')?.remove();
+                // Show history again if bar becomes empty
+                if (input.value.trim() === '') window.showHistoryDropdown();
+            }});
+
+            // Save on search button
+            if (searchBtn) {{
+                searchBtn.addEventListener('click', () => window.saveSearchHistory(input.value));
+            }}
+
+            // Save on Enter
+            input.addEventListener('keydown', (e) => {{
+                if (e.key === 'Enter') window.saveSearchHistory(input.value);
+            }});
+
+            // Hide when clicking outside
+            document.addEventListener('click', (e) => {{
+                if (!e.target.closest('#venue-history-dropdown') && e.target !== input) {{
+                    document.getElementById('venue-history-dropdown')?.remove();
+                }}
+            }});
+        }}
+    }}
+    </script>
     """
 
     return {"html": master_html}
