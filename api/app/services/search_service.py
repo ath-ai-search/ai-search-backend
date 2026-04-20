@@ -903,13 +903,24 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             else:
                 icon_html = '<i class="fas fa-search" style="color:#9ca3af; width:20px; text-align:center;"></i>'
 
+            # Bold the typed part in the suggestion
+            q = active_search_term.lower()
+            s_lower = suggestion.lower()
+            if q in s_lower:
+                idx = s_lower.index(q)
+                highlighted = (
+                    f"<b>{suggestion[:idx+len(q)]}</b>" +
+                    suggestion[idx+len(q):]
+                )
+            else:
+                highlighted = f"<b>{suggestion}</b>"
+
             sidebar_html += f"""
             <div class='bclouds-side-item' onclick="{click_js}">
-                <div style='display:flex; align-items:center; gap:12px;'>
+                <div style='display:flex; align-items:center; gap:14px;'>
                     {icon_html}
-                    <span>{suggestion}</span>
+                    <span>{highlighted}</span>
                 </div>
-                <i class="fas fa-arrow-right arrow-hover" style="font-size:12px; color:#9ca3af;"></i>
             </div>
             """
             
@@ -922,21 +933,21 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     <style>
     .bclouds-mega-menu {{
         display: flex;
-        width: 380px;
-        max-width: 95%;
+        width: 860px;
+        max-width: 98%;
         height: auto;
         background: white;
-        border-radius: 8px;
+        border-radius: 0 0 8px 8px;
         box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
         font-family: 'Inter', sans-serif;
         overflow: hidden;
         border: 1px solid #e5e7eb;
+        border-top: none;
         margin: 133px auto 0;
-        background-color: #f9f9f9;
+        background-color: #ffffff;
     }}
 
-    .bclouds-left-col {{ width: 380px; background: #fdfdfd; padding: 24px; overflow-y: auto; }}
-    .bclouds-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); width: 100%; }}
+    .bclouds-left-col {{ width: 100%; background: #ffffff; padding: 8px 0; overflow-y: auto; }}    .bclouds-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); width: 100%; }}
     .bclouds-assistant-box:hover {{ border-color: #d1d5db; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }}
     .bclouds-assistant-left {{ display: flex; align-items: center; gap: 12px; }}
     .bclouds-assistant-icon {{ font-size: 16px; color: #111; }}
@@ -945,8 +956,9 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 
     /* 🟢 MADE SIDEBAR TEXT BIGGER AND BOLDER */
     .bclouds-side-title {{ font-size: 13px; font-weight: 800; margin-bottom: 16px; text-transform: uppercase; color: #9ca3af; padding-left: 12px; letter-spacing: 0.5px; }}
-    .bclouds-side-item {{ font-size: 16px; padding: 12px 14px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; border-radius: 6px; transition: all 0.2s ease; color: #374151; font-weight: 600; margin-bottom: 4px; }}
-    .bclouds-side-item:hover {{ background: #f3f4f6; color: #111827; }}
+    .bclouds-side-item {{ font-size: 15px; padding: 11px 16px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; border-radius: 0; transition: background 0.15s ease; color: #111; font-weight: 400; margin-bottom: 0; border-bottom: 1px solid #f5f5f5; }}
+    .bclouds-side-item:hover {{ background: #f3f4f6; }}
+    .bclouds-side-item b {{ font-weight: 700; }}
     
     /* 🟢 ADDED ARROW HOVER EFFECT BACK */
     .bclouds-side-item .arrow-hover {{ opacity: 0; transform: translateX(-5px); transition: all 0.2s ease; }}
