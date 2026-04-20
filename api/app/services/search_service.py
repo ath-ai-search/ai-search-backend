@@ -1,6 +1,6 @@
 """
 =====================================================================================
-🧠 bclouds AI SEARCH ARCHITECTURE - MASTER DOCUMENTATION 🧠
+🧠 venue AI SEARCH ARCHITECTURE - MASTER DOCUMENTATION 🧠
 =====================================================================================
 
 This service powers the AI search infrastructure. It combines advanced technologies
@@ -441,7 +441,7 @@ async def process_ai_assistant(chat_message: str, current_state: SearchRequest):
     current_filters = current_state.filters.model_dump() if current_state.filters else {}
     
     system_prompt = f"""
-    You are the bclouds AI, an intelligent e-commerce shopping assistant.
+    You are the venue AI, an intelligent e-commerce shopping assistant.
     
     CURRENT SEARCH CONTEXT:
     - User is currently searching for: "{current_state.query}"
@@ -1098,7 +1098,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 # =========================================================================
 async def generate_ai_welcome(current_query: str):
     system_prompt = f"""
-    You are the bclouds AI, a high-end, intelligent e-commerce shopping assistant.
+    You are the venue, a high-end, intelligent e-commerce shopping assistant.
     The user just opened the AI chat panel. 
     
     CURRENT SEARCH CONTEXT: "{current_query}"
@@ -1129,13 +1129,13 @@ async def generate_ai_welcome(current_query: str):
         parsed = json.loads(llm_response.choices[0].message.content)
         
         return {
-            "ai_message": parsed.get("ai_message", "Welcome to bclouds! How can I help you today? ✨"),
+            "ai_message": parsed.get("ai_message", "Welcome to venue! How can I help you today? ✨"),
             "suggestions": parsed.get("suggestions", ["Show me new arrivals", "Find shoes", "I need a dress"])[:4]
         }
         
     except Exception as e:
         logger.error(f"❌ AI Welcome Error: {e}")
         return {
-            "ai_message": "Welcome to bclouds! Ready to explore some great finds? 🛍️",
+            "ai_message": "Welcome to venue! Ready to explore some great finds? 🛍️",
             "suggestions": ["Show me dresses", "Find shoes", "Looking for bags"]
         }
