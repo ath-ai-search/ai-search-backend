@@ -1179,3 +1179,41 @@ async def generate_ai_welcome(current_query: str):
             "ai_message": "Welcome to venue! Ready to explore some great finds? 🛍️",
             "suggestions": ["Show me dresses", "Find shoes", "Looking for bags"]
         }
+
+# =========================================================================
+# 🕐 SEARCH HISTORY ENGINE (Redis-Backed)
+# =========================================================================
+async def save_search_history(user_id: str, query: str):
+    if not query or len(query.strip()) < 2:
+        return {"status": "skipped"}
+    clean_query = query.strip()
+    key = f"history:{user_id}"
+    try:
+        await redis_client.lrem(key, 0, clean_query)
+        await redis_client.lpush(key, clean_query)
+        await redis_client.ltrim(key, 0, 4)
+        await redis_client.expire(key, 60 * 60 * 24 * 30)
+        return {"status": "saved"}
+    except Exception as e:
+        logger.error(f"❌ Save History Error: {e}")
+        return {"status": "error"}
+
+
+async def get_search_history(user_id: str):
+    key = f"history:{user_id}"
+    try:
+        history = await redis_client.lrange(key, 0, 4)
+        return {"history": [h.decode() if isinstance(h, bytes) else h for h in history]}
+    except Exception as e:
+        logger.error(f"❌ Get History Error: {e}")
+        return {"history": []}
+
+
+async def delete_search_history_item(user_id: str, query: str):
+    key = f"history:{user_id}"
+    try:
+        await redis_client.lrem(key, 0, query.strip())
+        return {"status": "deleted"}
+    except Exception as e:
+        logger.error(f"❌ Delete History Error: {e}")
+        return {"status": "error"}

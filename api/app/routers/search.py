@@ -1,6 +1,14 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from app.models.search import SearchRequest, AIAssistantRequest, AIAssistantResponse, AIWelcomeRequest, AIWelcomeResponse
-from app.services.search_service import execute_search, execute_autocomplete, process_ai_assistant, generate_ai_welcome
+from app.services.search_service import (
+    execute_search, 
+    execute_autocomplete, 
+    process_ai_assistant, 
+    generate_ai_welcome,
+    save_search_history,
+    get_search_history,
+    delete_search_history_item
+)
 
 router = APIRouter()
 
@@ -16,7 +24,26 @@ async def autocomplete(q: str = Query(..., min_length=1)):
 async def ai_assistant(request: AIAssistantRequest):
     return await process_ai_assistant(request.chat_message, request.current_state)
 
-# 🚀 NEW: The dedicated endpoint for generating dynamic greetings
 @router.post("/ai-welcome", response_model=AIWelcomeResponse)
 async def ai_welcome(request: AIWelcomeRequest):
     return await generate_ai_welcome(request.current_query)
+
+# 🕐 SEARCH HISTORY ROUTES
+@router.get("/history")
+async def get_history(request: Request):
+    user_id = request.client.host
+    return await get_search_history(user_id)
+
+@router.post("/history")
+async def save_history(request: Request):
+    body = await request.json()
+    query = body.get("query", "")
+    user_id = request.client.host
+    return await save_search_history(user_id, query)
+
+@router.delete("/history")
+async def delete_history(request: Request):
+    body = await request.json()
+    query = body.get("query", "")
+    user_id = request.client.host
+    return await delete_search_history_item(user_id, query)
