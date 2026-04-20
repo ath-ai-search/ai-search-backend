@@ -692,6 +692,18 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     if not active_search_term and valid_recents:
         active_search_term = valid_recents[0].lower()
 
+    # 🟢 3. THE "NEW USER" FIX: Set a default high-end product!
+    if not active_search_term:
+        active_search_term = "luxury sunglasses"  # <--- Change this word to whatever default you want!
+
+    # 🟢 4. COMPETITOR INTERCEPTOR
+    if active_search_term == "best buy":
+        active_search_term = "tv"# 🟢 2. SET THE ACTIVE SEARCH TERM
+    active_search_term = clean_query
+    # If the search bar is empty, but they have history, use their history!
+    if not active_search_term and valid_recents:
+        active_search_term = valid_recents[0].lower()
+
     # 🟢 3. COMPETITOR INTERCEPTOR
     if active_search_term == "best buy":
         active_search_term = "tv"
@@ -1034,7 +1046,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
           height: 400px;
         }}
         .bclouds-mega-menu {{
-          margin: 94px auto 0;
+          margin: 160px auto 0;
           height: 697px;
           display: inline-block;
         }}
