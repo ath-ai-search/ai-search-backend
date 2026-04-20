@@ -943,7 +943,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         overflow: hidden;
         border: 1px solid #e5e7eb;
         border-top: none;
-        margin: 70px auto 0;
+        margin: 84px auto 0;
         background-color: #ffffff;
     }}
 
