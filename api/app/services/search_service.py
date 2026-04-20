@@ -930,8 +930,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         background-color: #f9f9f9;
     }}
 
-    .bclouds-left-col {{ width: 320px; background: #fdfdfd; padding: 24px; border-right: 1px solid #f0f0f0; overflow-y: auto; }}
-    .bclouds-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); width: 100%; }}
+    .bclouds-left-col {{ display: none; }}    .bclouds-assistant-box {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 24px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05); width: 100%; }}
     .bclouds-assistant-box:hover {{ border-color: #d1d5db; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }}
     .bclouds-assistant-left {{ display: flex; align-items: center; gap: 12px; }}
     .bclouds-assistant-icon {{ font-size: 16px; color: #111; }}
@@ -947,15 +946,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     .bclouds-side-item .arrow-hover {{ opacity: 0; transform: translateX(-5px); transition: all 0.2s ease; }}
     .bclouds-side-item:hover .arrow-hover {{ opacity: 1; transform: translateX(0); color: #111827; }}
 
-    .bclouds-right-col {{ position: relative;
-    flex: 1;
-    
-    padding: 57px 32px 24px 32px;
-    overflow-y: auto;
-    display: flex;
-    flex-wrap: wrap;
-    gap:10px;
-    align-items: flex-start; }}
+    .bclouds-right-col {{ position: relative; width: 100%; padding: 57px 32px 24px 32px; overflow-y: auto; display: flex; flex-wrap: wrap; gap:10px; align-items: flex-start; }}
 
     .bclouds-prod-header h3 {{
        margin-top: 10px;
@@ -1120,9 +1111,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     </style>
 
     <div class="bclouds-mega-menu">
-        <div class="bclouds-left-col">
-            {sidebar_html}
-        </div>
         <div class="bclouds-right-col">
             <div class="bclouds-prod-header">
                 <h3>PRODUCTS</h3>
