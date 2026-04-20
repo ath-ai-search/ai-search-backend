@@ -841,7 +841,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                 {
                     "role": "user",
                     "content": (
-                        f'Generate 7 autocomplete search suggestions for: "{active_search_term}". '
+                        f'Generate 10 autocomplete search suggestions for: "{active_search_term}". '
                         'Include variations like "for men", "for women", "kids", specific popular brands, '
                         'style types, or use cases. Keep each suggestion short and natural.'
                     )
@@ -851,7 +851,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
             max_tokens=250
         )
         parsed_suggestions = json.loads(llm_suggestion_response.choices[0].message.content)
-        ai_suggestions = parsed_suggestions.get("suggestions", [])[:7]
+        ai_suggestions = parsed_suggestions.get("suggestions", [])[:10]
     except Exception as e:
         logger.error(f"❌ AI Suggestion Error: {e}")
         # Sensible fallback if AI call fails
@@ -867,26 +867,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 
     sidebar_html = ""
 
-    # ✨ AI ASSISTANT BUTTON (rainbow glow — keep as-is)
-    display_text = (
-        f'Open "<span>{active_search_term}</span>"<br>in Assistant'
-        if active_search_term and active_search_term != "*"
-        else 'Open <span>AI Assistant</span><br>to explore'
-    )
-    ai_click_js = f"document.getElementById('search_query').value='{active_search_term}';" if active_search_term else ""
-
-    sidebar_html += f"""
-    <button id='ai-toggle' type='button' class='bclouds-assistant-box glowAni' onclick="{ai_click_js}">
-        <div class='bclouds-assistant-left'>
-            <i class='fas fa-magic bclouds-assistant-icon'></i>
-            <div class='bclouds-assistant-text'>
-                {display_text}
-            </div>
-        </div>
-        <i class='fas fa-arrow-right' style='font-size: 14px; color: #111;'></i>
-    </button>
-    """
-
+    
     # 🖼️ Get product thumbnails from already-fetched hits
     product_thumbs = []
     for hit in hits[:3]:
@@ -899,7 +880,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
 
     # 🤖 AI SUGGESTIONS with product images mixed in
     if ai_suggestions:
-        sidebar_html += "<div class='bclouds-side-title'>SUGGESTIONS</div>"
+        sidebar_html += ""
 
         # Track which AI suggestion indexes get a product image
         thumb_indexes = [0, 3] if len(product_thumbs) >= 2 else ([0] if len(product_thumbs) == 1 else [])
