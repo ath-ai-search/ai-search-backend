@@ -934,7 +934,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
     .bclouds-mega-menu {{
         display: flex;
         width: 860px;
-        max-width: 98%;
+        max-width: 70%;
         height: auto;
         background: white;
         border-radius: 0 0 8px 8px;
@@ -943,7 +943,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         overflow: hidden;
         border: 1px solid #e5e7eb;
         border-top: none;
-        margin: 133px auto 0;
+        margin: 70px auto 0;
         background-color: #ffffff;
     }}
 
