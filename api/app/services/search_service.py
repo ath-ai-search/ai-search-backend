@@ -1174,7 +1174,17 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         window.showHistoryDropdown = async function() {{
             const history = await window.getSearchHistory();
             document.getElementById('venue-history-dropdown')?.remove();
-            if (history.length === 0) return;
+            
+            const megaMenu = document.querySelector('.bclouds-mega-menu');
+
+            if (history.length === 0) {{
+                // If no history, make sure the default AI suggestions are visible
+                if (megaMenu) megaMenu.style.display = 'flex';
+                return;
+            }}
+
+            // 🟢 HIDE THE AI SUGGESTIONS SO HISTORY LOOKS CLEAN LIKE AMAZON
+            if (megaMenu) megaMenu.style.display = 'none';
 
             const input = document.getElementById('search_query');
             if (!input) return;
@@ -1207,7 +1217,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                     background: #ffffff;
                 `;
                 
-                // 🟢 Amazon-style gray hover state
+                // Amazon-style gray hover state
                 row.onmouseover = () => row.style.background = '#f3f3f3';
                 row.onmouseout = () => row.style.background = '#ffffff';
                 row.onclick = () => {{
@@ -1219,12 +1229,12 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                 }};
 
                 const left = document.createElement('div');
-                // 🟢 Amazon-style purple text (No clock icon)
+                // Amazon-style purple text (No clock icon)
                 left.style.cssText = 'color: #802A8F; font-weight: 600; font-size: 14px;'; 
                 left.innerText = query;
 
                 const closeBtn = document.createElement('span');
-                // 🟢 Clean 'X' icon
+                // Clean 'X' icon
                 closeBtn.innerHTML = '&#10005;'; 
                 closeBtn.style.cssText = 'font-size: 14px; color: #111; cursor: pointer; padding: 0 5px; font-weight: bold;';
                 closeBtn.onclick = (e) => window.removeHistoryItem(query, e);
@@ -1241,7 +1251,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         const input = document.getElementById('search_query');
         const searchBtn = document.getElementById('searchBtn');
         if (input) {{
-            // Show history when bar is empty + clicked
             input.addEventListener('focus', () => {{
                 if (input.value.trim() === '') window.showHistoryDropdown();
             }});
@@ -1250,24 +1259,26 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                 if (input.value.trim() === '') window.showHistoryDropdown();
             }});
 
-            // Hide history when typing
             input.addEventListener('input', () => {{
                 document.getElementById('venue-history-dropdown')?.remove();
-                // Show history again if bar becomes empty
-                if (input.value.trim() === '') window.showHistoryDropdown();
+                const megaMenu = document.querySelector('.bclouds-mega-menu');
+                
+                if (input.value.trim() === '') {{
+                    window.showHistoryDropdown();
+                }} else {{
+                    // 🟢 RESTORE AI SUGGESTIONS WHEN THE USER STARTS TYPING
+                    if (megaMenu) megaMenu.style.display = 'flex';
+                }}
             }});
 
-            // Save on search button
             if (searchBtn) {{
                 searchBtn.addEventListener('click', () => window.saveSearchHistory(input.value));
             }}
 
-            // Save on Enter
             input.addEventListener('keydown', (e) => {{
                 if (e.key === 'Enter') window.saveSearchHistory(input.value);
             }});
 
-            // Hide when clicking outside
             document.addEventListener('click', (e) => {{
                 if (!e.target.closest('#venue-history-dropdown') && e.target !== input) {{
                     document.getElementById('venue-history-dropdown')?.remove();
