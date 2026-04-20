@@ -1187,14 +1187,13 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                 top: ${{rect.bottom}}px;
                 left: ${{rect.left}}px;
                 width: ${{rect.width}}px;
-                background: white;
-                border: 1px solid #e5e7eb;
+                background: #ffffff;
+                border: 1px solid #ccc;
                 border-top: none;
-                border-radius: 0 0 8px 8px;
-                box-shadow: 0 10px 40px rgba(0,0,0,0.15);
+                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
                 z-index: 99999;
-                font-family: Inter, sans-serif;
-                padding: 6px 0;
+                font-family: inherit;
+                padding: 4px 0;
             `;
 
             history.forEach(query => {{
@@ -1203,14 +1202,14 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                     display: flex;
                     align-items: center;
                     justify-content: space-between;
-                    padding: 11px 16px;
+                    padding: 8px 12px;
                     cursor: pointer;
-                    font-size: 15px;
-                    color: #111;
-                    border-bottom: 1px solid #f5f5f5;
+                    background: #ffffff;
                 `;
-                row.onmouseover = () => row.style.background = '#f3f4f6';
-                row.onmouseout = () => row.style.background = '';
+                
+                // 🟢 Amazon-style gray hover state
+                row.onmouseover = () => row.style.background = '#f3f3f3';
+                row.onmouseout = () => row.style.background = '#ffffff';
                 row.onclick = () => {{
                     input.value = query;
                     document.getElementById('venue-history-dropdown')?.remove();
@@ -1220,12 +1219,14 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
                 }};
 
                 const left = document.createElement('div');
-                left.style.cssText = 'display:flex; align-items:center; gap:12px;';
-                left.innerHTML = `<i class="fas fa-clock" style="color:#9ca3af;"></i> <span style="color:#c026d3; font-weight:700;">${{query}}</span>`;
+                // 🟢 Amazon-style purple text (No clock icon)
+                left.style.cssText = 'color: #802A8F; font-weight: 600; font-size: 14px;'; 
+                left.innerText = query;
 
                 const closeBtn = document.createElement('span');
-                closeBtn.innerHTML = '&times;';
-                closeBtn.style.cssText = 'font-size:20px; color:#9ca3af; cursor:pointer;';
+                // 🟢 Clean 'X' icon
+                closeBtn.innerHTML = '&#10005;'; 
+                closeBtn.style.cssText = 'font-size: 14px; color: #111; cursor: pointer; padding: 0 5px; font-weight: bold;';
                 closeBtn.onclick = (e) => window.removeHistoryItem(query, e);
 
                 row.appendChild(left);
@@ -1242,6 +1243,10 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = ""):
         if (input) {{
             // Show history when bar is empty + clicked
             input.addEventListener('focus', () => {{
+                if (input.value.trim() === '') window.showHistoryDropdown();
+            }});
+            
+            input.addEventListener('click', () => {{
                 if (input.value.trim() === '') window.showHistoryDropdown();
             }});
 
