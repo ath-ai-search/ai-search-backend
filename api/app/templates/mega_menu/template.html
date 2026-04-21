@@ -1,40 +1,36 @@
 <!-- =====================================================================
-     🌐 MEGA MENU TEMPLATE
+     🌐 MEGA MENU TEMPLATE (Amazon-Style)
      =====================================================================
      This HTML template is the skeleton for the search dropdown widget.
      
-     PLACEHOLDERS (filled by Python using .replace() at runtime):
-       <!--STYLES_PLACEHOLDER-->       → CSS from styles.css
-       <!--SCRIPTS_PLACEHOLDER-->      → JavaScript from scripts.js
-       <!--SIDEBAR_PLACEHOLDER-->      → AI-generated suggestion items
-       <!--PRODUCTS_PLACEHOLDER-->     → Product cards grid
-       <!--SEE_ALL_PLACEHOLDER-->      → "See all N results →" link
+     DESIGN: Pure Amazon-style autocomplete
+       - Only text suggestions with search icons
+       - Bold highlighting of typed portion
+       - Clean, minimal, fast
+       - NO product grid (removed)
      
-       WHY HTML COMMENT PLACEHOLDERS?
-       - They won't conflict with CSS {} or JS {} characters
-       - VS Code won't show validator errors
-       - Safe to use .replace() in Python
+     PLACEHOLDERS (filled by Python using .replace() at runtime):
+       __STYLES__     → CSS from styles.css
+       __SCRIPTS__    → JavaScript from scripts.js
+       __SIDEBAR__    → AI-generated suggestion items
+     
+     WHY THESE PLACEHOLDER NAMES?
+       - __TEXT__ format is valid inside CSS and JS
+       - VS Code validators don't show false errors
+       - Safe to use with Python .replace()
+       
      ===================================================================== -->
 
-<style>
-<!--STYLES_PLACEHOLDER-->
-</style>
-
-<div class="bclouds-mega-menu">
-    <div class="bclouds-left-col">
-        <!--SIDEBAR_PLACEHOLDER-->
-    </div>
-</div>
-
-<div class="bclouds-prod-header">
-    <h3></h3>
-    <!--SEE_ALL_PLACEHOLDER-->
-</div>
-
-<div style="display: flex; flex-wrap: wrap; gap: 10px; padding: 10px;">
-    <!--PRODUCTS_PLACEHOLDER-->
-</div>
-
-<script>
-<!--SCRIPTS_PLACEHOLDER-->
-</script>
+     <style>
+        __STYLES__
+        </style>
+        
+        <div class="bclouds-mega-menu">
+            <div class="bclouds-left-col">
+                __SIDEBAR__
+            </div>
+        </div>
+        
+        <script>
+        __SCRIPTS__
+        </script>
