@@ -102,9 +102,9 @@ async def execute_search(request: SearchRequest) -> dict:
     # =====================================================================
     # STEP 1: NORMALIZE PAGE SIZE
     # =====================================================================
-    # Original logic: if not exactly 10, force it to 25
-    # This prevents frontend from requesting weird sizes like 50, 100
-    # (10 is used by AI assistant, 25 is standard search)
+    # Logic: if not exactly 10 (used by AI), force it to 100 (main search)
+    # - 10 = AI assistant chat results (compact view)
+    # - 100 = Main search page (standard view)
     request.page_size = DEFAULT_PAGE_SIZE if request.page_size != SMALL_PAGE_SIZE else SMALL_PAGE_SIZE
     
     # =====================================================================

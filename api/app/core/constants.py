@@ -26,7 +26,7 @@ MAX_OS_WINDOW = 10000
 # =========================================================================
 
 # How many products to show per page on the main search results
-DEFAULT_PAGE_SIZE = 25
+DEFAULT_PAGE_SIZE = 100
 
 # Smaller page size used by AI Assistant chat (shows compact results)
 SMALL_PAGE_SIZE = 10
