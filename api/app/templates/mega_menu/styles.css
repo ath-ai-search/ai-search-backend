@@ -1,0 +1,283 @@
+/* =====================================================================
+ * 🎨 MEGA MENU STYLES
+ * =====================================================================
+ * This CSS styles the search dropdown mega menu widget.
+ * Includes responsive design for mobile/tablet/desktop.
+ * 
+ * NOTE: This file uses single curly braces because it's pure CSS.
+ * (Old code in Python used {{ and }} for escaping — not needed here!)
+ * ===================================================================== */
+
+ .bclouds-mega-menu {
+       display: flex;
+       width: 765px;
+       max-width: 95%;
+       height: auto;
+       background: white;
+       border-radius: 0 0 8px 8px;
+       box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+       font-family: 'Inter', sans-serif;
+       overflow: hidden;
+       border: 1px solid #e5e7eb;
+       border-top: none;
+       margin: 84px auto 0;
+       background-color: #ffffff;
+   }
+   
+   .bclouds-left-col {
+       width: 100%;
+       background: #ffffff;
+       padding: 8px 0;
+       overflow-y: auto;
+   }
+   
+   .bclouds-assistant-box {
+       display: flex;
+       align-items: center;
+       justify-content: space-between;
+       padding: 12px 16px;
+       border: 1px solid #e5e7eb;
+       border-radius: 8px;
+       background: #fff;
+       cursor: pointer;
+       margin-bottom: 24px;
+       transition: all 0.2s ease;
+       box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+       width: 100%;
+   }
+   
+   .bclouds-assistant-box:hover {
+       border-color: #d1d5db;
+       box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+   }
+   
+   .bclouds-assistant-left {
+       display: flex;
+       align-items: center;
+       gap: 12px;
+   }
+   
+   .bclouds-assistant-icon {
+       font-size: 16px;
+       color: #111;
+   }
+   
+   .bclouds-assistant-text {
+       font-size: 13px;
+       font-weight: 500;
+       color: #111;
+   }
+   
+   .bclouds-assistant-text span {
+       font-style: italic;
+       font-weight: 700;
+   }
+   
+   /* 🟢 SIDEBAR TEXT STYLING (bigger + bolder) */
+   .bclouds-side-title {
+       font-size: 13px;
+       font-weight: 800;
+       margin-bottom: 16px;
+       text-transform: uppercase;
+       color: #9ca3af;
+       padding-left: 12px;
+       letter-spacing: 0.5px;
+   }
+   
+   .bclouds-side-item {
+       font-size: 15px;
+       padding: 11px 16px;
+       cursor: pointer;
+       display: flex;
+       justify-content: space-between;
+       align-items: center;
+       border-radius: 0;
+       transition: background 0.15s ease;
+       color: #111;
+       font-weight: 400;
+       margin-bottom: 0;
+       border-bottom: 1px solid #f5f5f5;
+   }
+   
+   .bclouds-side-item:hover {
+       background: #f3f4f6;
+   }
+   
+   .bclouds-side-item b {
+       font-weight: 700;
+   }
+   
+   /* 🟢 ARROW HOVER EFFECT */
+   .bclouds-side-item .arrow-hover {
+       opacity: 0;
+       transform: translateX(-5px);
+       transition: all 0.2s ease;
+   }
+   
+   .bclouds-side-item:hover .arrow-hover {
+       opacity: 1;
+       transform: translateX(0);
+       color: #111827;
+   }
+   
+   .bclouds-right-col {
+       display: none;
+   }
+   
+   .bclouds-prod-header h3 {
+       margin-top: 10px;
+       font-size: 18px;
+   }
+   
+   .bclouds-prod-header {
+       display: flex;
+       justify-content: space-between;
+       margin-bottom: 16px;
+       position: absolute;
+       width: calc(100% - 66px);
+       top: 12px;
+   }
+   
+   .bclouds-prod-header span {
+       display: inline-block;
+       height: 33px;
+       margin-top: 4px;
+       border: 1px solid #ccc;
+       border-radius: 3px;
+       padding: 5px 15px;
+       background-color: #f5f5f5;
+       font-size: 14px;
+       cursor: pointer;
+   }
+   
+   .bclouds-prod-header span:hover {
+       background-color: #e5e5e5;
+   }
+   
+   .bclouds-prod-row {
+       border-bottom: 1px solid #f5f5f5;
+       flex-wrap: wrap;
+       border: 1px solid #ddd;
+       padding: 12px;
+       width: calc(20% - 8px);
+       background-color: #fff;
+       transition: transform 0.2s ease, box-shadow 0.2s ease;
+   }
+   
+   .bclouds-prod-row:hover {
+       transform: translateY(-3px);
+       box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+   }
+   
+   .bclouds-prod-img {
+       width: 100%;
+       height: 140px;
+       display: flex;
+       align-items: center;
+       justify-content: center;
+   }
+   
+   .bclouds-prod-img img {
+       max-width: 100%;
+       max-height: 100%;
+       object-fit: contain;
+   }
+   
+   .bclouds-prod-title {
+       font-size: 14px;
+       color: #444;
+       padding: 8px 0 5px 0;
+       display: -webkit-box;
+       -webkit-box-orient: vertical;
+       overflow: hidden;
+       text-overflow: ellipsis;
+       -webkit-line-clamp: 1;
+       cursor: pointer;
+       height: 29px;
+   }
+   
+   .bclouds-prod-price {
+       font-size: 14px;
+       font-weight: 700;
+       font-size: 16px;
+   }
+   
+   /* 🔥 GLOW ANIMATION (AI assistant box border glow) */
+   .glowAni {
+       --border-angle: 0deg;
+       border-radius: 12px;
+       display: flex;
+       justify-content: space-between;
+       align-items: center;
+       box-shadow: 0px 2px 4px hsl(0 0% 0% / 25%);
+       animation: border-angle-rotate 2s infinite linear;
+       border: 0.2rem solid transparent;
+       background: 
+           linear-gradient(white, white) padding-box,
+           conic-gradient(
+               from var(--border-angle),
+               oklch(100% 100% 0deg),
+               oklch(100% 100% 45deg),
+               oklch(100% 100% 90deg),
+               oklch(100% 100% 135deg),
+               oklch(100% 100% 180deg),
+               oklch(100% 100% 225deg),
+               oklch(100% 100% 270deg),
+               oklch(100% 100% 315deg),
+               oklch(100% 100% 360deg)
+           ) border-box;
+   }
+   
+   @keyframes border-angle-rotate {
+       from { --border-angle: 0deg; }
+       to { --border-angle: 360deg; }
+   }
+   
+   @property --border-angle {
+       syntax: "<angle>";
+       initial-value: 0deg;
+       inherits: false;
+   }
+   
+   /* 📱 RESPONSIVE: Tablet */
+   @media (max-width: 768px) {
+       .bclouds-left-col {
+           display: block;
+           width: 100%;
+       }
+       .bclouds-mega-menu {
+           position: absolute;
+           left: 0;
+           transform: none;
+           width: 100%;
+           max-width: 100%;
+           height: auto;
+           max-height: 80vh;
+           overflow-y: auto;
+           border-radius: 0 0 8px 8px;
+       }
+       .bclouds-prod-img {
+           height: auto;
+           min-height: 60px;
+       }
+   }
+   
+   /* 📱 RESPONSIVE: Mobile */
+   @media (max-width: 640px) {
+       .bclouds-prod-row {
+           width: calc(33% - 6px);
+       }
+       .bclouds-prod-price {
+           font-size: 12px;
+       }
+       .bclouds-prod-price span,
+       .bclouds-prod-price del {
+           font-size: 12px !important;
+       }
+       .bclouds-prod-price del {
+           margin-left: 0 !important;
+       }
+       .glowAni {
+           /* Mobile-specific glow adjustments inherited from parent */
+       }
+   }
