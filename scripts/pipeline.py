@@ -6,6 +6,29 @@ from BigCommerce into OpenSearch.
 
     pip install httpx python-dotenv opensearch-py boto3 requests openai
     python scripts/pipeline.py
+
+=====================================================================================
+🆕 ADDED IN THIS VERSION: Dynamic Variant Extraction
+=====================================================================================
+This pipeline now extracts product variants (sizes, colors, storage, etc.)
+from BigCommerce and stores them in OpenSearch for dynamic faceted filtering.
+
+What's NEW (compared to previous version):
+  ✅ Extracts variant data from raw["variants"] (was being ignored before)
+  ✅ Detects option types dynamically (Size, Color, Storage, RAM, etc)
+  ✅ Stores them as searchable fields in OpenSearch
+  ✅ New field: has_variants (true/false) — tells frontend if variants exist
+  ✅ New field: variant_options — list of option types (e.g., ["Size", "Color"])
+  ✅ New field: sizes, colors, storage, ram, etc — dynamic arrays
+
+What's UNCHANGED:
+  ✅ All existing logic (fetching, transforming, embedding, indexing)
+  ✅ AI embedding generation (same OpenAI model and code)
+  ✅ Rate limit handling
+  ✅ Pagination
+  ✅ Error handling
+  ✅ Main run() function
+=====================================================================================
 """
 
 import asyncio
@@ -187,6 +210,145 @@ def is_product_eligible(raw: dict) -> bool:
         return False
     return True
 
+
+# ============================================================
+# 🆕 NEW HELPER: VARIANT EXTRACTOR (DYNAMIC)
+# ============================================================
+# This function extracts variant options dynamically from BigCommerce data.
+# Works for ANY product type — shoes, phones, laptops, etc.
+# Automatically detects what options exist (Size, Color, Storage, RAM, etc)
+# and organizes them into clean arrays for OpenSearch.
+#
+# Example input (BigCommerce variant data):
+#   [
+#     {
+#       "id": 789,
+#       "sku": "NIKE-001-BLK-9",
+#       "price": 99.99,
+#       "option_values": [
+#         {"option_display_name": "Size", "label": "9"},
+#         {"option_display_name": "Color", "label": "Black"}
+#       ]
+#     },
+#     ...
+#   ]
+#
+# Example output:
+#   {
+#     "has_variants": True,
+#     "variant_options": ["Size", "Color"],
+#     "variants_count": 15,
+#     "sizes": ["7", "8", "9", "10"],
+#     "colors": ["Black", "White", "Red"]
+#   }
+# ============================================================
+
+def extract_variant_data(raw_variants: list) -> dict:
+    """
+    Extracts variant options dynamically from BigCommerce variants array.
+    
+    ARGS:
+        raw_variants: List of variant dicts from BigCommerce API
+    
+    RETURNS:
+        dict with variant info — ready to merge into product data
+    
+    STRATEGY:
+        1. Loop through all variants
+        2. Read each variant's option_values
+        3. Group values by option name (Size, Color, Storage, etc)
+        4. Return as clean arrays for OpenSearch
+    """
+    
+    # Start with empty result — no variants detected yet
+    variant_data = {
+        "has_variants": False,
+        "variant_options": [],
+        "variants_count": 0,
+    }
+    
+    # Safety check: if variants is None or empty, return empty result
+    if not raw_variants or not isinstance(raw_variants, list):
+        return variant_data
+    
+    # Count how many variants this product has
+    # Note: BigCommerce always creates at least 1 variant (even for simple products)
+    # A product has "real" variants only if there are 2+ variants OR option_values exist
+    
+    # Dictionary to collect values by option name
+    # Example: {"Size": {"7", "8", "9"}, "Color": {"Black", "White"}}
+    # We use set() to automatically remove duplicates
+    options_collected = {}
+    
+    # Loop through each variant
+    for variant in raw_variants:
+        # Safety: skip if variant is not a dictionary
+        if not isinstance(variant, dict):
+            continue
+        
+        # Get this variant's option_values (the actual size/color/etc)
+        option_values = variant.get("option_values", [])
+        
+        if not option_values or not isinstance(option_values, list):
+            continue
+        
+        # Loop through each option value
+        for opt in option_values:
+            if not isinstance(opt, dict):
+                continue
+            
+            # Get the option name (like "Size", "Color", "Storage")
+            # BigCommerce uses "option_display_name" for this
+            option_name = str(opt.get("option_display_name", "")).strip()
+            
+            # Get the actual value (like "9", "Black", "128GB")
+            option_value = str(opt.get("label", "")).strip()
+            
+            # Skip if either is empty
+            if not option_name or not option_value:
+                continue
+            
+            # Add to our collection
+            # Use setdefault to create an empty set if option_name is new
+            if option_name not in options_collected:
+                options_collected[option_name] = set()
+            
+            options_collected[option_name].add(option_value)
+    
+    # If we didn't find any options, this is a simple product (no variants)
+    if not options_collected:
+        return variant_data
+    
+    # ✅ We have variant data! Build the final result
+    variant_data["has_variants"] = True
+    variant_data["variants_count"] = len(raw_variants)
+    variant_data["variant_options"] = sorted(options_collected.keys())
+    
+    # Convert each option to a lowercase field name + sorted list
+    # "Size" → "sizes" field with sorted values
+    # "Color" → "colors" field with sorted values
+    # "Storage" → "storage" field with sorted values
+    # "RAM" → "ram" field with sorted values
+    for option_name, values_set in options_collected.items():
+        # Convert option name to safe field name
+        # Examples:
+        #   "Size" → "sizes"
+        #   "Color" → "colors"
+        #   "Storage Capacity" → "storage_capacity"
+        #   "RAM" → "ram"
+        field_name = option_name.lower().replace(" ", "_").replace("-", "_")
+        
+        # Pluralize size → sizes, color → colors (common cases)
+        # For others, keep as-is (ram stays ram, not rams)
+        if field_name in ["size", "color"]:
+            field_name = field_name + "s"
+        
+        # Store sorted list of values
+        variant_data[field_name] = sorted(list(values_set))
+    
+    return variant_data
+
+
 def transform_product(raw: dict, category_map: dict, brand_map: dict) -> dict:
     try:
         product_id  = str(raw.get("id", ""))
@@ -237,6 +399,16 @@ def transform_product(raw: dict, category_map: dict, brand_map: dict) -> dict:
         if isinstance(custom_url, dict):
             url = custom_url.get("url", "")
 
+        # =================================================================
+        # 🆕 NEW: EXTRACT VARIANT DATA (sizes, colors, storage, etc)
+        # =================================================================
+        # Uses the new extract_variant_data() helper function
+        # Returns a dict like: {"has_variants": True, "sizes": [...], "colors": [...]}
+        # For products WITHOUT variants: returns {"has_variants": False}
+        # This runs AFTER all other data extraction, so it doesn't break anything
+        variant_data = extract_variant_data(raw.get("variants", []))
+        # =================================================================
+
         search_parts = [name]
         if brand:
             search_parts.append(brand)
@@ -245,6 +417,24 @@ def transform_product(raw: dict, category_map: dict, brand_map: dict) -> dict:
             search_parts.append(description[:500])
         for k, v in list(attributes.items())[:10]:
             search_parts.append(f"{k}: {v}")
+        
+        # =================================================================
+        # 🆕 NEW: Add variant info to search_text too (helps AI embeddings)
+        # =================================================================
+        # Example: search_text gets "Size: 7 | Size: 8 | Color: Black | Color: Red"
+        # This makes AI embeddings aware of variant options
+        if variant_data.get("has_variants"):
+            for opt_name in variant_data.get("variant_options", []):
+                # Get the field name (like "sizes", "colors")
+                field_name = opt_name.lower().replace(" ", "_").replace("-", "_")
+                if field_name in ["size", "color"]:
+                    field_name = field_name + "s"
+                
+                values = variant_data.get(field_name, [])
+                if values:
+                    # Add first 5 values to search_text (limit for speed)
+                    search_parts.append(f"{opt_name}: {', '.join(values[:5])}")
+        # =================================================================
 
         # ✅ FIXED: Prevent crashing by safely handling missing/empty data
         result = {
@@ -266,6 +456,14 @@ def transform_product(raw: dict, category_map: dict, brand_map: dict) -> dict:
             "sort_order":      int(raw.get("sort_order", 0) or 0),
             "total_sold":      int(raw.get("total_sold", 0) or 0)
         }
+        
+        # =================================================================
+        # 🆕 NEW: Merge variant data into result
+        # =================================================================
+        # This adds all variant fields (has_variants, sizes, colors, etc)
+        # to the final product data that gets indexed in OpenSearch
+        result.update(variant_data)
+        # =================================================================
         
         # Only add date if it actually exists (fixes AWS date parsing crash)
         date_mod = raw.get("date_modified", "")
@@ -352,6 +550,7 @@ async def generate_embeddings(products: list[dict], api_key: str) -> list[dict]:
 # ============================================================
 
 # ✅ FIXED: Simplified for AWS Vector Serverless compatibility 
+# 🆕 ADDED: Variant fields (has_variants, sizes, colors, storage, ram, etc)
 PRODUCT_MAPPING = {
     "settings": {
         "index.knn": True,
@@ -373,6 +572,28 @@ PRODUCT_MAPPING = {
             "sort_order":    {"type": "integer"},
             "total_sold":    {"type": "integer"},
             "date_modified": {"type": "date", "ignore_malformed": True},
+            
+            # =================================================================
+            # 🆕 NEW VARIANT FIELDS (for dynamic faceted filtering)
+            # =================================================================
+            # These fields are automatically populated by extract_variant_data()
+            # Products WITHOUT variants will simply not have these fields
+            # Products WITH variants will have them populated dynamically
+            
+            "has_variants":    {"type": "boolean"},
+            "variant_options": {"type": "keyword"},  # ["Size", "Color"]
+            "variants_count":  {"type": "integer"},
+            
+            # Common variant fields (stored as keyword arrays for filtering)
+            "sizes":   {"type": "keyword"},
+            "colors":  {"type": "keyword"},
+            "storage": {"type": "keyword"},
+            "ram":     {"type": "keyword"},
+            # Note: Any OTHER dynamic option field (like "material", "style")
+            # will automatically be added as keyword type by OpenSearch
+            # because "dynamic" is allowed in the mapping
+            # =================================================================
+            
             "embedding": {
                 "type":      "knn_vector",
                 "dimension": 1536,
