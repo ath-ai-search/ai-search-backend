@@ -495,36 +495,43 @@ async def execute_search(request: SearchRequest) -> dict:
         }
     
     # Build the FINAL OpenSearch request
+    # Build the FINAL OpenSearch request
     os_query = {
         "from": from_val,
         "size": request.page_size,
         **query_body,
         "sort": sort_query,
-        "track_total_hits": True,   # Get EXACT total count (not estimate)
-        "track_scores": True,        # Include scores even when sorting by price
+        "track_total_hits": True,
+        "track_scores": True,
         
         # =====================================================================
         # 🎯 SMART CATEGORY FACETS (Contextual Filtering)
         # =====================================================================
-        # Problem: Without filtering, searching "shoes" shows "Kitchen" category
-        # because some kitchen products mention "shoes" in description.
+        # Two-layer aggregation strategy:
+        # 1. "top_relevant_hits" — Get categories from top 100 BEST-matching products
+        #    (not from ALL matching products, which includes weak matches)
+        # 2. "categories" — Traditional aggregation as fallback
         #
-        # Solution: Use 'min_doc_count' to only include categories with 
-        # meaningful product counts (ignore categories with just 1-2 products).
-        # 
-        # Also set 'shard_size' higher for more accurate counts.
+        # Why this works:
+        # - Top 100 most-relevant products are TRULY related to the query
+        # - Their categories are the ones user actually wants to filter by
+        # - Irrelevant categories (like "Kitchen" for "shoes") are excluded
+        # - We get 10-15 relevant categories (not just 2-3)
         "aggs": {
+            # Primary: Get top 100 relevant product IDs and their categories
+            "top_relevant_hits": {
+                "top_hits": {
+                    "size": 100,  # Top 100 most-relevant products
+                    "_source": ["category"]  # Only fetch category field (fast!)
+                }
+            },
+            # Fallback: Regular aggregation (kept for safety)
             "categories": {
                 "terms": {
                     "field": "category",
                     "size": FACET_CATEGORIES_SIZE,
-                    "min_doc_count": FACET_MIN_DOC_COUNT,  # 🆕 Use constant
-                    # Only show categories with at least 3 matching products
-                    # Prevents one-off irrelevant categories from showing up
-                    "min_doc_count": 3,
-                    # Higher shard_size = more accurate counts across shards
+                    "min_doc_count": FACET_MIN_DOC_COUNT,
                     "shard_size": FACET_CATEGORIES_SIZE * 3,
-                    # Sort by doc_count DESC (most relevant first)
                     "order": {"_count": "desc"}
                 }
             }
@@ -647,27 +654,34 @@ async def execute_search(request: SearchRequest) -> dict:
     if request.sort not in ["price_asc", "price_desc"]:
         results.sort(key=lambda x: x["score"], reverse=True)
     
-    # =====================================================================
+# =====================================================================
     # STEP 15: BUILD FACETS (Smart Contextual Category Filtering)
     # =====================================================================
-    # PROBLEM: Raw OpenSearch aggregations return ALL categories of matching
-    # products. Since one product has multiple tags (e.g. "Amazon", "Shoes"),
-    # irrelevant categories sneak in.
+    # STRATEGY:
+    #   1. Grab top 100 most-relevant products (via top_hits aggregation)
+    #   2. Count categories that appear in those top 100
+    #   3. Sort by count (most common first)
+    #   4. Return top 15 categories
     #
-    # SOLUTION: Only show categories that actually appear in the TOP 50 
-    # most-relevant results. This guarantees contextual relevance.
+    # This guarantees:
+    #   - Categories are TRULY related to the search query
+    #   - User sees 10-15 useful filter options (not 2-3)
+    #   - No irrelevant categories like "Kitchen" for "shoes" query
     
     aggregations = response.get("aggregations", {})
-    all_agg_categories = aggregations.get("categories", {}).get("buckets", [])
     
-    # Build a set of categories that ACTUALLY appear in our top results
-    # (not just in the entire matching pool)
-    top_result_categories = set()
-    for hit in hits.get("hits", []):
+    # Get the top 100 most-relevant products from our custom aggregation
+    top_hits_data = aggregations.get("top_relevant_hits", {}).get("hits", {}).get("hits", [])
+    
+    # Count how many times each category appears in top 100 products
+    # This gives us the "relevance weight" of each category
+    category_counts = {}
+    
+    for hit in top_hits_data:
         source = hit.get("_source", {})
         raw_cats = source.get("category", [])
         
-        # Handle both string and list category fields
+        # Handle both string and list formats for category field
         if isinstance(raw_cats, str):
             cats_list = [
                 c.strip() 
@@ -679,27 +693,40 @@ async def execute_search(request: SearchRequest) -> dict:
         else:
             cats_list = []
         
-        # Add each category to our "seen in top results" set
+        # Increment count for each valid category
         for cat in cats_list:
-            if cat and cat != "None":
-                top_result_categories.add(cat)
+            if cat and cat != "None" and cat != "Uncategorized":
+                category_counts[cat] = category_counts.get(cat, 0) + 1
     
-    # Now filter the aggregation buckets:
-    # Only include categories that ALSO appear in our top displayed results
-    # This ensures sidebar categories match what user actually sees
+    # Get ACTUAL counts from the global aggregation (more accurate totals)
+    # We use counts from aggregation, but only for categories in our top list
+    global_agg_buckets = {
+        str(c.get("key")).strip(): c.get("doc_count", 0)
+        for c in aggregations.get("categories", {}).get("buckets", [])
+        if c.get("key")
+    }
+    
+    # Sort categories by their appearance in top 100 (relevance)
+    # Keep top 15 most relevant
+    sorted_categories = sorted(
+        category_counts.items(),
+        key=lambda x: x[1],  # Sort by count in top 100 (most common first)
+        reverse=True
+    )[:15]
+    
+    # Build the final facets list
+    # Use global count (more accurate) but ordered by relevance
     facets = {
         "categories": [
             {
-                "value": str(c.get("key")).strip(),
-                "label": str(c.get("key")).strip(),
-                "count": c.get("doc_count", 0)
+                "value": cat_name,
+                "label": cat_name,
+                # Use global count if available, else use top-100 count
+                "count": global_agg_buckets.get(cat_name, top_count)
             }
-            for c in all_agg_categories
-            if c.get("key") 
-            and str(c.get("key")).strip() in top_result_categories
+            for cat_name, top_count in sorted_categories
         ]
     }
-    
     # =====================================================================
     # STEP 16: BUILD FINAL RESPONSE
     # =====================================================================
