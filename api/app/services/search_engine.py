@@ -72,6 +72,7 @@ from app.core.constants import (
     DEMO_SALES_BASE,
     DEMO_SALES_RANGE,
     SCORE_DISPLAY_MIN,
+    FACET_MIN_DOC_COUNT,
     SCORE_DISPLAY_RANGE,
 )
 
@@ -499,14 +500,32 @@ async def execute_search(request: SearchRequest) -> dict:
         "size": request.page_size,
         **query_body,
         "sort": sort_query,
-        "track_total_hits": True,  # Get EXACT total count (not estimate)
-        "track_scores": True,       # Include scores even when sorting by price
-        # Aggregations = facets (for filter sidebar counts)
+        "track_total_hits": True,   # Get EXACT total count (not estimate)
+        "track_scores": True,        # Include scores even when sorting by price
+        
+        # =====================================================================
+        # 🎯 SMART CATEGORY FACETS (Contextual Filtering)
+        # =====================================================================
+        # Problem: Without filtering, searching "shoes" shows "Kitchen" category
+        # because some kitchen products mention "shoes" in description.
+        #
+        # Solution: Use 'min_doc_count' to only include categories with 
+        # meaningful product counts (ignore categories with just 1-2 products).
+        # 
+        # Also set 'shard_size' higher for more accurate counts.
         "aggs": {
             "categories": {
                 "terms": {
                     "field": "category",
-                    "size": FACET_CATEGORIES_SIZE
+                    "size": FACET_CATEGORIES_SIZE,
+                    "min_doc_count": FACET_MIN_DOC_COUNT,  # 🆕 Use constant
+                    # Only show categories with at least 3 matching products
+                    # Prevents one-off irrelevant categories from showing up
+                    "min_doc_count": 3,
+                    # Higher shard_size = more accurate counts across shards
+                    "shard_size": FACET_CATEGORIES_SIZE * 3,
+                    # Sort by doc_count DESC (most relevant first)
+                    "order": {"_count": "desc"}
                 }
             }
         }

@@ -128,7 +128,7 @@ HISTORY_MAX_ITEMS = 5
 # Cache key version — BUMP this number when search logic changes
 # Bumping invalidates all old cached results so users get fresh results
 # Example: if you change boost values, bump v135 → v136
-CACHE_VERSION = "v135"
+CACHE_VERSION = "v136"
 
 
 # =========================================================================
@@ -136,7 +136,14 @@ CACHE_VERSION = "v135"
 # =========================================================================
 
 # How many category buckets to return in facets (filter sidebar)
-FACET_CATEGORIES_SIZE = 25
+# Lower number = only MOST relevant categories shown
+# 15 is a good balance (not too few, not cluttered)
+FACET_CATEGORIES_SIZE = 15
+
+# Minimum products a category must have to appear in sidebar
+# Prevents irrelevant categories (like "Kitchen" when searching shoes)
+# from showing up just because 1-2 products have weird tags
+FACET_MIN_DOC_COUNT = 3
 
 # How many top categories to show in mega menu widget
 WIDGET_TOP_CATEGORIES_SIZE = 6
