@@ -10,8 +10,8 @@
 
  .bclouds-mega-menu {
        display: flex;
-       width: 765px;
-       max-width: 95%;
+       width: 100%;
+       max-width: 100%;
        height: auto;
        background: white;
        border-radius: 0 0 8px 8px;
@@ -20,7 +20,7 @@
        overflow: hidden;
        border: 1px solid #e5e7eb;
        border-top: none;
-       margin: 84px auto 0;
+       margin: 41px auto 0;
        background-color: #ffffff;
    }
    
