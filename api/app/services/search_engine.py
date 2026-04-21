@@ -648,9 +648,45 @@ async def execute_search(request: SearchRequest) -> dict:
         results.sort(key=lambda x: x["score"], reverse=True)
     
     # =====================================================================
-    # STEP 15: BUILD FACETS (category counts for sidebar)
+    # STEP 15: BUILD FACETS (Smart Contextual Category Filtering)
     # =====================================================================
+    # PROBLEM: Raw OpenSearch aggregations return ALL categories of matching
+    # products. Since one product has multiple tags (e.g. "Amazon", "Shoes"),
+    # irrelevant categories sneak in.
+    #
+    # SOLUTION: Only show categories that actually appear in the TOP 50 
+    # most-relevant results. This guarantees contextual relevance.
+    
     aggregations = response.get("aggregations", {})
+    all_agg_categories = aggregations.get("categories", {}).get("buckets", [])
+    
+    # Build a set of categories that ACTUALLY appear in our top results
+    # (not just in the entire matching pool)
+    top_result_categories = set()
+    for hit in hits.get("hits", []):
+        source = hit.get("_source", {})
+        raw_cats = source.get("category", [])
+        
+        # Handle both string and list category fields
+        if isinstance(raw_cats, str):
+            cats_list = [
+                c.strip() 
+                for c in re.sub(r"[\[\]'\"]", "", raw_cats).split(",") 
+                if c.strip()
+            ]
+        elif isinstance(raw_cats, list):
+            cats_list = [str(c).strip() for c in raw_cats if c and str(c).strip()]
+        else:
+            cats_list = []
+        
+        # Add each category to our "seen in top results" set
+        for cat in cats_list:
+            if cat and cat != "None":
+                top_result_categories.add(cat)
+    
+    # Now filter the aggregation buckets:
+    # Only include categories that ALSO appear in our top displayed results
+    # This ensures sidebar categories match what user actually sees
     facets = {
         "categories": [
             {
@@ -658,8 +694,9 @@ async def execute_search(request: SearchRequest) -> dict:
                 "label": str(c.get("key")).strip(),
                 "count": c.get("doc_count", 0)
             }
-            for c in aggregations.get("categories", {}).get("buckets", [])
-            if c.get("key")
+            for c in all_agg_categories
+            if c.get("key") 
+            and str(c.get("key")).strip() in top_result_categories
         ]
     }
     
