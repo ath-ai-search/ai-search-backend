@@ -257,7 +257,9 @@ def extract_variant_data(raw_variants: list) -> dict:
         1. Loop through all variants
         2. Read each variant's option_values
         3. Group values by option name (Size, Color, Storage, etc)
-        4. Return as clean arrays for OpenSearch
+        4. SKIP "Default" option (BigCommerce adds this to ALL products)
+        5. Only mark as has_variants=True if REAL variants exist
+        6. Return as clean arrays for OpenSearch
     """
     
     # Start with empty result — no variants detected yet
@@ -271,13 +273,8 @@ def extract_variant_data(raw_variants: list) -> dict:
     if not raw_variants or not isinstance(raw_variants, list):
         return variant_data
     
-    # Count how many variants this product has
-    # Note: BigCommerce always creates at least 1 variant (even for simple products)
-    # A product has "real" variants only if there are 2+ variants OR option_values exist
-    
     # Dictionary to collect values by option name
     # Example: {"Size": {"7", "8", "9"}, "Color": {"Black", "White"}}
-    # We use set() to automatically remove duplicates
     options_collected = {}
     
     # Loop through each variant
@@ -298,7 +295,6 @@ def extract_variant_data(raw_variants: list) -> dict:
                 continue
             
             # Get the option name (like "Size", "Color", "Storage")
-            # BigCommerce uses "option_display_name" for this
             option_name = str(opt.get("option_display_name", "")).strip()
             
             # Get the actual value (like "9", "Black", "128GB")
@@ -308,38 +304,43 @@ def extract_variant_data(raw_variants: list) -> dict:
             if not option_name or not option_value:
                 continue
             
+            # 🆕 SKIP "Default" options — BigCommerce creates these automatically
+            # for ALL products (even simple ones). These are NOT real variants.
+            if option_name.lower() in ["default", "default title", "title"]:
+                continue
+            
+            # 🆕 Also skip if the VALUE is "Default Title" (common BigCommerce default)
+            if option_value.lower() in ["default title", "default"]:
+                continue
+            
             # Add to our collection
-            # Use setdefault to create an empty set if option_name is new
             if option_name not in options_collected:
                 options_collected[option_name] = set()
             
             options_collected[option_name].add(option_value)
     
-    # If we didn't find any options, this is a simple product (no variants)
+    # If we didn't find any REAL options, this is a simple product (no variants)
     if not options_collected:
         return variant_data
     
-    # ✅ We have variant data! Build the final result
+    # 🆕 EXTRA CHECK: If we only have 1 variant AND it doesn't have meaningful options,
+    # treat it as simple product (not a real variant product)
+    # Real variant products typically have 2+ variants
+    if len(raw_variants) <= 1:
+        # Only 1 variant = not really a variant product
+        return variant_data
+    
+    # ✅ We have REAL variant data! Build the final result
     variant_data["has_variants"] = True
     variant_data["variants_count"] = len(raw_variants)
     variant_data["variant_options"] = sorted(options_collected.keys())
     
     # Convert each option to a lowercase field name + sorted list
-    # "Size" → "sizes" field with sorted values
-    # "Color" → "colors" field with sorted values
-    # "Storage" → "storage" field with sorted values
-    # "RAM" → "ram" field with sorted values
     for option_name, values_set in options_collected.items():
         # Convert option name to safe field name
-        # Examples:
-        #   "Size" → "sizes"
-        #   "Color" → "colors"
-        #   "Storage Capacity" → "storage_capacity"
-        #   "RAM" → "ram"
         field_name = option_name.lower().replace(" ", "_").replace("-", "_")
         
-        # Pluralize size → sizes, color → colors (common cases)
-        # For others, keep as-is (ram stays ram, not rams)
+        # Pluralize common options
         if field_name in ["size", "color"]:
             field_name = field_name + "s"
         
