@@ -393,7 +393,6 @@ async def execute_search(request: SearchRequest) -> dict:
         "min_score": min_relevance_score,
         
         # 🚀 THE BULLETPROOF SAMPLER AGGREGATION
-        # Forces OpenSearch to ONLY build facets from the top 150 absolute best matches.
         "aggs": {
             "strict_relevance_sampler": {
                 "sampler": {
@@ -501,9 +500,6 @@ async def execute_search(request: SearchRequest) -> dict:
     if request.sort not in ["price_asc", "price_desc"]:
         results.sort(key=lambda x: x["score"], reverse=True)
     
-    # =====================================================================
-    # 🚀 STEP 16: BUILD BULLETPROOF FACETS (NATIVE SAMPLER)
-    # =====================================================================
     sampled_aggs = response.get("aggregations", {}).get("strict_relevance_sampler", {})
     
     def build_native_facet_list(agg_name: str) -> list:
@@ -513,6 +509,7 @@ async def execute_search(request: SearchRequest) -> dict:
             value = str(bucket.get("key", "")).strip()
             count = bucket.get("doc_count", 0)
             
+            # Skip empty or default values
             if not value or value.lower() in ["none", "default", "default title", "uncategorized", ""]:
                 continue
             
@@ -543,7 +540,7 @@ async def execute_search(request: SearchRequest) -> dict:
     
     ram_list = build_native_facet_list("ram")
     if ram_list: facets["ram"] = ram_list
-    
+
     # STEP 17: BUILD FINAL RESPONSE
     final_response = {
         "total_results": total_hits,
