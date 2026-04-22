@@ -382,7 +382,7 @@ async def execute_search(request: SearchRequest) -> dict:
     elif actual_total_hits > 30:
         dynamic_min_doc = 2   # Low strictness
         
-    # STEP 12: BUILD FINAL OPENSEARCH QUERY (NATIVE HIGH-SPEED AGGREGATIONS)
+    # STEP 12: BUILD FINAL OPENSEARCH QUERY
     os_query = {
         "from": from_val,
         "size": request.page_size,
@@ -392,106 +392,37 @@ async def execute_search(request: SearchRequest) -> dict:
         "track_scores": True,
         "min_score": min_relevance_score,
         
+        # 🚀 THE BULLETPROOF SAMPLER AGGREGATION
+        # This forces OpenSearch to ONLY build facets from the top 150 absolute best matches.
+        # It guarantees zero "garbage bleed" from weak AI vector matches.
         "aggs": {
-            "categories": {
-                "terms": {
-                    "field": "category",
-                    "size": FACET_CATEGORIES_SIZE,
-                    "min_doc_count": dynamic_min_doc,
-                    "shard_size": min(FACET_CATEGORIES_SIZE * 3, 65536),
-                    "order": {"_count": "desc"}
-                }
-            },
-            "brands": {
-                "terms": {"field": "brand", "size": FACET_BRANDS_SIZE, "min_doc_count": dynamic_min_doc, "order": {"_count": "desc"}}
-            },
-            "colors": {
-                "terms": {"field": "colors", "size": FACET_COLORS_SIZE, "min_doc_count": dynamic_min_doc, "order": {"_count": "desc"}}
-            },
-            "sizes": {
-                "terms": {"field": "sizes", "size": FACET_SIZES_SIZE, "min_doc_count": dynamic_min_doc, "order": {"_count": "desc"}}
-            },
-            "storage": {
-                "terms": {"field": "storage", "size": FACET_STORAGE_SIZE, "min_doc_count": dynamic_min_doc, "order": {"_count": "desc"}}
-            },
-            "ram": {
-                "terms": {"field": "ram", "size": FACET_RAM_SIZE, "min_doc_count": dynamic_min_doc, "order": {"_count": "desc"}}
-            }
-        }
-    }
-    os_query = {
-        "from": from_val,
-        "size": request.page_size,
-        **query_body,
-        "sort": sort_query,
-        "track_total_hits": True,
-        "track_scores": True,
-        "min_score": min_relevance_score,
-        
-        "aggs": {
-            "top_relevant_hits": {
-                "top_hits": {
-                    "size": 100, 
-                    "_source": ["category", "brand", "colors", "sizes", "storage", "ram"]
-                }
-            },
-            "categories": {
-                "terms": {
-                    "field": "category",
-                    "size": FACET_CATEGORIES_SIZE,
-                    "min_doc_count": FACET_MIN_DOC_COUNT,
-                    "shard_size": min(FACET_CATEGORIES_SIZE * 3, 65536),
-                    "order": {"_count": "desc"}
-                }
-            },
-            # 🆕 BRANDS aggregation (single-select in UI)
-            "brands": {
-                "terms": {
-                    "field": "brand",
-                    "size": FACET_BRANDS_SIZE,
-                    "min_doc_count": FACET_MIN_DOC_COUNT,
-                    "order": {"_count": "desc"}
-                }
-            },
-            # 🆕 COLORS aggregation (multi-select in UI)
-            "colors": {
-                "terms": {
-                    "field": "colors",
-                    "size": FACET_COLORS_SIZE,
-                    "min_doc_count": 1,  # Lower threshold for variant data
-                    "order": {"_count": "desc"}
-                }
-            },
-            # 🆕 SIZES aggregation (multi-select in UI)
-            "sizes": {
-                "terms": {
-                    "field": "sizes",
-                    "size": FACET_SIZES_SIZE,
-                    "min_doc_count": 1,
-                    "order": {"_count": "desc"}
-                }
-            },
-            # 🆕 STORAGE aggregation (multi-select in UI)
-            "storage": {
-                "terms": {
-                    "field": "storage",
-                    "size": FACET_STORAGE_SIZE,
-                    "min_doc_count": 1,
-                    "order": {"_count": "desc"}
-                }
-            },
-            # 🆕 RAM aggregation (multi-select in UI)
-            "ram": {
-                "terms": {
-                    "field": "ram",
-                    "size": FACET_RAM_SIZE,
-                    "min_doc_count": 1,
-                    "order": {"_count": "desc"}
+            "strict_relevance_sampler": {
+                "sampler": {
+                    "shard_size": 150  # Only look at the top 150 most relevant products!
+                },
+                "aggs": {
+                    "categories": {
+                        "terms": {"field": "category", "size": FACET_CATEGORIES_SIZE, "min_doc_count": 1}
+                    },
+                    "brands": {
+                        "terms": {"field": "brand", "size": FACET_BRANDS_SIZE, "min_doc_count": 1}
+                    },
+                    "colors": {
+                        "terms": {"field": "colors", "size": FACET_COLORS_SIZE, "min_doc_count": 1}
+                    },
+                    "sizes": {
+                        "terms": {"field": "sizes", "size": FACET_SIZES_SIZE, "min_doc_count": 1}
+                    },
+                    "storage": {
+                        "terms": {"field": "storage", "size": FACET_STORAGE_SIZE, "min_doc_count": 1}
+                    },
+                    "ram": {
+                        "terms": {"field": "ram", "size": FACET_RAM_SIZE, "min_doc_count": 1}
+                    }
                 }
             }
         }
     }
-    
     # STEP 13: EXECUTE MAIN QUERY
     try:
         response = os_client.search(index=INDEX_NAME, body=os_query)
@@ -572,13 +503,13 @@ async def execute_search(request: SearchRequest) -> dict:
         results.sort(key=lambda x: x["score"], reverse=True)
     
     # =====================================================================
-    # 🚀 STEP 16: BUILD AUTOMATIC SCALED FACETS (NATIVE OPENSEARCH)
+    # 🚀 STEP 16: BUILD BULLETPROOF FACETS (NATIVE SAMPLER)
     # =====================================================================
-    aggregations = response.get("aggregations", {})
+    # We extract the facets generated ONLY from our top 150 strictly relevant products.
+    sampled_aggs = response.get("aggregations", {}).get("strict_relevance_sampler", {})
     
     def build_native_facet_list(agg_name: str) -> list:
-        """Instantly parses native OpenSearch aggregations."""
-        buckets = aggregations.get(agg_name, {}).get("buckets", [])
+        buckets = sampled_aggs.get(agg_name, {}).get("buckets", [])
         result = []
         for bucket in buckets:
             value = str(bucket.get("key", "")).strip()
@@ -615,7 +546,6 @@ async def execute_search(request: SearchRequest) -> dict:
     
     ram_list = build_native_facet_list("ram")
     if ram_list: facets["ram"] = ram_list
-
     
     # STEP 17: BUILD FINAL RESPONSE
     final_response = {
