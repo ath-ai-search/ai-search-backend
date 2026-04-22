@@ -392,15 +392,34 @@ async def execute_search(request: SearchRequest) -> dict:
         "track_scores": True,
         "min_score": min_relevance_score,
         
-        # 🚀 STRICT TOP-100 RELEVANCE FACETS
-        # Uses top_hits to get TOP 100 products by _score (not random sampling!)
-        # Then we count occurrences in code to filter out garbage values
+        # 🚀 THE BULLETPROOF SAMPLER AGGREGATION
+        # This forces OpenSearch to ONLY build facets from the top 150 absolute best matches.
+        # It guarantees zero "garbage bleed" from weak AI vector matches.
         "aggs": {
-            "top_relevant_hits": {
-                "top_hits": {
-                    "size": 100,
-                    "_source": ["category", "brand", "colors", "sizes", "storage", "ram"],
-                    "sort": [{"_score": "desc"}]
+            "strict_relevance_sampler": {
+                "sampler": {
+                    "shard_size": 150  # Only look at the top 150 most relevant products!
+                },
+                "aggs": {
+                    "categories": {
+                        # We use min_doc_count=3 to hide 1-off accidental matches
+                        "terms": {"field": "category", "size": FACET_CATEGORIES_SIZE, "min_doc_count": 3}
+                    },
+                    "brands": {
+                        "terms": {"field": "brand", "size": FACET_BRANDS_SIZE, "min_doc_count": 3}
+                    },
+                    "colors": {
+                        "terms": {"field": "colors", "size": FACET_COLORS_SIZE, "min_doc_count": 2}
+                    },
+                    "sizes": {
+                        "terms": {"field": "sizes", "size": FACET_SIZES_SIZE, "min_doc_count": 2}
+                    },
+                    "storage": {
+                        "terms": {"field": "storage", "size": FACET_STORAGE_SIZE, "min_doc_count": 2}
+                    },
+                    "ram": {
+                        "terms": {"field": "ram", "size": FACET_RAM_SIZE, "min_doc_count": 2}
+                    }
                 }
             }
         }
@@ -485,116 +504,48 @@ async def execute_search(request: SearchRequest) -> dict:
         results.sort(key=lambda x: x["score"], reverse=True)
     
     # =====================================================================
-    # 🚀 STEP 16: BUILD STRICT TOP-100 FACETS (MANUAL COUNTING)
+    # 🚀 STEP 16: BUILD BULLETPROOF FACETS (NATIVE SAMPLER)
     # =====================================================================
-    # Strategy:
-    #   1. Extract top 100 products from top_hits aggregation
-    #   2. Count how many of top 100 have each value per facet field
-    #   3. Apply dynamic threshold — only values with enough occurrences shown
-    #   4. Garbage values (like "Luxury Stores" for shoes) get filtered out
+    # We extract the facets generated ONLY from our top 150 strictly relevant products.
+    sampled_aggs = response.get("aggregations", {}).get("strict_relevance_sampler", {})
     
-    aggregations = response.get("aggregations", {})
-    top_hits_data = aggregations.get("top_relevant_hits", {}).get("hits", {}).get("hits", [])
-    
-    # Count occurrences per value in top 100 products
-    cat_counts = {}
-    brand_counts = {}
-    color_counts = {}
-    size_counts = {}
-    storage_counts = {}
-    ram_counts = {}
-    
-    for hit in top_hits_data:
-        source = hit.get("_source", {})
-        
-        # --- Categories (string or list) ---
-        raw_cats = source.get("category", [])
-        if isinstance(raw_cats, str):
-            cats_list = [c.strip() for c in re.sub(r"[\[\]'\"]", "", raw_cats).split(",") if c.strip()]
-        elif isinstance(raw_cats, list):
-            cats_list = [str(c).strip() for c in raw_cats if c and str(c).strip()]
-        else:
-            cats_list = []
-        for cat in cats_list:
-            if cat and cat.lower() not in ["none", "uncategorized", ""]:
-                cat_counts[cat] = cat_counts.get(cat, 0) + 1
-        
-        # --- Brand (single) ---
-        brand = source.get("brand", "")
-        if brand and isinstance(brand, str) and brand.strip():
-            key = brand.strip()
-            brand_counts[key] = brand_counts.get(key, 0) + 1
-        
-        # --- Colors (list) ---
-        colors_list = source.get("colors", [])
-        if isinstance(colors_list, list):
-            for c in colors_list:
-                if c and str(c).strip():
-                    key = str(c).strip()
-                    color_counts[key] = color_counts.get(key, 0) + 1
-        
-        # --- Sizes (list) ---
-        sizes_list = source.get("sizes", [])
-        if isinstance(sizes_list, list):
-            for s in sizes_list:
-                if s and str(s).strip():
-                    key = str(s).strip()
-                    size_counts[key] = size_counts.get(key, 0) + 1
-        
-        # --- Storage (list) ---
-        storage_list_vals = source.get("storage", [])
-        if isinstance(storage_list_vals, list):
-            for s in storage_list_vals:
-                if s and str(s).strip():
-                    key = str(s).strip()
-                    storage_counts[key] = storage_counts.get(key, 0) + 1
-        
-        # --- RAM (list) ---
-        ram_list_vals = source.get("ram", [])
-        if isinstance(ram_list_vals, list):
-            for r in ram_list_vals:
-                if r and str(r).strip():
-                    key = str(r).strip()
-                    ram_counts[key] = ram_counts.get(key, 0) + 1
-    
-    # 🆕 DYNAMIC THRESHOLD — scales based on how many top products we got
-    # - Few top products (< 30) → threshold = 1 (allow rare values)
-    # - Medium (30-99) → threshold = 2 (moderate)
-    # - Many (100) → threshold = 3 (strict, removes noise)
-    total_top = len(top_hits_data)
-    if total_top >= 50:
-        min_occurrences = 3
-    elif total_top >= 30:
-        min_occurrences = 2
-    else:
-        min_occurrences = 1
-    
-    # Build facet list helper
-    def build_strict_facet(counts_dict: dict, threshold: int) -> list:
-        """Filter by threshold and build sorted list with counts."""
-        filtered = [(val, count) for val, count in counts_dict.items() if count >= threshold]
-        filtered.sort(key=lambda x: x[1], reverse=True)
-        return [{"value": v, "label": v, "count": c} for v, c in filtered]
-    
-    # Build final facets (only include if has data)
+    def build_native_facet_list(agg_name: str) -> list:
+        buckets = sampled_aggs.get(agg_name, {}).get("buckets", [])
+        result = []
+        for bucket in buckets:
+            value = str(bucket.get("key", "")).strip()
+            count = bucket.get("doc_count", 0)
+            
+            # Skip empty or default values
+            if not value or value.lower() in ["none", "default", "default title", "uncategorized", ""]:
+                continue
+            
+            result.append({
+                "value": value,
+                "label": value,
+                "count": count
+            })
+        return result
+
+    # Automatically parse all scalable facets
     facets = {}
     
-    cat_list = build_strict_facet(cat_counts, min_occurrences)
+    cat_list = build_native_facet_list("categories")
     if cat_list: facets["categories"] = cat_list
     
-    brand_list = build_strict_facet(brand_counts, min_occurrences)
+    brand_list = build_native_facet_list("brands")
     if brand_list: facets["brands"] = brand_list
     
-    color_list = build_strict_facet(color_counts, min_occurrences)
+    color_list = build_native_facet_list("colors")
     if color_list: facets["colors"] = color_list
     
-    size_list = build_strict_facet(size_counts, min_occurrences)
+    size_list = build_native_facet_list("sizes")
     if size_list: facets["sizes"] = size_list
     
-    storage_list = build_strict_facet(storage_counts, min_occurrences)
+    storage_list = build_native_facet_list("storage")
     if storage_list: facets["storage"] = storage_list
     
-    ram_list = build_strict_facet(ram_counts, min_occurrences)
+    ram_list = build_native_facet_list("ram")
     if ram_list: facets["ram"] = ram_list
     
     # STEP 17: BUILD FINAL RESPONSE
