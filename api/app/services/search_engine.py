@@ -527,6 +527,10 @@ async def execute_search(request: SearchRequest) -> dict:
                     "label": val,
                     "count": bucket.get("doc_count", 0)  # This is the TRUE global count!
                 })
+                
+        # 🆕 SORT the final list so the biggest numbers are always at the top!
+        result.sort(key=lambda x: x["count"], reverse=True)
+        
         return result
 
     # Automatically parse all scalable facets
