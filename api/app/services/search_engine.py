@@ -362,7 +362,7 @@ async def execute_search(request: SearchRequest) -> dict:
         
         "aggs": {
     "top_relevant_hits": {
-        "top_hits": {"size": 100, "_source": ["category"]}
+        "top_hits": {"size": 1000, "_source": ["category"]}
     },
     "categories": {
         "terms": {
