@@ -336,7 +336,26 @@ async def execute_search(request: SearchRequest) -> dict:
     # We need real count to build correct pagination.
     
     use_min_score = bool(vector or core_query)
-    min_relevance_score = MIN_RELEVANCE_SCORE if use_min_score else 0.0
+    
+    # 🆕 HIGHER THRESHOLD WHEN USER APPLIES FILTERS
+    # Problem: "monitor" + Color="Khaki" was returning khaki pants (weak matches)
+    # Solution: When user applies any filter, require STRONGER query match
+    # This prevents showing irrelevant products just because they match the filter
+    has_active_user_filters = bool(request.filters and (
+        getattr(request.filters, "color", None) or
+        getattr(request.filters, "size", None) or
+        getattr(request.filters, "brand", None) or
+        getattr(request.filters, "storage", None) or
+        getattr(request.filters, "ram", None) or
+        getattr(request.filters, "category", None)
+    ))
+    
+    if has_active_user_filters and use_min_score:
+        min_relevance_score = 30.0  # 🆕 Stricter when filtering
+    elif use_min_score:
+        min_relevance_score = MIN_RELEVANCE_SCORE  # Normal 15.0
+    else:
+        min_relevance_score = 0.0  # Browse mode (no query)
     
     actual_total_hits = 0
     
@@ -632,9 +651,12 @@ async def execute_search(request: SearchRequest) -> dict:
         if c.get("key")
     }
     
-    # Sort categories by relevance (top 100 appearance)
+    # 🆕 STRICT CATEGORY FILTER — require 3+ products in top 100
+    # This prevents "Kitchen & Dining" from showing for "monitor" search
+    # Same threshold as brand/color/size for consistency
     sorted_categories = sorted(
-        relevant_categories.items(),
+        [(cat, count) for cat, count in relevant_categories.items() 
+         if count >= effective_threshold],  # 🆕 Use same threshold as other facets
         key=lambda x: x[1],
         reverse=True
     )
