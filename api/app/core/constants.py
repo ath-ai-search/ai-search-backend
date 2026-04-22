@@ -128,7 +128,7 @@ HISTORY_MAX_ITEMS = 5
 # Cache key version — BUMP this number when search logic changes
 # Bumping invalidates all old cached results so users get fresh results
 # Example: if you change boost values, bump v135 → v136
-CACHE_VERSION = "v138"
+CACHE_VERSION = "v141"
 
 
 # =========================================================================
