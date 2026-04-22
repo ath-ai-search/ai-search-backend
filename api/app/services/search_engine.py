@@ -361,19 +361,19 @@ async def execute_search(request: SearchRequest) -> dict:
         "min_score": min_relevance_score,
         
         "aggs": {
-            "top_relevant_hits": {
-                "top_hits": {"size": 100, "_source": ["category"]}
-            },
-            "categories": {
-                "terms": {
-                    "field": "category",
-                    "size": FACET_CATEGORIES_SIZE,
-                    "min_doc_count": FACET_MIN_DOC_COUNT,
-                    "shard_size": FACET_CATEGORIES_SIZE * 3,
-                    "order": {"_count": "desc"}
-                }
-            }
+    "top_relevant_hits": {
+        "top_hits": {"size": 100, "_source": ["category"]}
+    },
+    "categories": {
+        "terms": {
+            "field": "category",
+            "size": FACET_CATEGORIES_SIZE,  # 🆕 Now 10000 = effectively all
+            "min_doc_count": FACET_MIN_DOC_COUNT,
+            "shard_size": min(FACET_CATEGORIES_SIZE * 3, 65536),  # 🆕 Safety cap
+            "order": {"_count": "desc"}
         }
+    }
+}
     }
     
     # STEP 13: EXECUTE MAIN QUERY
@@ -531,9 +531,9 @@ async def execute_search(request: SearchRequest) -> dict:
         reverse=True
     )
     
-    # Keep top 15 most relevant categories
-    facets_list = facets_list[:15]
-    
+    # 🆕 Show ALL categories (no limit) — user requested long sidebar
+    # Categories ordered by relevance (top 100 appearance) then count
+    # Frontend can add scroll if list is very long    
     # Remove internal relevance field before sending to frontend
     for f in facets_list:
         f.pop("_relevance_score", None)

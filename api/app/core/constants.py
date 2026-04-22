@@ -135,10 +135,11 @@ CACHE_VERSION = "v138"
 # 🔍 OPENSEARCH INDEX SETTINGS
 # =========================================================================
 
-# How many category buckets to return in facets (filter sidebar)
-# Lower number = only MOST relevant categories shown
-# 15 is a good balance (not too few, not cluttered)
-FACET_CATEGORIES_SIZE = 15
+# 🆕 Max categories to fetch from OpenSearch (effectively "all")
+# OpenSearch aggregation max size is 65536
+# Setting this to 10000 means show up to 10,000 unique categories
+# Realistically there will never be this many, so this = "all categories"
+FACET_CATEGORIES_SIZE = 10000
 
 # Minimum products a category must have to appear in sidebar
 # Prevents irrelevant categories (like "Kitchen" when searching shoes)
