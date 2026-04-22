@@ -362,7 +362,7 @@ async def execute_search(request: SearchRequest) -> dict:
         
         "aggs": {
     "top_relevant_hits": {
-        "top_hits": {"size": 1000, "_source": ["category"]}
+        "top_hits": {"size": 100, "_source": ["category"]}
     },
     "categories": {
         "terms": {
@@ -500,10 +500,10 @@ async def execute_search(request: SearchRequest) -> dict:
             if cat and cat != "None" and cat != "Uncategorized":
                 category_relevance[cat] = category_relevance.get(cat, 0) + 1
     
-    # Build final facets:
+    # 🆕 Build final facets (show ALL categories with matches)
     # - Use query-specific count from main aggregation (accurate)
-    # - Order by relevance (top 100 appearance) for best UX
-    # - Filter: only show categories that appear in top 100 (relevant ones)
+    # - Order by count (most products first) — natural ranking
+    # - No relevance filter — show every category with matching products
     facets_list = []
     for bucket in query_specific_buckets:
         cat_name = str(bucket.get("key", "")).strip()
@@ -513,19 +513,20 @@ async def execute_search(request: SearchRequest) -> dict:
         if not cat_name or cat_name in ["None", "Uncategorized"]:
             continue
         
-        # Only show categories that appear in top 100 most-relevant products
-        # This filters out irrelevant categories (like "Kitchen" for "shoes" search)
-        if cat_name not in category_relevance:
-            continue
+        # 🆕 Add relevance score if available (for sorting only)
+        # If category was in top 100 relevant → appears first
+        # If not in top 100 → appears after (but still shown)
+        relevance_score = category_relevance.get(cat_name, 0)
         
         facets_list.append({
             "value": cat_name,
             "label": cat_name,
-            "count": cat_count,  # 🆕 Query-specific count (accurate!)
-            "_relevance_score": category_relevance.get(cat_name, 0)
+            "count": cat_count,  # Query-specific count (accurate!)
+            "_relevance_score": relevance_score
         })
     
-    # Sort by relevance (appearance in top 100) DESC, then by count DESC
+    # 🆕 Sort: relevance first (top 100 matches), then by count
+    # This puts most-relevant categories at top, but shows ALL others too
     facets_list.sort(
         key=lambda x: (x["_relevance_score"], x["count"]),
         reverse=True
