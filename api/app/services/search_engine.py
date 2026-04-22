@@ -2,7 +2,7 @@
 =====================================================================================
 👑 MAIN SEARCH ENGINE
 =====================================================================================
-STRICT MODE: Only returns highly relevant products with accurate pagination.
+STRICT MODE: Only returns highly relevant products with mathematically accurate counts.
 =====================================================================================
 """
 
@@ -58,16 +58,10 @@ logger = logging.getLogger(__name__)
 # =========================================================================
 MIN_RELEVANCE_SCORE = 45.0  
 
-
-# =========================================================================
-# 👑 MAIN SEARCH FUNCTION
-# =========================================================================
 async def execute_search(request: SearchRequest) -> dict:
     
-    # STEP 1: NORMALIZE PAGE SIZE
     request.page_size = DEFAULT_PAGE_SIZE if request.page_size != SMALL_PAGE_SIZE else SMALL_PAGE_SIZE
     
-    # STEP 2: CHECK REDIS CACHE
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
     cache_key = f"search:ai:{CACHE_VERSION}:{hashlib.md5(request_str.encode()).hexdigest()}"
@@ -76,7 +70,6 @@ async def execute_search(request: SearchRequest) -> dict:
     if cached_result:
         return cached_result
     
-    # STEP 3: CALCULATE PAGINATION OFFSET (SAFE)
     max_safe_page = MAX_OS_WINDOW // request.page_size
     
     if request.page > max_safe_page:
@@ -91,12 +84,10 @@ async def execute_search(request: SearchRequest) -> dict:
     
     from_val = (request.page - 1) * request.page_size
     
-    # STEP 4: EXTRACT SEMANTIC INFO
     query_text = request.query.strip() if request.query else ""
     matrix = extract_semantic_matrix(query_text)
     core_query = matrix["core_query"]
     
-    # STEP 5: HANDLE MULTI-ITEM QUERIES
     if "|" in core_query:
         multi_items = [item.strip() for item in core_query.split("|") if item.strip()]
         core_query_for_vector = " ".join(multi_items)
@@ -104,7 +95,6 @@ async def execute_search(request: SearchRequest) -> dict:
         multi_items = [core_query]
         core_query_for_vector = core_query
     
-    # STEP 6: GENERATE VECTOR EMBEDDING
     vector = None
     if core_query_for_vector:
         try:
@@ -116,7 +106,6 @@ async def execute_search(request: SearchRequest) -> dict:
         except Exception as e:
             logger.error(f"❌ OpenAI Embedding Failed: {e}")
     
-    # STEP 7: BUILD HARD FILTERS
     filters = [{"term": {"in_stock": True}}]
     must_nots = []
     
@@ -225,7 +214,6 @@ async def execute_search(request: SearchRequest) -> dict:
                     "terms": {"ram": ram_values}
                 })
     
-    # STEP 8: BUILD SORT ORDER
     sort_query = [{"_score": "desc"}]
     if request.sort == "price_asc":
         sort_query = [{"price": "asc"}]
@@ -234,7 +222,6 @@ async def execute_search(request: SearchRequest) -> dict:
     elif request.sort == "on_sale":
         sort_query = [{"_score": "desc"}]
     
-    # STEP 9: BUILD SCORING CLAUSES
     semantic_shoulds = []
     
     if vector:
@@ -271,14 +258,18 @@ async def execute_search(request: SearchRequest) -> dict:
             }}
         ])
     
-    # STEP 10: BUILD SCORE FUNCTIONS (Demotion)
     score_functions = []
     if not matrix["has_accessory_intent"]:
         for acc in matrix["accessory_keywords"]:
             score_functions.append({"filter": {"match": {"name": acc}}, "weight": ACCESSORY_DEMOTION_WEIGHT})
             score_functions.append({"filter": {"match": {"category": acc}}, "weight": ACCESSORY_DEMOTION_WEIGHT})
     
-    # STEP 11: BUILD QUERY BODY
+    # =====================================================================
+    # 🚀 STEP 11: BUILD QUERY BODY (THE ULTIMATE MATH FIX)
+    # =====================================================================
+    use_min_score = bool(vector or core_query)
+    min_relevance_score = MIN_RELEVANCE_SCORE if use_min_score else 0.0
+
     if vector or core_query:
         query_body = {
             "query": {
@@ -293,7 +284,10 @@ async def execute_search(request: SearchRequest) -> dict:
                     },
                     "functions": score_functions,
                     "score_mode": "multiply",
-                    "boost_mode": "multiply"
+                    "boost_mode": "multiply",
+                    # 🔥 THIS IS THE MAGIC LINE: It drops bad products
+                    # BEFORE OpenSearch calculates the sidebar numbers!
+                    "min_score": min_relevance_score
                 }
             }
         }
@@ -308,39 +302,6 @@ async def execute_search(request: SearchRequest) -> dict:
             }
         }
     
-    # STEP 11.5: COUNT QUERY
-    use_min_score = bool(vector or core_query)
-    min_relevance_score = MIN_RELEVANCE_SCORE if use_min_score else 0.0
-    actual_total_hits = 0
-    
-    if use_min_score:
-        count_query_body = {
-            **query_body,
-            "track_total_hits": True,
-            "min_score": min_relevance_score,
-            "size": 0,
-        }
-        try:
-            count_response = os_client.search(index=INDEX_NAME, body=count_query_body)
-            actual_total_hits = count_response.get("hits", {}).get("total", {}).get("value", 0)
-        except Exception as e:
-            logger.error(f"❌ Count query failed: {e}")
-            actual_total_hits = 0
-    
-    if use_min_score and actual_total_hits > 0:
-        real_total_pages = (actual_total_hits + request.page_size - 1) // request.page_size
-        real_total_pages = min(real_total_pages, max_safe_page)
-        
-        if request.page > real_total_pages:
-            return {
-                "total_results": actual_total_hits,
-                "total_pages": real_total_pages,
-                "current_page": request.page,
-                "pagination_html": build_pagination_html(real_total_pages, request.page),
-                "results": [],
-                "facets": {"categories": []}
-            }
-            
     # =====================================================================
     # 🚀 STEP 12: BULLETPROOF OPENSEARCH QUERY
     # =====================================================================
@@ -351,34 +312,20 @@ async def execute_search(request: SearchRequest) -> dict:
         "sort": sort_query,
         "track_total_hits": True,
         "track_scores": True,
-        "min_score": min_relevance_score,
         
+        # Because the magic line above filters the garbage out BEFORE counting,
+        # we can just use standard, lightning-fast native aggregations.
+        # The math will be 100% perfectly accurate.
         "aggs": {
-           # 1. THE SAMPLER: The "Sweet Spot" 100 to find valid categories
-            "strict_relevance_sampler": {
-                "sampler": {
-                    "shard_size": 100  # 🚀 SHRINK TO 100 to block Kitchen/Amazon completely
-                },
-                "aggs": {
-                    "categories": {"terms": {"field": "category", "size": FACET_CATEGORIES_SIZE, "min_doc_count": 3}},
-                    "brands": {"terms": {"field": "brand", "size": FACET_BRANDS_SIZE, "min_doc_count": 3}},
-                    "colors": {"terms": {"field": "colors", "size": FACET_COLORS_SIZE, "min_doc_count": 2}},
-                    "sizes": {"terms": {"field": "sizes", "size": FACET_SIZES_SIZE, "min_doc_count": 2}},
-                    "storage": {"terms": {"field": "storage", "size": FACET_STORAGE_SIZE, "min_doc_count": 2}},
-                    "ram": {"terms": {"field": "ram", "size": FACET_RAM_SIZE, "min_doc_count": 2}}
-                }
-            },
-            # 2. THE GLOBAL COUNTS: To get accurate numbers for display
-            "global_categories": {"terms": {"field": "category", "size": FACET_CATEGORIES_SIZE}},
-            "global_brands": {"terms": {"field": "brand", "size": FACET_BRANDS_SIZE}},
-            "global_colors": {"terms": {"field": "colors", "size": FACET_COLORS_SIZE}},
-            "global_sizes": {"terms": {"field": "sizes", "size": FACET_SIZES_SIZE}},
-            "global_storage": {"terms": {"field": "storage", "size": FACET_STORAGE_SIZE}},
-            "global_ram": {"terms": {"field": "ram", "size": FACET_RAM_SIZE}}
+            "categories": {"terms": {"field": "category", "size": FACET_CATEGORIES_SIZE}},
+            "brands": {"terms": {"field": "brand", "size": FACET_BRANDS_SIZE}},
+            "colors": {"terms": {"field": "colors", "size": FACET_COLORS_SIZE}},
+            "sizes": {"terms": {"field": "sizes", "size": FACET_SIZES_SIZE}},
+            "storage": {"terms": {"field": "storage", "size": FACET_STORAGE_SIZE}},
+            "ram": {"terms": {"field": "ram", "size": FACET_RAM_SIZE}}
         }
     }
     
-    # STEP 13: EXECUTE MAIN QUERY
     try:
         response = os_client.search(index=INDEX_NAME, body=os_query)
     except Exception as e:
@@ -395,13 +342,21 @@ async def execute_search(request: SearchRequest) -> dict:
     
     # STEP 14: PARSE RESULTS
     hits = response.get("hits", {})
-    if use_min_score and actual_total_hits > 0:
-        total_hits = actual_total_hits
-    else:
-        total_hits = hits.get("total", {}).get("value", 0)
+    total_hits = hits.get("total", {}).get("value", 0)
     
     raw_total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
     total_pages = min(raw_total_pages, max_safe_page)
+
+    if request.page > total_pages and total_pages > 0:
+        return {
+            "total_results": total_hits,
+            "total_pages": total_pages,
+            "current_page": request.page,
+            "pagination_html": build_pagination_html(total_pages, request.page),
+            "results": [],
+            "facets": {"categories": []}
+        }
+
     max_score = hits.get("max_score")
     if not max_score or max_score == 0:
         max_score = 1.0
@@ -453,63 +408,41 @@ async def execute_search(request: SearchRequest) -> dict:
         results.sort(key=lambda x: x["score"], reverse=True)
     
     # =====================================================================
-    # 🚀 STEP 16: PARSE FACETS & SORT BY RELEVANCE
+    # 🚀 STEP 16: PARSE PERFECT FACETS
     # =====================================================================
-    sampled_aggs = response.get("aggregations", {}).get("strict_relevance_sampler", {})
-    all_aggs = response.get("aggregations", {})
-    
-    def build_smart_facet_list(agg_name: str, global_agg_name: str) -> list:
-        sampled_buckets = sampled_aggs.get(agg_name, {}).get("buckets", [])
-        
-        relevance_scores = {}
-        for bucket in sampled_buckets:
+    def build_clean_facet_list(agg_name: str) -> list:
+        buckets = response.get("aggregations", {}).get(agg_name, {}).get("buckets", [])
+        result = []
+        for bucket in buckets:
             val = str(bucket.get("key", "")).strip()
             if val and val.lower() not in ["none", "default", "default title", "uncategorized", ""]:
-                relevance_scores[val] = bucket.get("doc_count", 0)
-        
-        if not relevance_scores:
-            return []
-
-        global_buckets = all_aggs.get(global_agg_name, {}).get("buckets", [])
-        global_counts = {}
-        for bucket in global_buckets:
-            val = str(bucket.get("key", "")).strip()
-            global_counts[val] = bucket.get("doc_count", 0)
-            
-        result = []
-        for val, relevance_count in relevance_scores.items():
-            result.append({
-                "value": val,
-                "label": val,
-                "count": global_counts.get(val, relevance_count), 
-                "relevance": relevance_count 
-            })
-            
-        # Sort by the visible global count so the numbers look clean and professional
-        result.sort(key=lambda x: x["count"], reverse=True)
-        return [{"value": x["value"], "label": x["label"], "count": x["count"]} for x in result]
+                result.append({
+                    "value": val,
+                    "label": val,
+                    "count": bucket.get("doc_count", 0)
+                })
+        return result
 
     facets = {}
     
-    cat_list = build_smart_facet_list("categories", "global_categories")
+    cat_list = build_clean_facet_list("categories")
     if cat_list: facets["categories"] = cat_list
     
-    brand_list = build_smart_facet_list("brands", "global_brands")
+    brand_list = build_clean_facet_list("brands")
     if brand_list: facets["brands"] = brand_list
     
-    color_list = build_smart_facet_list("colors", "global_colors")
+    color_list = build_clean_facet_list("colors")
     if color_list: facets["colors"] = color_list
     
-    size_list = build_smart_facet_list("sizes", "global_sizes")
+    size_list = build_clean_facet_list("sizes")
     if size_list: facets["sizes"] = size_list
     
-    storage_list = build_smart_facet_list("storage", "global_storage")
+    storage_list = build_clean_facet_list("storage")
     if storage_list: facets["storage"] = storage_list
     
-    ram_list = build_smart_facet_list("ram", "global_ram")
+    ram_list = build_clean_facet_list("ram")
     if ram_list: facets["ram"] = ram_list
 
-    # STEP 17: BUILD FINAL RESPONSE
     final_response = {
         "total_results": total_hits,
         "total_pages": total_pages,
@@ -519,7 +452,6 @@ async def execute_search(request: SearchRequest) -> dict:
         "facets": facets
     }
     
-    # STEP 18: CACHE
     await cache_set(cache_key, final_response, ttl_seconds=SEARCH_CACHE_TTL)
     
     return final_response
