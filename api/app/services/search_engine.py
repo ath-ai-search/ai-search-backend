@@ -357,7 +357,7 @@ async def execute_search(request: SearchRequest) -> dict:
            # 1. THE SAMPLER: The "Sweet Spot" 100 to find valid categories
             "strict_relevance_sampler": {
                 "sampler": {
-                    "shard_size": 120  # 🚀 SHRINK TO 100 to block Kitchen/Amazon completely
+                    "shard_size": 130  # 🚀 SHRINK TO 100 to block Kitchen/Amazon completely
                 },
                 "aggs": {
                     "categories": {"terms": {"field": "category", "size": FACET_CATEGORIES_SIZE, "min_doc_count": 3}},
