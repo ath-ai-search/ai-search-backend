@@ -393,16 +393,14 @@ async def execute_search(request: SearchRequest) -> dict:
         "min_score": min_relevance_score,
         
         # 🚀 THE BULLETPROOF SAMPLER AGGREGATION
-        # This forces OpenSearch to ONLY build facets from the top 150 absolute best matches.
-        # It guarantees zero "garbage bleed" from weak AI vector matches.
+        # Forces OpenSearch to ONLY build facets from the top 150 absolute best matches.
         "aggs": {
             "strict_relevance_sampler": {
                 "sampler": {
-                    "shard_size": 150  # Only look at the top 150 most relevant products!
+                    "shard_size": 150  
                 },
                 "aggs": {
                     "categories": {
-                        # We use min_doc_count=3 to hide 1-off accidental matches
                         "terms": {"field": "category", "size": FACET_CATEGORIES_SIZE, "min_doc_count": 3}
                     },
                     "brands": {
@@ -506,7 +504,6 @@ async def execute_search(request: SearchRequest) -> dict:
     # =====================================================================
     # 🚀 STEP 16: BUILD BULLETPROOF FACETS (NATIVE SAMPLER)
     # =====================================================================
-    # We extract the facets generated ONLY from our top 150 strictly relevant products.
     sampled_aggs = response.get("aggregations", {}).get("strict_relevance_sampler", {})
     
     def build_native_facet_list(agg_name: str) -> list:
@@ -516,7 +513,6 @@ async def execute_search(request: SearchRequest) -> dict:
             value = str(bucket.get("key", "")).strip()
             count = bucket.get("doc_count", 0)
             
-            # Skip empty or default values
             if not value or value.lower() in ["none", "default", "default title", "uncategorized", ""]:
                 continue
             
