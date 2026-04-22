@@ -369,8 +369,56 @@ async def execute_search(request: SearchRequest) -> dict:
                 "results": [],
                 "facets": {"categories": []}
             }
-    
-    # STEP 12: BUILD FINAL OPENSEARCH QUERY
+            
+    # =====================================================================
+    # 🚀 STEP 11.7: DYNAMIC AUTO-SCALING FACET THRESHOLD
+    # Automatically adjusts strictness based on how many products matched!
+    # =====================================================================
+    dynamic_min_doc = 1
+    if actual_total_hits > 1000:
+        dynamic_min_doc = 5   # Very strict for huge result sets
+    elif actual_total_hits > 100:
+        dynamic_min_doc = 3   # Moderate strictness
+    elif actual_total_hits > 30:
+        dynamic_min_doc = 2   # Low strictness
+        
+    # STEP 12: BUILD FINAL OPENSEARCH QUERY (NATIVE HIGH-SPEED AGGREGATIONS)
+    os_query = {
+        "from": from_val,
+        "size": request.page_size,
+        **query_body,
+        "sort": sort_query,
+        "track_total_hits": True,
+        "track_scores": True,
+        "min_score": min_relevance_score,
+        
+        "aggs": {
+            "categories": {
+                "terms": {
+                    "field": "category",
+                    "size": FACET_CATEGORIES_SIZE,
+                    "min_doc_count": dynamic_min_doc,
+                    "shard_size": min(FACET_CATEGORIES_SIZE * 3, 65536),
+                    "order": {"_count": "desc"}
+                }
+            },
+            "brands": {
+                "terms": {"field": "brand", "size": FACET_BRANDS_SIZE, "min_doc_count": dynamic_min_doc, "order": {"_count": "desc"}}
+            },
+            "colors": {
+                "terms": {"field": "colors", "size": FACET_COLORS_SIZE, "min_doc_count": dynamic_min_doc, "order": {"_count": "desc"}}
+            },
+            "sizes": {
+                "terms": {"field": "sizes", "size": FACET_SIZES_SIZE, "min_doc_count": dynamic_min_doc, "order": {"_count": "desc"}}
+            },
+            "storage": {
+                "terms": {"field": "storage", "size": FACET_STORAGE_SIZE, "min_doc_count": dynamic_min_doc, "order": {"_count": "desc"}}
+            },
+            "ram": {
+                "terms": {"field": "ram", "size": FACET_RAM_SIZE, "min_doc_count": dynamic_min_doc, "order": {"_count": "desc"}}
+            }
+        }
+    }
     os_query = {
         "from": from_val,
         "size": request.page_size,
@@ -524,167 +572,20 @@ async def execute_search(request: SearchRequest) -> dict:
         results.sort(key=lambda x: x["score"], reverse=True)
     
     # =====================================================================
-    # STEP 16: BUILD SMART RELEVANT FACETS
+    # 🚀 STEP 16: BUILD AUTOMATIC SCALED FACETS (NATIVE OPENSEARCH)
     # =====================================================================
-    # STRATEGY:
-    #   1. Get TOP 100 most-relevant products from "top_relevant_hits" aggregation
-    #   2. For each facet field (category, brand, colors, sizes, storage, ram):
-    #      - Extract values ONLY from those top 100 products
-    #      - This filters out irrelevant values (e.g., XL/60 for "shoes")
-    #   3. Get ACCURATE counts from global aggregation (total matches per value)
-    #   4. Return facets with relevant values and accurate counts
-    # =====================================================================
-    
     aggregations = response.get("aggregations", {})
-    top_hits_data = aggregations.get("top_relevant_hits", {}).get("hits", {}).get("hits", [])
     
-    # =====================================================================
-    # 🆕 STRICT RELEVANCE: Count occurrences in top 100 products
-    # =====================================================================
-    # For each field, COUNT how many of top 100 products have each value.
-    # Later we filter: only values appearing in 3+ products get shown.
-    # This removes "Acer" (1 product out of top 100 for shoes) etc.
-    # =====================================================================
-    
-    relevant_categories = {}
-    relevant_brands_counts = {}     # 🆕 count instead of just set
-    relevant_colors_counts = {}
-    relevant_sizes_counts = {}
-    relevant_storage_counts = {}
-    relevant_ram_counts = {}
-    
-    # Minimum occurrences in top 100 for a value to be shown
-    # 3 = strict (removes accidental matches like Acer for shoes)
-    MIN_FACET_OCCURRENCES = 3
-    
-    for hit in top_hits_data:
-        source = hit.get("_source", {})
-        
-        # --- Categories (can be string or list) ---
-        raw_cats = source.get("category", [])
-        if isinstance(raw_cats, str):
-            cats_list = [c.strip() for c in re.sub(r"[\[\]'\"]", "", raw_cats).split(",") if c.strip()]
-        elif isinstance(raw_cats, list):
-            cats_list = [str(c).strip() for c in raw_cats if c and str(c).strip()]
-        else:
-            cats_list = []
-        
-        for cat in cats_list:
-            if cat and cat not in ["None", "Uncategorized"]:
-                relevant_categories[cat] = relevant_categories.get(cat, 0) + 1
-        
-        # --- Brand (single value per product) ---
-        brand = source.get("brand", "")
-        if brand and isinstance(brand, str) and brand.strip():
-            key = brand.strip()
-            relevant_brands_counts[key] = relevant_brands_counts.get(key, 0) + 1
-        
-        # --- Colors (list) ---
-        colors = source.get("colors", [])
-        if isinstance(colors, list):
-            for c in colors:
-                if c and str(c).strip():
-                    key = str(c).strip()
-                    relevant_colors_counts[key] = relevant_colors_counts.get(key, 0) + 1
-        
-        # --- Sizes (list) ---
-        sizes = source.get("sizes", [])
-        if isinstance(sizes, list):
-            for s in sizes:
-                if s and str(s).strip():
-                    key = str(s).strip()
-                    relevant_sizes_counts[key] = relevant_sizes_counts.get(key, 0) + 1
-        
-        # --- Storage (list) ---
-        storage_vals = source.get("storage", [])
-        if isinstance(storage_vals, list):
-            for s in storage_vals:
-                if s and str(s).strip():
-                    key = str(s).strip()
-                    relevant_storage_counts[key] = relevant_storage_counts.get(key, 0) + 1
-        
-        # --- RAM (list) ---
-        ram_vals = source.get("ram", [])
-        if isinstance(ram_vals, list):
-            for r in ram_vals:
-                if r and str(r).strip():
-                    key = str(r).strip()
-                    relevant_ram_counts[key] = relevant_ram_counts.get(key, 0) + 1
-    
-    # =====================================================================
-    # 🆕 APPLY STRICT FILTER: only keep values appearing in 3+ products
-    # =====================================================================
-    # This removes noise like "Acer" (1 shoes product) but keeps real brands
-    # If we have very few relevant products (<10), lower the threshold to 1
-    # so user still sees some filters
-    
-    effective_threshold = MIN_FACET_OCCURRENCES if len(top_hits_data) >= 30 else 1
-    
-    relevant_brands = {k for k, v in relevant_brands_counts.items() if v >= effective_threshold}
-    relevant_colors = {k for k, v in relevant_colors_counts.items() if v >= effective_threshold}
-    relevant_sizes = {k for k, v in relevant_sizes_counts.items() if v >= effective_threshold}
-    relevant_storage = {k for k, v in relevant_storage_counts.items() if v >= effective_threshold}
-    relevant_ram = {k for k, v in relevant_ram_counts.items() if v >= effective_threshold}
-    
-    # =====================================================================
-    # Get GLOBAL counts from aggregations (accurate for all matching products)
-    # =====================================================================
-    global_agg_buckets = {
-        str(c.get("key")).strip(): c.get("doc_count", 0)
-        for c in aggregations.get("categories", {}).get("buckets", [])
-        if c.get("key")
-    }
-    
-    # Sort categories by relevance (top 100 appearance)
-    sorted_categories = sorted(
-        relevant_categories.items(),
-        key=lambda x: x[1],
-        reverse=True
-    )
-    # Keep category_counts for backward compatibility
-    category_counts = relevant_categories
-    
-    # =====================================================================
-    # 🆕 BUILD CATEGORY FACETS LIST
-    # =====================================================================
-    # Combine relevance ordering (top 100) with accurate global counts
-    facets_list = []
-    for cat_name, top_count in sorted_categories:
-        if not cat_name or cat_name in ["None", "Uncategorized"]:
-            continue
-        # Use global count if available, else use top-100 count
-        accurate_count = global_agg_buckets.get(cat_name, top_count)
-        facets_list.append({
-            "value": cat_name,
-            "label": cat_name,
-            "count": accurate_count
-        })
-    
-    # =====================================================================
-    # 🆕 HELPER: Build facet list filtered by top 100 relevance
-    # =====================================================================
-    def build_facet_list(agg_name: str, relevant_values: set) -> list:
-        """
-        Extracts facet values from aggregation, filtered by relevance.
-        Only includes values that appear in top 100 most-relevant products.
-        This removes irrelevant values (e.g., XL/60 for "shoes" search).
-        """
-        # 🆕 CRITICAL FIX: If no relevant values exist in top 100, hide this facet entirely!
-        if not relevant_values:
-            return []
-
+    def build_native_facet_list(agg_name: str) -> list:
+        """Instantly parses native OpenSearch aggregations."""
         buckets = aggregations.get(agg_name, {}).get("buckets", [])
         result = []
         for bucket in buckets:
             value = str(bucket.get("key", "")).strip()
             count = bucket.get("doc_count", 0)
             
-            # Skip empty/invalid values
-            if not value or value.lower() in ["none", "default", "default title", ""]:
-                continue
-            
-            # 🆕 ONLY include if it exists in our strictly relevant set
-            if value not in relevant_values:
+            # Skip empty or default values
+            if not value or value.lower() in ["none", "default", "default title", "uncategorized", ""]:
                 continue
             
             result.append({
@@ -693,31 +594,28 @@ async def execute_search(request: SearchRequest) -> dict:
                 "count": count
             })
         return result
+
+    # Automatically parse all scalable facets
+    facets = {}
     
-    # 🆕 Build all facet lists (filtered by relevance)
-    brands_facets = build_facet_list("brands", relevant_brands)
-    colors_facets = build_facet_list("colors", relevant_colors)
-    sizes_facets = build_facet_list("sizes", relevant_sizes)
-    storage_facets = build_facet_list("storage", relevant_storage)
-    ram_facets = build_facet_list("ram", relevant_ram)
+    cat_list = build_native_facet_list("categories")
+    if cat_list: facets["categories"] = cat_list
     
-    # =====================================================================
-    # 🆕 ASSEMBLE FINAL FACETS DICT (dynamic — only include if has data)
-    # =====================================================================
-    facets = {"categories": facets_list}
+    brand_list = build_native_facet_list("brands")
+    if brand_list: facets["brands"] = brand_list
     
-    if brands_facets:
-        facets["brands"] = brands_facets
-    if colors_facets:
-        facets["colors"] = colors_facets
-    if sizes_facets:
-        facets["sizes"] = sizes_facets
-    if storage_facets:
-        facets["storage"] = storage_facets
-    if ram_facets:
-        facets["ram"] = ram_facets
+    color_list = build_native_facet_list("colors")
+    if color_list: facets["colors"] = color_list
     
-    # STEP 17: BUILD FINAL RESPONSE
+    size_list = build_native_facet_list("sizes")
+    if size_list: facets["sizes"] = size_list
+    
+    storage_list = build_native_facet_list("storage")
+    if storage_list: facets["storage"] = storage_list
+    
+    ram_list = build_native_facet_list("ram")
+    if ram_list: facets["ram"] = ram_list
+
     
     # STEP 17: BUILD FINAL RESPONSE
     final_response = {
