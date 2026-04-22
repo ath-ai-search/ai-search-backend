@@ -250,7 +250,7 @@
            left: 0;
            transform: none;
            width: 100%;
-           margin: 105px auto 0;
+           /* margin: 105px auto 0; */
            max-width: 100%;
            height: auto;
            max-height: 80vh;
