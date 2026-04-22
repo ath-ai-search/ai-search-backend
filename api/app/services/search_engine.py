@@ -393,14 +393,15 @@ async def execute_search(request: SearchRequest) -> dict:
         "min_score": min_relevance_score,
         
         "aggs": {
-            # 1. THE SAMPLER: Gets only valid categories from the top 150 best matches (No Garbage)
+            # 1. THE SAMPLER: The "Sweet Spot" configuration
             "strict_relevance_sampler": {
                 "sampler": {
-                    "shard_size": 1000  
+                    "shard_size": 300  # 🚀 CHANGE THIS TO 300
                 },
                 "aggs": {
-                    "categories": {"terms": {"field": "category", "size": FACET_CATEGORIES_SIZE, "min_doc_count": 3}},
-                    "brands": {"terms": {"field": "brand", "size": FACET_BRANDS_SIZE, "min_doc_count": 3}},
+                    # 🚀 CHANGE THIS TO 5
+                    "categories": {"terms": {"field": "category", "size": FACET_CATEGORIES_SIZE, "min_doc_count": 5}},
+                    "brands": {"terms": {"field": "brand", "size": FACET_BRANDS_SIZE, "min_doc_count": 4}},
                     "colors": {"terms": {"field": "colors", "size": FACET_COLORS_SIZE, "min_doc_count": 2}},
                     "sizes": {"terms": {"field": "sizes", "size": FACET_SIZES_SIZE, "min_doc_count": 2}},
                     "storage": {"terms": {"field": "storage", "size": FACET_STORAGE_SIZE, "min_doc_count": 2}},
