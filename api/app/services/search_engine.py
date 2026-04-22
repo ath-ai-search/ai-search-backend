@@ -44,6 +44,11 @@ from app.core.constants import (
     SEARCH_CACHE_TTL,
     CACHE_VERSION,
     FACET_CATEGORIES_SIZE,
+    FACET_BRANDS_SIZE,      # 🆕
+    FACET_COLORS_SIZE,      # 🆕
+    FACET_SIZES_SIZE,       # 🆕
+    FACET_STORAGE_SIZE,     # 🆕
+    FACET_RAM_SIZE,         # 🆕
     MAX_CATEGORY_FILTERS,
     MAX_COLOR_FILTERS,
     MAX_SIZE_FILTERS,
@@ -58,7 +63,6 @@ from app.core.constants import (
     FACET_MIN_DOC_COUNT,
     SCORE_DISPLAY_RANGE,
 )
-
 logger = logging.getLogger(__name__)
 
 
@@ -224,6 +228,22 @@ async def execute_search(request: SearchRequest) -> dict:
                     pass
             if p_range:
                 filters.append({"range": {"price": p_range}})
+        
+        # 🆕 STORAGE FILTER (multi-select) — for phones/laptops
+        if getattr(request.filters, "storage", None):
+            storage_values = [str(s).strip() for s in request.filters.storage[:10] if str(s).strip()]
+            if storage_values:
+                filters.append({
+                    "terms": {"storage": storage_values}
+                })
+        
+        # 🆕 RAM FILTER (multi-select) — for computers
+        if getattr(request.filters, "ram", None):
+            ram_values = [str(r).strip() for r in request.filters.ram[:10] if str(r).strip()]
+            if ram_values:
+                filters.append({
+                    "terms": {"ram": ram_values}
+                })
     
     # STEP 8: BUILD SORT ORDER
     sort_query = [{"_score": "desc"}]
@@ -361,19 +381,64 @@ async def execute_search(request: SearchRequest) -> dict:
         "min_score": min_relevance_score,
         
         "aggs": {
-    "top_relevant_hits": {
-        "top_hits": {"size": 100, "_source": ["category"]}
-    },
-    "categories": {
-        "terms": {
-            "field": "category",
-            "size": FACET_CATEGORIES_SIZE,  # 🆕 Now 10000 = effectively all
-            "min_doc_count": FACET_MIN_DOC_COUNT,
-            "shard_size": min(FACET_CATEGORIES_SIZE * 3, 65536),  # 🆕 Safety cap
-            "order": {"_count": "desc"}
+            "top_relevant_hits": {
+                "top_hits": {"size": 100, "_source": ["category"]}
+            },
+            "categories": {
+                "terms": {
+                    "field": "category",
+                    "size": FACET_CATEGORIES_SIZE,
+                    "min_doc_count": FACET_MIN_DOC_COUNT,
+                    "shard_size": min(FACET_CATEGORIES_SIZE * 3, 65536),
+                    "order": {"_count": "desc"}
+                }
+            },
+            # 🆕 BRANDS aggregation (single-select in UI)
+            "brands": {
+                "terms": {
+                    "field": "brand",
+                    "size": FACET_BRANDS_SIZE,
+                    "min_doc_count": FACET_MIN_DOC_COUNT,
+                    "order": {"_count": "desc"}
+                }
+            },
+            # 🆕 COLORS aggregation (multi-select in UI)
+            "colors": {
+                "terms": {
+                    "field": "colors",
+                    "size": FACET_COLORS_SIZE,
+                    "min_doc_count": 1,  # Lower threshold for variant data
+                    "order": {"_count": "desc"}
+                }
+            },
+            # 🆕 SIZES aggregation (multi-select in UI)
+            "sizes": {
+                "terms": {
+                    "field": "sizes",
+                    "size": FACET_SIZES_SIZE,
+                    "min_doc_count": 1,
+                    "order": {"_count": "desc"}
+                }
+            },
+            # 🆕 STORAGE aggregation (multi-select in UI)
+            "storage": {
+                "terms": {
+                    "field": "storage",
+                    "size": FACET_STORAGE_SIZE,
+                    "min_doc_count": 1,
+                    "order": {"_count": "desc"}
+                }
+            },
+            # 🆕 RAM aggregation (multi-select in UI)
+            "ram": {
+                "terms": {
+                    "field": "ram",
+                    "size": FACET_RAM_SIZE,
+                    "min_doc_count": 1,
+                    "order": {"_count": "desc"}
+                }
+            }
         }
-    }
-}
     }
     
     # STEP 13: EXECUTE MAIN QUERY
@@ -539,7 +604,45 @@ async def execute_search(request: SearchRequest) -> dict:
     for f in facets_list:
         f.pop("_relevance_score", None)
     
+    # 🆕 Helper function to build facet list from aggregation buckets
+    def build_facet_list(agg_name: str) -> list:
+        """Extracts facet values from an aggregation. Returns [] if empty."""
+        buckets = aggregations.get(agg_name, {}).get("buckets", [])
+        result = []
+        for bucket in buckets:
+            value = str(bucket.get("key", "")).strip()
+            count = bucket.get("doc_count", 0)
+            if not value or value.lower() in ["none", "default", "default title", ""]:
+                continue
+            result.append({
+                "value": value,
+                "label": value,
+                "count": count
+            })
+        return result
+    
+    # 🆕 Build dynamic facets — only include if has data
+    # This ensures "truly dynamic" filters (shoes won't show Storage, phones won't show Size)
+    brands_facets = build_facet_list("brands")
+    colors_facets = build_facet_list("colors")
+    sizes_facets = build_facet_list("sizes")
+    storage_facets = build_facet_list("storage")
+    ram_facets = build_facet_list("ram")
+    
+    # Build final facets dict
     facets = {"categories": facets_list}
+    
+    # Only add facets that actually have values (dynamic behavior)
+    if brands_facets:
+        facets["brands"] = brands_facets
+    if colors_facets:
+        facets["colors"] = colors_facets
+    if sizes_facets:
+        facets["sizes"] = sizes_facets
+    if storage_facets:
+        facets["storage"] = storage_facets
+    if ram_facets:
+        facets["ram"] = ram_facets
     
     # STEP 17: BUILD FINAL RESPONSE
     final_response = {

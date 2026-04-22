@@ -17,7 +17,10 @@ class Filters(BaseModel):
     brand: Optional[List[str]] = None 
     gender: Optional[List[str]] = None 
     size: Optional[List[str]] = None
-    on_sale: Optional[bool] = None # 🟢 NEW: AI can now toggle the sale filter directly
+    on_sale: Optional[bool] = None  # AI can toggle sale filter
+    # 🆕 New variant filters (dynamic, match pipeline.py field names)
+    storage: Optional[List[str]] = None    # e.g., ["128GB", "256GB"]
+    ram: Optional[List[str]] = None        # e.g., ["8GB", "16GB"]
 
 class SearchRequest(BaseModel):
     query: str

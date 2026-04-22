@@ -141,9 +141,15 @@ CACHE_VERSION = "v138"
 # Realistically there will never be this many, so this = "all categories"
 FACET_CATEGORIES_SIZE = 10000
 
-# Minimum products a category must have to appear in sidebar
-# Prevents irrelevant categories (like "Kitchen" when searching shoes)
-# from showing up just because 1-2 products have weird tags
+# 🆕 Dynamic facet sizes (show ALL values for each)
+FACET_BRANDS_SIZE = 10000       # All unique brands in results
+FACET_COLORS_SIZE = 10000       # All unique colors in results
+FACET_SIZES_SIZE = 10000        # All unique sizes in results
+FACET_STORAGE_SIZE = 10000      # All unique storage options
+FACET_RAM_SIZE = 10000          # All unique RAM options
+
+# Minimum products a facet value must have to appear in sidebar
+# Prevents irrelevant values from showing up just because 1-2 products have weird tags
 FACET_MIN_DOC_COUNT = 3
 
 # How many top categories to show in mega menu widget
