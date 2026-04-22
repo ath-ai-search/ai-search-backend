@@ -536,8 +536,8 @@ async def execute_search(request: SearchRequest) -> dict:
             })
             
         # 3. 🚀 CRITICAL FIX: SORT BY RELEVANCE FIRST!
-        # This ensures "Dresses" goes to the top because it's the most relevant,
-        # instead of "Costumes" going to the top just because it has a bigger global number.
+        # This ensures the most relevant category goes to the top,
+        # instead of a loose match going to the top just because it has a bigger global number.
         result.sort(key=lambda x: (x["relevance"], x["count"]), reverse=True)
         
         # Clean up the 'relevance' key before sending to frontend
