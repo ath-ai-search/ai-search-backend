@@ -72,7 +72,7 @@ logger = logging.getLogger(__name__)
 # Products scoring below this are filtered out.
 # Tuned based on boost values to keep only meaningful matches.
 # =========================================================================
-MIN_RELEVANCE_SCORE = 15.0
+MIN_RELEVANCE_SCORE = 45.0  # Raised from 15.0 to cut off the garbage tail
 
 
 # =========================================================================
