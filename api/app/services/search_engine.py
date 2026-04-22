@@ -503,35 +503,45 @@ async def execute_search(request: SearchRequest) -> dict:
     all_aggs = response.get("aggregations", {})
     
     def build_smart_facet_list(agg_name: str, global_agg_name: str) -> list:
-        # 1. Get the STRICTLY RELEVANT names from the sampler
+        # 1. Get the STRICTLY RELEVANT names from the sampler AND their sampler count
         sampled_buckets = sampled_aggs.get(agg_name, {}).get("buckets", [])
-        allowed_keys = set()
+        
+        # Dictionary to store the relevance score (how many times it appeared in top 150)
+        relevance_scores = {}
         for bucket in sampled_buckets:
             val = str(bucket.get("key", "")).strip()
             if val and val.lower() not in ["none", "default", "default title", "uncategorized", ""]:
-                allowed_keys.add(val)
+                # Save how many times it appeared in the strictly relevant Top 150
+                relevance_scores[val] = bucket.get("doc_count", 0)
         
-        if not allowed_keys:
+        if not relevance_scores:
             return []
 
         # 2. Get the TRUE COUNTS from the global aggregation
         global_buckets = all_aggs.get(global_agg_name, {}).get("buckets", [])
-        result = []
+        
+        # Map global counts for fast lookup
+        global_counts = {}
         for bucket in global_buckets:
             val = str(bucket.get("key", "")).strip()
+            global_counts[val] = bucket.get("doc_count", 0)
             
-            # 3. ONLY output it if it was approved by the strict sampler!
-            if val in allowed_keys:
-                result.append({
-                    "value": val,
-                    "label": val,
-                    "count": bucket.get("doc_count", 0)  # This is the TRUE global count!
-                })
-                
-        # 🆕 SORT the final list so the biggest numbers are always at the top!
-        result.sort(key=lambda x: x["count"], reverse=True)
+        result = []
+        for val, relevance_count in relevance_scores.items():
+            result.append({
+                "value": val,
+                "label": val,
+                "count": global_counts.get(val, relevance_count), # Use true global count for display
+                "relevance": relevance_count # Store relevance for sorting
+            })
+            
+        # 3. 🚀 CRITICAL FIX: SORT BY RELEVANCE FIRST!
+        # This ensures "Dresses" goes to the top because it's the most relevant,
+        # instead of "Costumes" going to the top just because it has a bigger global number.
+        result.sort(key=lambda x: (x["relevance"], x["count"]), reverse=True)
         
-        return result
+        # Clean up the 'relevance' key before sending to frontend
+        return [{"value": x["value"], "label": x["label"], "count": x["count"]} for x in result]
 
     # Automatically parse all scalable facets
     facets = {}
