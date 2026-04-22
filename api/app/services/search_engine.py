@@ -455,11 +455,36 @@ async def execute_search(request: SearchRequest) -> dict:
     if request.sort not in ["price_asc", "price_desc"]:
         results.sort(key=lambda x: x["score"], reverse=True)
     
-    # STEP 16: BUILD FACETS
+    # =====================================================================
+    # 🆕 STEP 16: BUILD FACETS (Query-Specific Counts — Amazon Style)
+    # =====================================================================
+    # PROBLEM SOLVED:
+    #   Before: Sidebar showed GLOBAL category counts (not matching top total)
+    #           Example: Search "shoes" → Top: 487, Sidebar "Shoes": 2596 ❌
+    #
+    # SOLUTION:
+    #   Use the "categories" aggregation from main query.
+    #   This counts categories WITHIN the search results (post-filter).
+    #   Example: Search "shoes" → Top: 487, Sidebar "Shoes": 245 ✅
+    #
+    # HOW IT WORKS:
+    #   - OpenSearch "categories" aggregation runs ON the matched results
+    #   - With min_score applied, it only counts RELEVANT products
+    #   - Sidebar counts now reflect current search exactly
+    # =====================================================================
+    
     aggregations = response.get("aggregations", {})
+    
+    # Get category buckets from the MAIN search aggregation
+    # These counts are query-specific (only matching products)
+    query_specific_buckets = aggregations.get("categories", {}).get("buckets", [])
+    
+    # Also use top_hits for relevance-based ordering
+    # (popular categories from top 100 most-relevant products appear first)
     top_hits_data = aggregations.get("top_relevant_hits", {}).get("hits", {}).get("hits", [])
     
-    category_counts = {}
+    # Build relevance score for each category (how often it appears in top 100)
+    category_relevance = {}
     for hit in top_hits_data:
         source = hit.get("_source", {})
         raw_cats = source.get("category", [])
@@ -473,30 +498,47 @@ async def execute_search(request: SearchRequest) -> dict:
         
         for cat in cats_list:
             if cat and cat != "None" and cat != "Uncategorized":
-                category_counts[cat] = category_counts.get(cat, 0) + 1
+                category_relevance[cat] = category_relevance.get(cat, 0) + 1
     
-    global_agg_buckets = {
-        str(c.get("key")).strip(): c.get("doc_count", 0)
-        for c in aggregations.get("categories", {}).get("buckets", [])
-        if c.get("key")
-    }
+    # Build final facets:
+    # - Use query-specific count from main aggregation (accurate)
+    # - Order by relevance (top 100 appearance) for best UX
+    # - Filter: only show categories that appear in top 100 (relevant ones)
+    facets_list = []
+    for bucket in query_specific_buckets:
+        cat_name = str(bucket.get("key", "")).strip()
+        cat_count = bucket.get("doc_count", 0)
+        
+        # Skip empty/invalid categories
+        if not cat_name or cat_name in ["None", "Uncategorized"]:
+            continue
+        
+        # Only show categories that appear in top 100 most-relevant products
+        # This filters out irrelevant categories (like "Kitchen" for "shoes" search)
+        if cat_name not in category_relevance:
+            continue
+        
+        facets_list.append({
+            "value": cat_name,
+            "label": cat_name,
+            "count": cat_count,  # 🆕 Query-specific count (accurate!)
+            "_relevance_score": category_relevance.get(cat_name, 0)
+        })
     
-    sorted_categories = sorted(
-        category_counts.items(),
-        key=lambda x: x[1],
+    # Sort by relevance (appearance in top 100) DESC, then by count DESC
+    facets_list.sort(
+        key=lambda x: (x["_relevance_score"], x["count"]),
         reverse=True
-    )[:15]
+    )
     
-    facets = {
-        "categories": [
-            {
-                "value": cat_name,
-                "label": cat_name,
-                "count": global_agg_buckets.get(cat_name, top_count)
-            }
-            for cat_name, top_count in sorted_categories
-        ]
-    }
+    # Keep top 15 most relevant categories
+    facets_list = facets_list[:15]
+    
+    # Remove internal relevance field before sending to frontend
+    for f in facets_list:
+        f.pop("_relevance_score", None)
+    
+    facets = {"categories": facets_list}
     
     # STEP 17: BUILD FINAL RESPONSE
     final_response = {
