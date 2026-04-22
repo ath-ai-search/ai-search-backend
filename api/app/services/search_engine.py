@@ -354,14 +354,14 @@ async def execute_search(request: SearchRequest) -> dict:
         "min_score": min_relevance_score,
         
         "aggs": {
-            # 1. THE SAMPLER: The "Sweet Spot" 300 to find valid categories
+           # 1. THE SAMPLER: The "Sweet Spot" 100 to find valid categories
             "strict_relevance_sampler": {
                 "sampler": {
-                    "shard_size": 300  
+                    "shard_size": 100  # 🚀 SHRINK TO 100 to block Kitchen/Amazon completely
                 },
                 "aggs": {
-                    "categories": {"terms": {"field": "category", "size": FACET_CATEGORIES_SIZE, "min_doc_count": 5}},
-                    "brands": {"terms": {"field": "brand", "size": FACET_BRANDS_SIZE, "min_doc_count": 4}},
+                    "categories": {"terms": {"field": "category", "size": FACET_CATEGORIES_SIZE, "min_doc_count": 3}},
+                    "brands": {"terms": {"field": "brand", "size": FACET_BRANDS_SIZE, "min_doc_count": 3}},
                     "colors": {"terms": {"field": "colors", "size": FACET_COLORS_SIZE, "min_doc_count": 2}},
                     "sizes": {"terms": {"field": "sizes", "size": FACET_SIZES_SIZE, "min_doc_count": 2}},
                     "storage": {"terms": {"field": "storage", "size": FACET_STORAGE_SIZE, "min_doc_count": 2}},
@@ -485,8 +485,8 @@ async def execute_search(request: SearchRequest) -> dict:
                 "relevance": relevance_count 
             })
             
-        # Sort by relevance FIRST, so the most applicable categories go to the top
-        result.sort(key=lambda x: (x["relevance"], x["count"]), reverse=True)
+        # Sort by the visible global count so the numbers look clean and professional
+        result.sort(key=lambda x: x["count"], reverse=True)
         return [{"value": x["value"], "label": x["label"], "count": x["count"]} for x in result]
 
     facets = {}
