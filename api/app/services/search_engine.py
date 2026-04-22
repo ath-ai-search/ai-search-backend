@@ -166,7 +166,7 @@ async def execute_search(request: SearchRequest) -> dict:
                     "multi_match": {
                         "query": c,
                         "type": "phrase",
-                        "fields": ["color", "attributes*", "name"]
+                        "fields": ["color", "colors", "name"]
                     }
                 })
             filters.append({"bool": {"should": color_shoulds, "minimum_should_match": 1}})
@@ -179,7 +179,7 @@ async def execute_search(request: SearchRequest) -> dict:
                 size_shoulds.append({
                     "multi_match": {
                         "query": safe_size_query,
-                        "fields": ["size", "attributes*", "name"],
+                        "fields": ["size", "sizes", "name"],
                         "type": "best_fields"
                     }
                 })
@@ -192,7 +192,7 @@ async def execute_search(request: SearchRequest) -> dict:
                 gender_shoulds.append({
                     "multi_match": {
                         "query": g_str,
-                        "fields": ["gender", "attributes.gender", "attributes.Gender", "category", "name"],
+                        "fields": ["gender", "attributes.gender", "category", "name"],
                         "type": "best_fields"
                     }
                 })
