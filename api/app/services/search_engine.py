@@ -383,6 +383,7 @@ async def execute_search(request: SearchRequest) -> dict:
         dynamic_min_doc = 2   # Low strictness
         
     # STEP 12: BUILD FINAL OPENSEARCH QUERY
+   # STEP 12: BUILD FINAL OPENSEARCH QUERY
     os_query = {
         "from": from_val,
         "size": request.page_size,
@@ -392,33 +393,28 @@ async def execute_search(request: SearchRequest) -> dict:
         "track_scores": True,
         "min_score": min_relevance_score,
         
-        # 🚀 THE BULLETPROOF SAMPLER AGGREGATION
         "aggs": {
+            # 🚀 1. THE BULLETPROOF SAMPLER (Figures out WHICH categories are valid)
             "strict_relevance_sampler": {
                 "sampler": {
                     "shard_size": 150  
                 },
                 "aggs": {
-                    "categories": {
-                        "terms": {"field": "category", "size": FACET_CATEGORIES_SIZE, "min_doc_count": 3}
-                    },
-                    "brands": {
-                        "terms": {"field": "brand", "size": FACET_BRANDS_SIZE, "min_doc_count": 3}
-                    },
-                    "colors": {
-                        "terms": {"field": "colors", "size": FACET_COLORS_SIZE, "min_doc_count": 2}
-                    },
-                    "sizes": {
-                        "terms": {"field": "sizes", "size": FACET_SIZES_SIZE, "min_doc_count": 2}
-                    },
-                    "storage": {
-                        "terms": {"field": "storage", "size": FACET_STORAGE_SIZE, "min_doc_count": 2}
-                    },
-                    "ram": {
-                        "terms": {"field": "ram", "size": FACET_RAM_SIZE, "min_doc_count": 2}
-                    }
+                    "categories": {"terms": {"field": "category", "size": FACET_CATEGORIES_SIZE, "min_doc_count": 3}},
+                    "brands": {"terms": {"field": "brand", "size": FACET_BRANDS_SIZE, "min_doc_count": 3}},
+                    "colors": {"terms": {"field": "colors", "size": FACET_COLORS_SIZE, "min_doc_count": 2}},
+                    "sizes": {"terms": {"field": "sizes", "size": FACET_SIZES_SIZE, "min_doc_count": 2}},
+                    "storage": {"terms": {"field": "storage", "size": FACET_STORAGE_SIZE, "min_doc_count": 2}},
+                    "ram": {"terms": {"field": "ram", "size": FACET_RAM_SIZE, "min_doc_count": 2}}
                 }
-            }
+            },
+            # 🚀 2. THE GLOBAL COUNTS (Gets the TRUE TOTAL numbers for those valid categories)
+            "global_categories": {"terms": {"field": "category", "size": FACET_CATEGORIES_SIZE}},
+            "global_brands": {"terms": {"field": "brand", "size": FACET_BRANDS_SIZE}},
+            "global_colors": {"terms": {"field": "colors", "size": FACET_COLORS_SIZE}},
+            "global_sizes": {"terms": {"field": "sizes", "size": FACET_SIZES_SIZE}},
+            "global_storage": {"terms": {"field": "storage", "size": FACET_STORAGE_SIZE}},
+            "global_ram": {"terms": {"field": "ram", "size": FACET_RAM_SIZE}}
         }
     }
     # STEP 13: EXECUTE MAIN QUERY
@@ -500,45 +496,58 @@ async def execute_search(request: SearchRequest) -> dict:
     if request.sort not in ["price_asc", "price_desc"]:
         results.sort(key=lambda x: x["score"], reverse=True)
     
+    # =====================================================================
+    # 🚀 STEP 16: BUILD PERFECT FACETS (SAMPLER + TRUE GLOBAL COUNTS)
+    # =====================================================================
     sampled_aggs = response.get("aggregations", {}).get("strict_relevance_sampler", {})
+    all_aggs = response.get("aggregations", {})
     
-    def build_native_facet_list(agg_name: str) -> list:
-        buckets = sampled_aggs.get(agg_name, {}).get("buckets", [])
+    def build_smart_facet_list(agg_name: str, global_agg_name: str) -> list:
+        # 1. Get the STRICTLY RELEVANT names from the sampler
+        sampled_buckets = sampled_aggs.get(agg_name, {}).get("buckets", [])
+        allowed_keys = set()
+        for bucket in sampled_buckets:
+            val = str(bucket.get("key", "")).strip()
+            if val and val.lower() not in ["none", "default", "default title", "uncategorized", ""]:
+                allowed_keys.add(val)
+        
+        if not allowed_keys:
+            return []
+
+        # 2. Get the TRUE COUNTS from the global aggregation
+        global_buckets = all_aggs.get(global_agg_name, {}).get("buckets", [])
         result = []
-        for bucket in buckets:
-            value = str(bucket.get("key", "")).strip()
-            count = bucket.get("doc_count", 0)
+        for bucket in global_buckets:
+            val = str(bucket.get("key", "")).strip()
             
-            # Skip empty or default values
-            if not value or value.lower() in ["none", "default", "default title", "uncategorized", ""]:
-                continue
-            
-            result.append({
-                "value": value,
-                "label": value,
-                "count": count
-            })
+            # 3. ONLY output it if it was approved by the strict sampler!
+            if val in allowed_keys:
+                result.append({
+                    "value": val,
+                    "label": val,
+                    "count": bucket.get("doc_count", 0)  # This is the TRUE global count!
+                })
         return result
 
     # Automatically parse all scalable facets
     facets = {}
     
-    cat_list = build_native_facet_list("categories")
+    cat_list = build_smart_facet_list("categories", "global_categories")
     if cat_list: facets["categories"] = cat_list
     
-    brand_list = build_native_facet_list("brands")
+    brand_list = build_smart_facet_list("brands", "global_brands")
     if brand_list: facets["brands"] = brand_list
     
-    color_list = build_native_facet_list("colors")
+    color_list = build_smart_facet_list("colors", "global_colors")
     if color_list: facets["colors"] = color_list
     
-    size_list = build_native_facet_list("sizes")
+    size_list = build_smart_facet_list("sizes", "global_sizes")
     if size_list: facets["sizes"] = size_list
     
-    storage_list = build_native_facet_list("storage")
+    storage_list = build_smart_facet_list("storage", "global_storage")
     if storage_list: facets["storage"] = storage_list
     
-    ram_list = build_native_facet_list("ram")
+    ram_list = build_smart_facet_list("ram", "global_ram")
     if ram_list: facets["ram"] = ram_list
 
     # STEP 17: BUILD FINAL RESPONSE
