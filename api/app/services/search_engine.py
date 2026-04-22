@@ -535,14 +535,24 @@ async def execute_search(request: SearchRequest) -> dict:
     aggregations = response.get("aggregations", {})
     top_hits_data = aggregations.get("top_relevant_hits", {}).get("hits", {}).get("hits", [])
     
-    # Extract relevance-based values from top 100 products
-    # This determines which values are "relevant" to the search
+    # =====================================================================
+    # 🆕 STRICT RELEVANCE: Count occurrences in top 100 products
+    # =====================================================================
+    # For each field, COUNT how many of top 100 products have each value.
+    # Later we filter: only values appearing in 3+ products get shown.
+    # This removes "Acer" (1 product out of top 100 for shoes) etc.
+    # =====================================================================
+    
     relevant_categories = {}
-    relevant_brands = set()
-    relevant_colors = set()
-    relevant_sizes = set()
-    relevant_storage = set()
-    relevant_ram = set()
+    relevant_brands_counts = {}     # 🆕 count instead of just set
+    relevant_colors_counts = {}
+    relevant_sizes_counts = {}
+    relevant_storage_counts = {}
+    relevant_ram_counts = {}
+    
+    # Minimum occurrences in top 100 for a value to be shown
+    # 3 = strict (removes accidental matches like Acer for shoes)
+    MIN_FACET_OCCURRENCES = 3
     
     for hit in top_hits_data:
         source = hit.get("_source", {})
@@ -560,38 +570,58 @@ async def execute_search(request: SearchRequest) -> dict:
             if cat and cat not in ["None", "Uncategorized"]:
                 relevant_categories[cat] = relevant_categories.get(cat, 0) + 1
         
-        # --- Brand (single value) ---
+        # --- Brand (single value per product) ---
         brand = source.get("brand", "")
         if brand and isinstance(brand, str) and brand.strip():
-            relevant_brands.add(brand.strip())
+            key = brand.strip()
+            relevant_brands_counts[key] = relevant_brands_counts.get(key, 0) + 1
         
         # --- Colors (list) ---
         colors = source.get("colors", [])
         if isinstance(colors, list):
             for c in colors:
                 if c and str(c).strip():
-                    relevant_colors.add(str(c).strip())
+                    key = str(c).strip()
+                    relevant_colors_counts[key] = relevant_colors_counts.get(key, 0) + 1
         
         # --- Sizes (list) ---
         sizes = source.get("sizes", [])
         if isinstance(sizes, list):
             for s in sizes:
                 if s and str(s).strip():
-                    relevant_sizes.add(str(s).strip())
+                    key = str(s).strip()
+                    relevant_sizes_counts[key] = relevant_sizes_counts.get(key, 0) + 1
         
         # --- Storage (list) ---
         storage_vals = source.get("storage", [])
         if isinstance(storage_vals, list):
             for s in storage_vals:
                 if s and str(s).strip():
-                    relevant_storage.add(str(s).strip())
+                    key = str(s).strip()
+                    relevant_storage_counts[key] = relevant_storage_counts.get(key, 0) + 1
         
         # --- RAM (list) ---
         ram_vals = source.get("ram", [])
         if isinstance(ram_vals, list):
             for r in ram_vals:
                 if r and str(r).strip():
-                    relevant_ram.add(str(r).strip())
+                    key = str(r).strip()
+                    relevant_ram_counts[key] = relevant_ram_counts.get(key, 0) + 1
+    
+    # =====================================================================
+    # 🆕 APPLY STRICT FILTER: only keep values appearing in 3+ products
+    # =====================================================================
+    # This removes noise like "Acer" (1 shoes product) but keeps real brands
+    # If we have very few relevant products (<10), lower the threshold to 1
+    # so user still sees some filters
+    
+    effective_threshold = MIN_FACET_OCCURRENCES if len(top_hits_data) >= 30 else 1
+    
+    relevant_brands = {k for k, v in relevant_brands_counts.items() if v >= effective_threshold}
+    relevant_colors = {k for k, v in relevant_colors_counts.items() if v >= effective_threshold}
+    relevant_sizes = {k for k, v in relevant_sizes_counts.items() if v >= effective_threshold}
+    relevant_storage = {k for k, v in relevant_storage_counts.items() if v >= effective_threshold}
+    relevant_ram = {k for k, v in relevant_ram_counts.items() if v >= effective_threshold}
     
     # =====================================================================
     # Get GLOBAL counts from aggregations (accurate for all matching products)
