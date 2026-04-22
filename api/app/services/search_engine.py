@@ -23,12 +23,6 @@ SEARCH TECHNIQUES USED:
   - Multi-match (cross-field searching)
   - Fuzzy Matching (typo tolerance)
   - Function Score (score multiplication)
-
-🆕 PAGINATION SAFETY (Amazon-style)
-  - OpenSearch has hard limit: from + size ≤ 10,000
-  - We cap pagination to first 100 pages (at 100 products/page)
-  - Beyond that, return empty with proper total_pages capped
-  - 99% users never go past page 10 anyway
 =====================================================================================
 """
 
@@ -98,7 +92,7 @@ async def execute_search(request: SearchRequest) -> dict:
     RETURNS:
         dict with:
             - total_results: Total matching products
-            - total_pages: Total pages available (capped at MAX_OS_WINDOW)
+            - total_pages: Total pages available
             - current_page: Current page number
             - pagination_html: Ready-to-render pagination buttons
             - results: List of product dicts
@@ -116,10 +110,13 @@ async def execute_search(request: SearchRequest) -> dict:
     # =====================================================================
     # STEP 2: CHECK REDIS CACHE
     # =====================================================================
+    # Generate unique cache key from request
+    # Using JSON + MD5 hash ensures identical requests get same key
     request_data = request.model_dump()
     request_str = json.dumps(request_data, sort_keys=True)
     cache_key = f"search:ai:{CACHE_VERSION}:{hashlib.md5(request_str.encode()).hexdigest()}"
     
+    # Try cache first — if found, return immediately (super fast!)
     cached_result = await cache_get(cache_key)
     if cached_result:
         return cached_result
@@ -142,8 +139,6 @@ async def execute_search(request: SearchRequest) -> dict:
     # 🆕 EARLY RETURN: If user clicks beyond safe pages, return empty gracefully
     # This is better than broken OpenSearch query errors
     if request.page > max_safe_page:
-        # User tried to go too deep — this shouldn't normally happen if
-        # we cap total_pages correctly, but this is a safety net
         logger.warning(
             f"⚠️ Page {request.page} exceeds max safe page {max_safe_page}. Returning empty."
         )
@@ -162,6 +157,10 @@ async def execute_search(request: SearchRequest) -> dict:
     # =====================================================================
     # STEP 4: EXTRACT SEMANTIC INFO FROM QUERY
     # =====================================================================
+    # Example: "macbook under 2000 on sale" becomes:
+    #   core_query = "macbook"
+    #   max_price = 2000
+    #   is_sale = True
     query_text = request.query.strip() if request.query else ""
     matrix = extract_semantic_matrix(query_text)
     core_query = matrix["core_query"]
@@ -169,16 +168,23 @@ async def execute_search(request: SearchRequest) -> dict:
     # =====================================================================
     # STEP 5: HANDLE MULTI-ITEM QUERIES
     # =====================================================================
+    # If user searched "macbook and iphone" → becomes "macbook | iphone"
+    # We split these and boost BOTH items equally (the "Equalizer")
     if "|" in core_query:
         multi_items = [item.strip() for item in core_query.split("|") if item.strip()]
+        # For vector search, we combine them into one string
         core_query_for_vector = " ".join(multi_items)
     else:
+        # Single item query
         multi_items = [core_query]
         core_query_for_vector = core_query
     
     # =====================================================================
     # STEP 6: GENERATE VECTOR EMBEDDING (Semantic Search)
     # =====================================================================
+    # Vector = numerical representation of meaning
+    # OpenAI converts text into 1536-dimensional vector
+    # We then find products whose vectors are "closest" in meaning (KNN)
     vector = None
     if core_query_for_vector:
         try:
@@ -188,48 +194,58 @@ async def execute_search(request: SearchRequest) -> dict:
             )
             vector = resp.data[0].embedding
         except Exception as e:
+            # OpenAI down? No problem — we still have keyword search as fallback
             logger.error(f"❌ OpenAI Embedding Failed: {e}")
     
     # =====================================================================
     # STEP 7: BUILD HARD FILTERS (must match these conditions)
     # =====================================================================
+    # ALWAYS filter out products not in stock
     filters = [{"term": {"in_stock": True}}]
     must_nots = []
     
+    # --------------------------------------------------------------------
     # Price filter from SEMANTIC extraction (user typed "under 100")
+    # --------------------------------------------------------------------
     if matrix["min_price"] is not None or matrix["max_price"] is not None:
         price_range = {}
         if matrix["min_price"] is not None:
-            price_range["gte"] = matrix["min_price"]
+            price_range["gte"] = matrix["min_price"]  # Greater-than-equal
         if matrix["max_price"] is not None:
-            price_range["lte"] = matrix["max_price"]
+            price_range["lte"] = matrix["max_price"]  # Less-than-equal
         filters.append({"range": {"price": price_range}})
     
-    # Sale filter
+    # --------------------------------------------------------------------
+    # Sale filter (user said "on sale" OR clicked sale filter)
+    # --------------------------------------------------------------------
     if (
         matrix["is_sale"] 
         or request.sort == "on_sale" 
         or (request.filters and getattr(request.filters, "on_sale", False))
     ):
+        # Only include products with sale_price > 0 (meaning they're on sale)
         filters.append({"range": {"sale_price": {"gt": 0}}})
     
+    # --------------------------------------------------------------------
     # FILTERS FROM UI (user clicked sidebar filters)
+    # --------------------------------------------------------------------
     if request.filters:
         
-        # CATEGORY FILTER
+        # ============ CATEGORY FILTER ============
         if getattr(request.filters, "category", None):
             filters.append({
-                "terms": {
+                "terms": {  # 'terms' = match ANY of these values
                     "category": request.filters.category[:MAX_CATEGORY_FILTERS]
                 }
             })
         
-        # IN-STOCK OVERRIDE
+        # ============ IN-STOCK OVERRIDE ============
         if getattr(request.filters, "in_stock", None) is not None:
             filters.append({"term": {"in_stock": request.filters.in_stock}})
         
-        # COLOR FILTER
+        # ============ COLOR FILTER ============
         if getattr(request.filters, "color", None):
+            # Build OR condition for each color selected
             color_shoulds = []
             for c in request.filters.color[:MAX_COLOR_FILTERS]:
                 color_shoulds.append({
@@ -242,15 +258,17 @@ async def execute_search(request: SearchRequest) -> dict:
             filters.append({
                 "bool": {
                     "should": color_shoulds,
-                    "minimum_should_match": 1
+                    "minimum_should_match": 1  # At least 1 color must match
                 }
             })
         
-        # SIZE FILTER
+        # ============ SIZE FILTER ============
         if getattr(request.filters, "size", None):
             size_shoulds = []
             for s in request.filters.size[:MAX_SIZE_FILTERS]:
                 size_str = str(s).strip()
+                # Smart query: if user says "size M" use as-is, else "size M M"
+                # This helps match both "Size M" and just "M" in product data
                 safe_size_query = size_str if "size" in size_str.lower() else f"size {size_str} {size_str}"
                 size_shoulds.append({
                     "multi_match": {
@@ -266,7 +284,7 @@ async def execute_search(request: SearchRequest) -> dict:
                 }
             })
         
-        # GENDER FILTER
+        # ============ GENDER FILTER ============
         if getattr(request.filters, "gender", None):
             gender_shoulds = []
             for g in request.filters.gender[:MAX_GENDER_FILTERS]:
@@ -277,7 +295,7 @@ async def execute_search(request: SearchRequest) -> dict:
                         "fields": [
                             "gender",
                             "attributes.gender",
-                            "attributes.Gender",
+                            "attributes.Gender",  # Case variation
                             "category",
                             "name"
                         ],
@@ -291,16 +309,19 @@ async def execute_search(request: SearchRequest) -> dict:
                 }
             })
         
-        # BRAND FILTER (CASE-INSENSITIVE)
+        # ============ BRAND FILTER (CASE-INSENSITIVE) ============
+        # This is the BULLETPROOF fix from v135
+        # Brands might be stored as "Apple", "APPLE", or "apple"
+        # We match all variations to prevent missing products
         if getattr(request.filters, "brand", None):
             brand_shoulds = []
             for b in request.filters.brand[:MAX_BRAND_FILTERS]:
                 b_str = str(b).strip()
                 brand_shoulds.extend([
-                    {"match_phrase": {"brand": b_str}},
-                    {"term": {"brand": b_str}},
-                    {"term": {"brand": b_str.upper()}},
-                    {"term": {"brand": b_str.title()}}
+                    {"match_phrase": {"brand": b_str}},          # Original
+                    {"term": {"brand": b_str}},                  # Exact
+                    {"term": {"brand": b_str.upper()}},          # UPPERCASE
+                    {"term": {"brand": b_str.title()}}           # Title Case
                 ])
             filters.append({
                 "bool": {
@@ -309,18 +330,21 @@ async def execute_search(request: SearchRequest) -> dict:
                 }
             })
         
-        # PRICE FILTER FROM UI (sidebar slider)
+        # ============ PRICE FILTER FROM UI (sidebar slider) ============
         if getattr(request.filters, "price", None):
             p_range = {}
             
+            # Handle MIN price (clean any $ or text characters)
             if getattr(request.filters.price, "min", None) is not None:
                 try:
+                    # Strip non-numeric chars (so "$100" → "100")
                     clean_min = re.sub(r'[^\d.]', '', str(request.filters.price.min))
                     if clean_min:
                         p_range["gte"] = float(clean_min)
                 except Exception:
                     pass
             
+            # Handle MAX price
             if getattr(request.filters.price, "max", None) is not None:
                 try:
                     clean_max = re.sub(r'[^\d.]', '', str(request.filters.price.max))
@@ -329,43 +353,50 @@ async def execute_search(request: SearchRequest) -> dict:
                 except Exception:
                     pass
             
+            # Only add filter if we got valid prices
             if p_range:
                 filters.append({"range": {"price": p_range}})
     
     # =====================================================================
     # STEP 8: BUILD SORT ORDER
     # =====================================================================
+    # Default: sort by relevance score (highest first)
     sort_query = [{"_score": "desc"}]
     
     if request.sort == "price_asc":
-        sort_query = [{"price": "asc"}]
+        sort_query = [{"price": "asc"}]  # Cheapest first
     elif request.sort == "price_desc":
-        sort_query = [{"price": "desc"}]
+        sort_query = [{"price": "desc"}]  # Most expensive first
     elif request.sort == "on_sale":
-        sort_query = [{"_score": "desc"}]
+        sort_query = [{"_score": "desc"}]  # Sale items by relevance
     
     # =====================================================================
     # STEP 9: BUILD SCORING (BOOST) CLAUSES
     # =====================================================================
+    # These determine HOW well products match
+    # Each "should" clause adds to the score if it matches
     semantic_shoulds = []
     
     # ---------------------------------------------------------------------
-    # 🆕 KNN SEMANTIC SEARCH (with SAFE k_val calculation)
+    # KNN SEMANTIC SEARCH (Vector-based similarity)
     # ---------------------------------------------------------------------
     if vector:
         # k = how many similar products to find
-        # 🆕 SAFETY FIX: Cap k at MAX_OS_WINDOW to prevent OpenSearch errors
-        # Original formula: max(KNN_MIN_K, from_val + page_size + KNN_BUFFER)
-        # Problem: When from_val was near max, k became invalid
-        # Fix: Ensure k stays safely within bounds
+        # 🆕 STRICT MODE: Reduce k for tighter semantic matches
+        # Old: k=500+ returned many loose semantic matches (garbage at end)
+        # New: k=300 max returns only tight semantic neighbors
+        # Combined with min_score filter, this keeps results highly relevant
         desired_k = max(KNN_MIN_K, from_val + request.page_size + KNN_BUFFER)
-        k_val = min(desired_k, MAX_OS_WINDOW)  # 🆕 SAFETY CAP
+        k_val = min(desired_k, MAX_OS_WINDOW, 300)  # 🆕 STRICT: Cap at 300
         
+        # 🆕 STRICT: Lower boost for KNN (was pulling in irrelevant products)
+        # KNN is now a "tiebreaker" rather than a primary scorer
         semantic_shoulds.append({
             "knn": {
                 "embedding": {
                     "vector": vector,
-                    "k": k_val
+                    "k": k_val,
+                    "boost": 0.5  # 🆕 STRICT: Reduce KNN influence
                 }
             }
         })
@@ -373,9 +404,11 @@ async def execute_search(request: SearchRequest) -> dict:
     # ---------------------------------------------------------------------
     # KEYWORD MATCHING FOR EACH ITEM (Multi-item Equalizer)
     # ---------------------------------------------------------------------
+    # For each item in multi-item query, add ALL these boost rules
+    # This ensures "macbook | iphone" gets results for BOTH items
     for item in multi_items:
         semantic_shoulds.extend([
-            # NAME EXACT PHRASE (Boost: 100)
+            # ============ NAME EXACT PHRASE (Boost: 100) ============
             {
                 "match_phrase": {
                     "name": {
@@ -385,7 +418,8 @@ async def execute_search(request: SearchRequest) -> dict:
                 }
             },
             
-            # BRAND EXACT PHRASE (Boost: 300)
+            # ============ BRAND EXACT PHRASE (Boost: 300) ============
+            # Highest boost because brand match is most certain
             {
                 "match_phrase": {
                     "brand": {
@@ -395,7 +429,9 @@ async def execute_search(request: SearchRequest) -> dict:
                 }
             },
             
-            # CATEGORY MATCH (Boost: 200)
+            # ============ CATEGORY MATCH (Boost: 200) ============
+            # Solves the Polysemy problem (Watch Cap vs Wrist Watch)
+            # If "watch" matches category, boost it hugely
             {
                 "match": {
                     "category": {
@@ -405,7 +441,9 @@ async def execute_search(request: SearchRequest) -> dict:
                 }
             },
             
-            # CROSS-FIELD MATCH (Boost: 20)
+            # ============ CROSS-FIELD MATCH (Boost: 20) ============
+            # All words of query must appear SOMEWHERE across fields
+            # Good for natural language queries
             {
                 "multi_match": {
                     "query": item,
@@ -416,13 +454,15 @@ async def execute_search(request: SearchRequest) -> dict:
                 }
             },
             
-            # FUZZY FALLBACK (Boost: 5)
+            # ============ FUZZY FALLBACK (Boost: 5) ============
+            # Typo tolerance: "iphon" still finds "iphone"
+            # Used as last-resort match (lowest boost)
             {
                 "multi_match": {
                     "query": item,
                     "fields": ["name^5", "brand^3", "category^2", "description"],
                     "type": "best_fields",
-                    "fuzziness": "AUTO",
+                    "fuzziness": "AUTO",  # Auto-detect typo tolerance
                     "boost": BOOST_FUZZY_FALLBACK
                 }
             }
@@ -431,10 +471,14 @@ async def execute_search(request: SearchRequest) -> dict:
     # =====================================================================
     # STEP 10: BUILD SCORE FUNCTIONS (Demotion Logic)
     # =====================================================================
+    # If user DOESN'T want accessories, DEMOTE accessory products
+    # Example: searching "iphone" shouldn't show 50 iPhone cases
     score_functions = []
     
     if not matrix["has_accessory_intent"]:
         for acc in matrix["accessory_keywords"]:
+            # Multiply score by 0.00001 if accessory word is in name/category
+            # This pushes accessories to the VERY bottom of results
             score_functions.append({
                 "filter": {"match": {"name": acc}},
                 "weight": ACCESSORY_DEMOTION_WEIGHT
@@ -448,20 +492,21 @@ async def execute_search(request: SearchRequest) -> dict:
     # STEP 11: COMBINE EVERYTHING INTO FINAL OPENSEARCH QUERY
     # =====================================================================
     if vector or core_query:
+        # Smart search: use function_score with boosts and demotion
         query_body = {
             "query": {
                 "function_score": {
                     "query": {
                         "bool": {
-                            "should": semantic_shoulds,
-                            "must_not": must_nots,
-                            "minimum_should_match": 1,
-                            "filter": filters
+                            "should": semantic_shoulds,  # Scoring boosts
+                            "must_not": must_nots,       # Excluded terms
+                            "minimum_should_match": 1,   # At least 1 should match
+                            "filter": filters            # Hard filters
                         }
                     },
-                    "functions": score_functions,
-                    "score_mode": "multiply",
-                    "boost_mode": "multiply"
+                    "functions": score_functions,        # Demotion functions
+                    "score_mode": "multiply",            # How to combine functions
+                    "boost_mode": "multiply"             # How functions affect query score
                 }
             }
         }
@@ -478,6 +523,26 @@ async def execute_search(request: SearchRequest) -> dict:
         }
     
     # Build the FINAL OpenSearch request
+    # =====================================================================
+    # 🆕 MINIMUM RELEVANCE THRESHOLD (Strict Mode)
+    # =====================================================================
+    # Products with score BELOW this are filtered out
+    # - Ensures ALL pages show relevant products (not garbage at the end)
+    # - Total count reflects REAL matching products
+    # - 0 for empty/browse mode, higher for real queries
+    #
+    # Values tuned based on boost levels:
+    # - BOOST_BRAND_PHRASE = 300 (exact brand match)
+    # - BOOST_CATEGORY_MATCH = 200 (exact category match)  
+    # - BOOST_NAME_PHRASE = 100 (exact name match)
+    # - BOOST_CROSS_FIELDS = 20 (partial cross-field match)
+    # - BOOST_FUZZY_FALLBACK = 5 (typo match)
+    # Threshold of 15 ensures we keep at least cross-field matches
+    # but filter out ONLY fuzzy-only matches (which are weak)
+    
+    min_relevance_score = 15.0 if (vector or core_query) else 0.0
+    
+    # Build the FINAL OpenSearch request
     os_query = {
         "from": from_val,
         "size": request.page_size,
@@ -485,17 +550,30 @@ async def execute_search(request: SearchRequest) -> dict:
         "sort": sort_query,
         "track_total_hits": True,
         "track_scores": True,
+        "min_score": min_relevance_score,  # 🆕 STRICT MODE: Filter weak matches
         
         # =====================================================================
         # 🎯 SMART CATEGORY FACETS (Contextual Filtering)
         # =====================================================================
+        # Two-layer aggregation strategy:
+        # 1. "top_relevant_hits" — Get categories from top 100 BEST-matching products
+        #    (not from ALL matching products, which includes weak matches)
+        # 2. "categories" — Traditional aggregation as fallback
+        #
+        # Why this works:
+        # - Top 100 most-relevant products are TRULY related to the query
+        # - Their categories are the ones user actually wants to filter by
+        # - Irrelevant categories (like "Kitchen" for "shoes") are excluded
+        # - We get 10-15 relevant categories (not just 2-3)
         "aggs": {
+            # Primary: Get top 100 relevant product IDs and their categories
             "top_relevant_hits": {
                 "top_hits": {
-                    "size": 100,
-                    "_source": ["category"]
+                    "size": 100,  # Top 100 most-relevant products
+                    "_source": ["category"]  # Only fetch category field (fast!)
                 }
             },
+            # Fallback: Regular aggregation (kept for safety)
             "categories": {
                 "terms": {
                     "field": "category",
@@ -514,6 +592,7 @@ async def execute_search(request: SearchRequest) -> dict:
     try:
         response = os_client.search(index=INDEX_NAME, body=os_query)
     except Exception as e:
+        # OpenSearch down? Return empty results (don't crash)
         logger.error(f"❌ OpenSearch Error: {str(e)}")
         return {
             "error": "Search service unavailable",
@@ -540,42 +619,61 @@ async def execute_search(request: SearchRequest) -> dict:
     # Get max score for normalization
     max_score = hits.get("max_score")
     if not max_score or max_score == 0:
-        max_score = 1.0
+        max_score = 1.0  # Prevent division by zero
     
     # Transform raw OpenSearch hits into clean product dicts
     results = []
     for hit in hits.get("hits", []):
         source = hit.get("_source", {})
         
+        # Get clean brand using our smart mapper
         brand_display = get_smart_brand(source)
         
-        # Clean up category field
+        # ---------------------------------------------------------------
+        # Clean up category field (could be string OR list in DB)
+        # ---------------------------------------------------------------
         raw_cats = source.get("category", [])
         clean_cats = []
         
         if isinstance(raw_cats, str):
+            # Category stored as messy string like "['Shoes', 'Men']"
+            # Clean it and split by comma
             clean_cats = [
                 c.strip() 
                 for c in re.sub(r"[\[\]'\"]", "", raw_cats).split(",") 
                 if c.strip()
             ]
         elif isinstance(raw_cats, list):
+            # Category stored as proper list — just clean each item
             clean_cats = [str(c).strip() for c in raw_cats if c and str(c).strip()]
         
+        # Fallback if no category
         if not clean_cats or clean_cats == ["None"]:
             clean_cats = ["Uncategorized"]
         
+        # ---------------------------------------------------------------
         # Get first image as primary
+        # ---------------------------------------------------------------
         images = source.get("images", [])
         primary_image = images[0] if isinstance(images, list) and len(images) > 0 else None
         
+        # ---------------------------------------------------------------
         # Generate FAKE but consistent rating/sales for demo
+        # (If real data doesn't exist)
+        # ---------------------------------------------------------------
+        # Uses product_id hash so same product ALWAYS gets same fake rating
         _pid = str(source.get("product_id", "123"))
         _pid_hash = int(hashlib.md5(_pid.encode()).hexdigest(), 16)
+        
+        # Fake rating between 4.0 and 4.9
         _demo_rating = DEMO_RATING_BASE + (_pid_hash % DEMO_RATING_RANGE) / 10.0
+        
+        # Fake sales count between 150 and 949
         _demo_sales = (_pid_hash % DEMO_SALES_RANGE) + DEMO_SALES_BASE
         
+        # ---------------------------------------------------------------
         # Normalize relevance score to 0.85-0.99 range (for display)
+        # ---------------------------------------------------------------
         raw_score = hit.get("_score", 0) or 0
         normalized_score = min(1.0, raw_score / max_score) if max_score > 0 else 0
         
@@ -592,30 +690,49 @@ async def execute_search(request: SearchRequest) -> dict:
             "sku": source.get("sku", ""),
             "url": source.get("url", ""),
             "primary_image": primary_image,
+            # Use real rating if > 0, else use demo rating
             "rating": source.get("rating") if source.get("rating", 0) > 0 else _demo_rating,
+            # Use real sales count if > 0, else use demo sales
             "sales_count": source.get("sales_count") if source.get("sales_count", 0) > 0 else _demo_sales,
+            # Score always displayed as 0.85-0.99 for nice UX
             "score": round(SCORE_DISPLAY_MIN + (normalized_score * SCORE_DISPLAY_RANGE), 2)
         })
     
     # =====================================================================
     # STEP 14: RE-SORT BY SCORE (unless sorting by price)
     # =====================================================================
+    # Since we normalized scores, re-sort to guarantee proper order
     if request.sort not in ["price_asc", "price_desc"]:
         results.sort(key=lambda x: x["score"], reverse=True)
     
-    # =====================================================================
+# =====================================================================
     # STEP 15: BUILD FACETS (Smart Contextual Category Filtering)
     # =====================================================================
+    # STRATEGY:
+    #   1. Grab top 100 most-relevant products (via top_hits aggregation)
+    #   2. Count categories that appear in those top 100
+    #   3. Sort by count (most common first)
+    #   4. Return top 15 categories
+    #
+    # This guarantees:
+    #   - Categories are TRULY related to the search query
+    #   - User sees 10-15 useful filter options (not 2-3)
+    #   - No irrelevant categories like "Kitchen" for "shoes" query
+    
     aggregations = response.get("aggregations", {})
     
+    # Get the top 100 most-relevant products from our custom aggregation
     top_hits_data = aggregations.get("top_relevant_hits", {}).get("hits", {}).get("hits", [])
     
+    # Count how many times each category appears in top 100 products
+    # This gives us the "relevance weight" of each category
     category_counts = {}
     
     for hit in top_hits_data:
         source = hit.get("_source", {})
         raw_cats = source.get("category", [])
         
+        # Handle both string and list formats for category field
         if isinstance(raw_cats, str):
             cats_list = [
                 c.strip() 
@@ -627,39 +744,46 @@ async def execute_search(request: SearchRequest) -> dict:
         else:
             cats_list = []
         
+        # Increment count for each valid category
         for cat in cats_list:
             if cat and cat != "None" and cat != "Uncategorized":
                 category_counts[cat] = category_counts.get(cat, 0) + 1
     
+    # Get ACTUAL counts from the global aggregation (more accurate totals)
+    # We use counts from aggregation, but only for categories in our top list
     global_agg_buckets = {
         str(c.get("key")).strip(): c.get("doc_count", 0)
         for c in aggregations.get("categories", {}).get("buckets", [])
         if c.get("key")
     }
     
+    # Sort categories by their appearance in top 100 (relevance)
+    # Keep top 15 most relevant
     sorted_categories = sorted(
         category_counts.items(),
-        key=lambda x: x[1],
+        key=lambda x: x[1],  # Sort by count in top 100 (most common first)
         reverse=True
     )[:15]
     
+    # Build the final facets list
+    # Use global count (more accurate) but ordered by relevance
     facets = {
         "categories": [
             {
                 "value": cat_name,
                 "label": cat_name,
+                # Use global count if available, else use top-100 count
                 "count": global_agg_buckets.get(cat_name, top_count)
             }
             for cat_name, top_count in sorted_categories
         ]
     }
-    
     # =====================================================================
     # STEP 16: BUILD FINAL RESPONSE
     # =====================================================================
     final_response = {
         "total_results": total_hits,
-        "total_pages": total_pages,  # 🆕 Already capped at max_safe_page
+        "total_pages": total_pages,
         "current_page": request.page,
         "pagination_html": build_pagination_html(total_pages, request.page),
         "results": results,
@@ -669,6 +793,7 @@ async def execute_search(request: SearchRequest) -> dict:
     # =====================================================================
     # STEP 17: CACHE FOR NEXT TIME
     # =====================================================================
+    # Save to Redis with 5-minute expiry
     await cache_set(cache_key, final_response, ttl_seconds=SEARCH_CACHE_TTL)
     
     return final_response
