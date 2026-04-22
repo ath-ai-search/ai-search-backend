@@ -336,26 +336,7 @@ async def execute_search(request: SearchRequest) -> dict:
     # We need real count to build correct pagination.
     
     use_min_score = bool(vector or core_query)
-    
-    # 🆕 HIGHER THRESHOLD WHEN USER APPLIES FILTERS
-    # Problem: "monitor" + Color="Khaki" was returning khaki pants (weak matches)
-    # Solution: When user applies any filter, require STRONGER query match
-    # This prevents showing irrelevant products just because they match the filter
-    has_active_user_filters = bool(request.filters and (
-        getattr(request.filters, "color", None) or
-        getattr(request.filters, "size", None) or
-        getattr(request.filters, "brand", None) or
-        getattr(request.filters, "storage", None) or
-        getattr(request.filters, "ram", None) or
-        getattr(request.filters, "category", None)
-    ))
-    
-    if has_active_user_filters and use_min_score:
-        min_relevance_score = 30.0  # 🆕 Stricter when filtering
-    elif use_min_score:
-        min_relevance_score = MIN_RELEVANCE_SCORE  # Normal 15.0
-    else:
-        min_relevance_score = 0.0  # Browse mode (no query)
+    min_relevance_score = MIN_RELEVANCE_SCORE if use_min_score else 0.0
     
     actual_total_hits = 0
     
@@ -401,7 +382,10 @@ async def execute_search(request: SearchRequest) -> dict:
         
         "aggs": {
             "top_relevant_hits": {
-                "top_hits": {"size": 100, "_source": ["category"]}
+                "top_hits": {
+                    "size": 100, 
+                    "_source": ["category", "brand", "colors", "sizes", "storage", "ram"]
+                }
             },
             "categories": {
                 "terms": {
@@ -651,12 +635,9 @@ async def execute_search(request: SearchRequest) -> dict:
         if c.get("key")
     }
     
-    # 🆕 STRICT CATEGORY FILTER — require 3+ products in top 100
-    # This prevents "Kitchen & Dining" from showing for "monitor" search
-    # Same threshold as brand/color/size for consistency
+    # Sort categories by relevance (top 100 appearance)
     sorted_categories = sorted(
-        [(cat, count) for cat, count in relevant_categories.items() 
-         if count >= effective_threshold],  # 🆕 Use same threshold as other facets
+        relevant_categories.items(),
         key=lambda x: x[1],
         reverse=True
     )
@@ -688,6 +669,10 @@ async def execute_search(request: SearchRequest) -> dict:
         Only includes values that appear in top 100 most-relevant products.
         This removes irrelevant values (e.g., XL/60 for "shoes" search).
         """
+        # 🆕 CRITICAL FIX: If no relevant values exist in top 100, hide this facet entirely!
+        if not relevant_values:
+            return []
+
         buckets = aggregations.get(agg_name, {}).get("buckets", [])
         result = []
         for bucket in buckets:
@@ -698,8 +683,8 @@ async def execute_search(request: SearchRequest) -> dict:
             if not value or value.lower() in ["none", "default", "default title", ""]:
                 continue
             
-            # 🆕 ONLY include if in relevant set (filters irrelevant values)
-            if relevant_values and value not in relevant_values:
+            # 🆕 ONLY include if it exists in our strictly relevant set
+            if value not in relevant_values:
                 continue
             
             result.append({
