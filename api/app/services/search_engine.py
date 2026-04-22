@@ -396,7 +396,7 @@ async def execute_search(request: SearchRequest) -> dict:
             # 1. THE SAMPLER: Gets only valid categories from the top 150 best matches (No Garbage)
             "strict_relevance_sampler": {
                 "sampler": {
-                    "shard_size": 150  
+                    "shard_size": 1000  
                 },
                 "aggs": {
                     "categories": {"terms": {"field": "category", "size": FACET_CATEGORIES_SIZE, "min_doc_count": 3}},
