@@ -122,16 +122,37 @@ async def execute_search(request: SearchRequest) -> dict:
         return cached_result
     
     # =====================================================================
-    # STEP 3: CALCULATE PAGINATION OFFSET
+    # STEP 3: 🆕 CALCULATE SAFE PAGINATION (Amazon-style)
     # =====================================================================
-    # OpenSearch uses 'from' (offset) instead of 'page'
-    # Page 1 → from=0, Page 2 → from=25, Page 3 → from=50, etc.
-    from_val = (request.page - 1) * request.page_size
+    # OpenSearch has hard limit: from + size ≤ 10,000
+    # Any request beyond this causes "failed to parse field [should]" error
+    #
+    # SAFE APPROACH:
+    #   - Calculate max allowed page based on MAX_OS_WINDOW
+    #   - If requested page > max_safe_page → return empty (don't even try)
+    #   - Normal page calculation for valid pages
     
-    # Safety check: OpenSearch has max window of 10,000 (from + size ≤ 10000)
-    # If user requests page 999, we cap it at max
-    if from_val + request.page_size > MAX_OS_WINDOW:
-        from_val = MAX_OS_WINDOW - request.page_size
+    # Calculate maximum safe page number based on page_size
+    # E.g., 10000 / 100 = 100 max pages
+    max_safe_page = MAX_OS_WINDOW // request.page_size
+    
+    # 🆕 EARLY RETURN: If user clicks beyond safe pages, return empty gracefully
+    # This is better than broken OpenSearch query errors
+    if request.page > max_safe_page:
+        logger.warning(
+            f"⚠️ Page {request.page} exceeds max safe page {max_safe_page}. Returning empty."
+        )
+        return {
+            "total_results": 0,
+            "total_pages": max_safe_page,
+            "current_page": request.page,
+            "pagination_html": build_pagination_html(max_safe_page, request.page),
+            "results": [],
+            "facets": {"categories": []}
+        }
+    
+    # Normal offset calculation for valid page
+    from_val = (request.page - 1) * request.page_size
     
     # =====================================================================
     # STEP 4: EXTRACT SEMANTIC INFO FROM QUERY
@@ -361,8 +382,12 @@ async def execute_search(request: SearchRequest) -> dict:
     # ---------------------------------------------------------------------
     if vector:
         # k = how many similar products to find
-        # Formula: at least 200, plus buffer for pagination
-        k_val = max(KNN_MIN_K, from_val + request.page_size + KNN_BUFFER)
+        # 🆕 SAFETY FIX: Cap k at MAX_OS_WINDOW to prevent OpenSearch errors
+        # Original formula: max(KNN_MIN_K, from_val + page_size + KNN_BUFFER)
+        # Problem: When from_val was near max, k became invalid
+        # Fix: Ensure k stays safely within bounds
+        desired_k = max(KNN_MIN_K, from_val + request.page_size + KNN_BUFFER)
+        k_val = min(desired_k, MAX_OS_WINDOW)  # 🆕 SAFETY CAP
         
         semantic_shoulds.append({
             "knn": {
@@ -562,8 +587,11 @@ async def execute_search(request: SearchRequest) -> dict:
     hits = response.get("hits", {})
     total_hits = hits.get("total", {}).get("value", 0)
     
-    # Calculate total pages (ceiling division)
-    total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
+    # 🆕 Calculate total pages (ceiling division) WITH SAFETY CAP
+    # Even if OpenSearch reports 23,761 results, we can only paginate through 10,000
+    # So cap total_pages to prevent users from clicking pages that would fail
+    raw_total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
+    total_pages = min(raw_total_pages, max_safe_page)  # 🆕 SAFETY CAP
     
     # Get max score for normalization
     max_score = hits.get("max_score")
