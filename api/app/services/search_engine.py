@@ -3,17 +3,6 @@
 👑 MAIN SEARCH ENGINE
 =====================================================================================
 STRICT MODE: Only returns highly relevant products with accurate pagination.
-
-HOW PAGINATION WORKS NOW:
-  1. Run count query WITH min_score → get REAL count of relevant products
-  2. Calculate total_pages based on REAL count
-  3. Only show pages that will actually have results
-  4. Last page always has actual products (may be partial)
-
-Example:
-  - Search "shoes" with min_score=15 → Real count: 487 products
-  - Pages shown: 1, 2, 3, 4, 5 (page 5 has 87 products)
-  - No garbage pages, no "0 products found" errors
 =====================================================================================
 """
 
@@ -44,11 +33,11 @@ from app.core.constants import (
     SEARCH_CACHE_TTL,
     CACHE_VERSION,
     FACET_CATEGORIES_SIZE,
-    FACET_BRANDS_SIZE,      # 🆕
-    FACET_COLORS_SIZE,      # 🆕
-    FACET_SIZES_SIZE,       # 🆕
-    FACET_STORAGE_SIZE,     # 🆕
-    FACET_RAM_SIZE,         # 🆕
+    FACET_BRANDS_SIZE,      
+    FACET_COLORS_SIZE,      
+    FACET_SIZES_SIZE,       
+    FACET_STORAGE_SIZE,     
+    FACET_RAM_SIZE,         
     MAX_CATEGORY_FILTERS,
     MAX_COLOR_FILTERS,
     MAX_SIZE_FILTERS,
@@ -60,26 +49,20 @@ from app.core.constants import (
     DEMO_SALES_BASE,
     DEMO_SALES_RANGE,
     SCORE_DISPLAY_MIN,
-    FACET_MIN_DOC_COUNT,
     SCORE_DISPLAY_RANGE,
 )
 logger = logging.getLogger(__name__)
 
-
 # =========================================================================
 # 🆕 MINIMUM RELEVANCE THRESHOLD
 # =========================================================================
-# Products scoring below this are filtered out.
-# Tuned based on boost values to keep only meaningful matches.
-# =========================================================================
-MIN_RELEVANCE_SCORE = 45.0  # Raised from 15.0 to cut off the garbage tail
+MIN_RELEVANCE_SCORE = 45.0  
 
 
 # =========================================================================
 # 👑 MAIN SEARCH FUNCTION
 # =========================================================================
 async def execute_search(request: SearchRequest) -> dict:
-    """Executes a full product search. STRICT MODE: only relevant products."""
     
     # STEP 1: NORMALIZE PAGE SIZE
     request.page_size = DEFAULT_PAGE_SIZE if request.page_size != SMALL_PAGE_SIZE else SMALL_PAGE_SIZE
@@ -97,7 +80,6 @@ async def execute_search(request: SearchRequest) -> dict:
     max_safe_page = MAX_OS_WINDOW // request.page_size
     
     if request.page > max_safe_page:
-        logger.warning(f"⚠️ Page {request.page} exceeds max safe page {max_safe_page}.")
         return {
             "total_results": 0,
             "total_pages": max_safe_page,
@@ -229,7 +211,6 @@ async def execute_search(request: SearchRequest) -> dict:
             if p_range:
                 filters.append({"range": {"price": p_range}})
         
-        # 🆕 STORAGE FILTER (multi-select) — for phones/laptops
         if getattr(request.filters, "storage", None):
             storage_values = [str(s).strip() for s in request.filters.storage[:10] if str(s).strip()]
             if storage_values:
@@ -237,7 +218,6 @@ async def execute_search(request: SearchRequest) -> dict:
                     "terms": {"storage": storage_values}
                 })
         
-        # 🆕 RAM FILTER (multi-select) — for computers
         if getattr(request.filters, "ram", None):
             ram_values = [str(r).strip() for r in request.filters.ram[:10] if str(r).strip()]
             if ram_values:
@@ -259,13 +239,13 @@ async def execute_search(request: SearchRequest) -> dict:
     
     if vector:
         desired_k = max(KNN_MIN_K, from_val + request.page_size + KNN_BUFFER)
-        k_val = min(desired_k, MAX_OS_WINDOW, 300)  # Cap KNN for strict mode
+        k_val = min(desired_k, MAX_OS_WINDOW, 300)  
         semantic_shoulds.append({
             "knn": {
                 "embedding": {
                     "vector": vector,
                     "k": k_val,
-                    "boost": 0.5  # Lower KNN influence for strict mode
+                    "boost": 0.5  
                 }
             }
         })
@@ -328,16 +308,9 @@ async def execute_search(request: SearchRequest) -> dict:
             }
         }
     
-    # =====================================================================
-    # 🆕 STEP 11.5: COUNT QUERY — Get ACCURATE total (post-filter)
-    # =====================================================================
-    # Why: OpenSearch "total" counts ALL matches (pre-filter).
-    # min_score filters out weak matches, so "total" is inflated.
-    # We need real count to build correct pagination.
-    
+    # STEP 11.5: COUNT QUERY
     use_min_score = bool(vector or core_query)
     min_relevance_score = MIN_RELEVANCE_SCORE if use_min_score else 0.0
-    
     actual_total_hits = 0
     
     if use_min_score:
@@ -347,7 +320,6 @@ async def execute_search(request: SearchRequest) -> dict:
             "min_score": min_relevance_score,
             "size": 0,
         }
-        
         try:
             count_response = os_client.search(index=INDEX_NAME, body=count_query_body)
             actual_total_hits = count_response.get("hits", {}).get("total", {}).get("value", 0)
@@ -355,7 +327,6 @@ async def execute_search(request: SearchRequest) -> dict:
             logger.error(f"❌ Count query failed: {e}")
             actual_total_hits = 0
     
-    # 🆕 STEP 11.6: EARLY RETURN IF PAGE BEYOND ACTUAL RESULTS
     if use_min_score and actual_total_hits > 0:
         real_total_pages = (actual_total_hits + request.page_size - 1) // request.page_size
         real_total_pages = min(real_total_pages, max_safe_page)
@@ -371,18 +342,8 @@ async def execute_search(request: SearchRequest) -> dict:
             }
             
     # =====================================================================
-    # 🚀 STEP 11.7: DYNAMIC AUTO-SCALING FACET THRESHOLD
-    # Automatically adjusts strictness based on how many products matched!
+    # 🚀 STEP 12: BULLETPROOF OPENSEARCH QUERY
     # =====================================================================
-    dynamic_min_doc = 1
-    if actual_total_hits > 1000:
-        dynamic_min_doc = 5   # Very strict for huge result sets
-    elif actual_total_hits > 100:
-        dynamic_min_doc = 3   # Moderate strictness
-    elif actual_total_hits > 30:
-        dynamic_min_doc = 2   # Low strictness
-        
-    # STEP 12: BUILD FINAL OPENSEARCH QUERY
     os_query = {
         "from": from_val,
         "size": request.page_size,
@@ -393,13 +354,12 @@ async def execute_search(request: SearchRequest) -> dict:
         "min_score": min_relevance_score,
         
         "aggs": {
-            # 1. THE SAMPLER: The "Sweet Spot" configuration
+            # 1. THE SAMPLER: The "Sweet Spot" 300 to find valid categories
             "strict_relevance_sampler": {
                 "sampler": {
-                    "shard_size": 300  # 🚀 CHANGE THIS TO 300
+                    "shard_size": 300  
                 },
                 "aggs": {
-                    # 🚀 CHANGE THIS TO 5
                     "categories": {"terms": {"field": "category", "size": FACET_CATEGORIES_SIZE, "min_doc_count": 5}},
                     "brands": {"terms": {"field": "brand", "size": FACET_BRANDS_SIZE, "min_doc_count": 4}},
                     "colors": {"terms": {"field": "colors", "size": FACET_COLORS_SIZE, "min_doc_count": 2}},
@@ -408,7 +368,7 @@ async def execute_search(request: SearchRequest) -> dict:
                     "ram": {"terms": {"field": "ram", "size": FACET_RAM_SIZE, "min_doc_count": 2}}
                 }
             },
-            # 2. THE GLOBAL COUNTS: Gets the TRUE TOTAL numbers for the whole store
+            # 2. THE GLOBAL COUNTS: To get accurate numbers for display
             "global_categories": {"terms": {"field": "category", "size": FACET_CATEGORIES_SIZE}},
             "global_brands": {"terms": {"field": "brand", "size": FACET_BRANDS_SIZE}},
             "global_colors": {"terms": {"field": "colors", "size": FACET_COLORS_SIZE}},
@@ -435,8 +395,6 @@ async def execute_search(request: SearchRequest) -> dict:
     
     # STEP 14: PARSE RESULTS
     hits = response.get("hits", {})
-    
-    # 🆕 Use accurate count from count query when min_score is active
     if use_min_score and actual_total_hits > 0:
         total_hits = actual_total_hits
     else:
@@ -444,7 +402,6 @@ async def execute_search(request: SearchRequest) -> dict:
     
     raw_total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
     total_pages = min(raw_total_pages, max_safe_page)
-    
     max_score = hits.get("max_score")
     if not max_score or max_score == 0:
         max_score = 1.0
@@ -456,7 +413,6 @@ async def execute_search(request: SearchRequest) -> dict:
         
         raw_cats = source.get("category", [])
         clean_cats = []
-        
         if isinstance(raw_cats, str):
             clean_cats = [c.strip() for c in re.sub(r"[\[\]'\"]", "", raw_cats).split(",") if c.strip()]
         elif isinstance(raw_cats, list):
@@ -493,35 +449,28 @@ async def execute_search(request: SearchRequest) -> dict:
             "score": round(SCORE_DISPLAY_MIN + (normalized_score * SCORE_DISPLAY_RANGE), 2)
         })
     
-    # STEP 15: RE-SORT BY SCORE
     if request.sort not in ["price_asc", "price_desc"]:
         results.sort(key=lambda x: x["score"], reverse=True)
     
     # =====================================================================
-    # 🚀 STEP 16: BUILD PERFECT FACETS (SAMPLER + TRUE GLOBAL COUNTS)
+    # 🚀 STEP 16: PARSE FACETS & SORT BY RELEVANCE
     # =====================================================================
     sampled_aggs = response.get("aggregations", {}).get("strict_relevance_sampler", {})
     all_aggs = response.get("aggregations", {})
     
     def build_smart_facet_list(agg_name: str, global_agg_name: str) -> list:
-        # 1. Get the STRICTLY RELEVANT names from the sampler AND their sampler count
         sampled_buckets = sampled_aggs.get(agg_name, {}).get("buckets", [])
         
-        # Dictionary to store the relevance score (how many times it appeared in top 150)
         relevance_scores = {}
         for bucket in sampled_buckets:
             val = str(bucket.get("key", "")).strip()
             if val and val.lower() not in ["none", "default", "default title", "uncategorized", ""]:
-                # Save how many times it appeared in the strictly relevant Top 150
                 relevance_scores[val] = bucket.get("doc_count", 0)
         
         if not relevance_scores:
             return []
 
-        # 2. Get the TRUE COUNTS from the global aggregation
         global_buckets = all_aggs.get(global_agg_name, {}).get("buckets", [])
-        
-        # Map global counts for fast lookup
         global_counts = {}
         for bucket in global_buckets:
             val = str(bucket.get("key", "")).strip()
@@ -532,19 +481,14 @@ async def execute_search(request: SearchRequest) -> dict:
             result.append({
                 "value": val,
                 "label": val,
-                "count": global_counts.get(val, relevance_count), # Use true global count for display
-                "relevance": relevance_count # Store relevance for sorting
+                "count": global_counts.get(val, relevance_count), 
+                "relevance": relevance_count 
             })
             
-        # 3. 🚀 CRITICAL FIX: SORT BY RELEVANCE FIRST!
-        # This ensures the most relevant category goes to the top,
-        # instead of a loose match going to the top just because it has a bigger global number.
+        # Sort by relevance FIRST, so the most applicable categories go to the top
         result.sort(key=lambda x: (x["relevance"], x["count"]), reverse=True)
-        
-        # Clean up the 'relevance' key before sending to frontend
         return [{"value": x["value"], "label": x["label"], "count": x["count"]} for x in result]
 
-    # Automatically parse all scalable facets
     facets = {}
     
     cat_list = build_smart_facet_list("categories", "global_categories")
