@@ -383,7 +383,6 @@ async def execute_search(request: SearchRequest) -> dict:
         dynamic_min_doc = 2   # Low strictness
         
     # STEP 12: BUILD FINAL OPENSEARCH QUERY
-   # STEP 12: BUILD FINAL OPENSEARCH QUERY
     os_query = {
         "from": from_val,
         "size": request.page_size,
@@ -394,7 +393,7 @@ async def execute_search(request: SearchRequest) -> dict:
         "min_score": min_relevance_score,
         
         "aggs": {
-            # 🚀 1. THE BULLETPROOF SAMPLER (Figures out WHICH categories are valid)
+            # 1. THE SAMPLER: Gets only valid categories from the top 150 best matches (No Garbage)
             "strict_relevance_sampler": {
                 "sampler": {
                     "shard_size": 150  
@@ -408,7 +407,7 @@ async def execute_search(request: SearchRequest) -> dict:
                     "ram": {"terms": {"field": "ram", "size": FACET_RAM_SIZE, "min_doc_count": 2}}
                 }
             },
-            # 🚀 2. THE GLOBAL COUNTS (Gets the TRUE TOTAL numbers for those valid categories)
+            # 2. THE GLOBAL COUNTS: Gets the TRUE TOTAL numbers for the whole store
             "global_categories": {"terms": {"field": "category", "size": FACET_CATEGORIES_SIZE}},
             "global_brands": {"terms": {"field": "brand", "size": FACET_BRANDS_SIZE}},
             "global_colors": {"terms": {"field": "colors", "size": FACET_COLORS_SIZE}},
@@ -417,6 +416,7 @@ async def execute_search(request: SearchRequest) -> dict:
             "global_ram": {"terms": {"field": "ram", "size": FACET_RAM_SIZE}}
         }
     }
+    
     # STEP 13: EXECUTE MAIN QUERY
     try:
         response = os_client.search(index=INDEX_NAME, body=os_query)
