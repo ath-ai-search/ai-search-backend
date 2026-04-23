@@ -33,8 +33,7 @@ from app.core.constants import (
 )
 logger = logging.getLogger(__name__)
 
-MIN_RELEVANCE_SCORE = 15.0  
-
+MIN_RELEVANCE_SCORE = 25.0  # 🆕 Stricter threshold — removes weak vector matches
 async def execute_search(request: SearchRequest) -> dict:
     _start_time = time.perf_counter()  # 🆕 Start timing    
     request.page_size = DEFAULT_PAGE_SIZE if request.page_size != SMALL_PAGE_SIZE else SMALL_PAGE_SIZE
@@ -126,8 +125,7 @@ async def execute_search(request: SearchRequest) -> dict:
     semantic_shoulds = []
     if vector:
         k_val = min(max(KNN_MIN_K, from_val + request.page_size + KNN_BUFFER), MAX_OS_WINDOW, 300)  
-        semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": k_val, "boost": 0.5}}})
-    
+        semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": k_val, "boost": 0.3}}})    
     for item in multi_items:
         semantic_shoulds.extend([
             {"match_phrase": {"name": {"query": item, "boost": BOOST_NAME_PHRASE}}},
@@ -143,8 +141,26 @@ async def execute_search(request: SearchRequest) -> dict:
             score_functions.append({"filter": {"match": {"name": acc}}, "weight": ACCESSORY_DEMOTION_WEIGHT})
             score_functions.append({"filter": {"match": {"category": acc}}, "weight": ACCESSORY_DEMOTION_WEIGHT})
     
+    # 🆕 MUST clause — query words must appear in name/category/brand (75% match)
+    # Prevents garbage like Jewelry/Toys when searching "dress for women"
+    must_clauses = []
+    if core_query:
+        for item in multi_items:
+            must_clauses.append({
+                "multi_match": {
+                    "query": item,
+                    "fields": ["name^3", "category^2", "brand", "description"],
+                    "type": "best_fields",
+                    "operator": "or",
+                    "minimum_should_match": "75%"
+                }
+            })
+    
     if vector or core_query:
-        query_body = {"query": {"function_score": {"query": {"bool": {"should": semantic_shoulds, "must_not": must_nots, "minimum_should_match": 1, "filter": filters}}, "functions": score_functions, "score_mode": "multiply", "boost_mode": "multiply"}}}
+        bool_query = {"should": semantic_shoulds, "must_not": must_nots, "minimum_should_match": 1, "filter": filters}
+        if must_clauses:
+            bool_query["must"] = must_clauses
+        query_body = {"query": {"function_score": {"query": {"bool": bool_query}, "functions": score_functions, "score_mode": "multiply", "boost_mode": "multiply"}}}
     else:
         query_body = {"query": {"bool": {"must": [{"match_all": {}}], "filter": filters, "must_not": must_nots}}}
     
