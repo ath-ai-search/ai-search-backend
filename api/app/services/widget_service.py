@@ -151,10 +151,11 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     if not active_search_term and valid_recents:
         active_search_term = valid_recents[0].lower()
     
-    # Absolute fallback: New user with empty search and no history
-    # We show "luxury sunglasses" — a safe, aesthetic default
+    # 🆕 NEW USER WITH NO HISTORY: Return empty response (no suggestions)
+    # Old behavior: showed "luxury sunglasses" default — confused users
+    # New behavior: show NOTHING until user types or has history
     if not active_search_term:
-        active_search_term = DEFAULT_SEARCH_TERM
+        return {"html": ""}
     
     # =====================================================================
     # STEP 4: COMPETITOR INTERCEPTOR
