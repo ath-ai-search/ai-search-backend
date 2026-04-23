@@ -160,7 +160,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     # New behavior: show NOTHING until user types or has history
     if not active_search_term:
         _elapsed_ms = (time.perf_counter() - _start_time) * 1000
-        logger.info(f"⏱️  AUTOCOMPLETE | query='(empty)' | recents={len(valid_recents)} | time={_elapsed_ms:.2f}ms | mode=empty")
+        print(f"⏱️  AUTOCOMPLETE | query='(empty)' | recents={len(valid_recents)} | time={_elapsed_ms:.2f}ms | mode=empty", flush=True)
         return {"html": ""}
     
     # =====================================================================
@@ -460,6 +460,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     
 # 🆕 LOG TIMING
     _elapsed_ms = (time.perf_counter() - _start_time) * 1000
-    logger.info(f"⏱️  AUTOCOMPLETE | query='{active_search_term}' | recents={len(valid_recents)} | time={_elapsed_ms:.2f}ms | mode=full")
+    print(f"⏱️  AUTOCOMPLETE | query='{active_search_term}' | recents={len(valid_recents)} | time={_elapsed_ms:.2f}ms | mode=full", flush=True)
     
     return {"html": master_html}

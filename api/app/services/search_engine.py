@@ -310,6 +310,6 @@ async def execute_search(request: SearchRequest) -> dict:
     
     # 🆕 LOG TIMING
     _elapsed_ms = (time.perf_counter() - _start_time) * 1000
-    logger.info(f"⏱️  SEARCH | query='{request.query}' | page={request.page} | total={total_hits} | time={_elapsed_ms:.2f}ms")
+    print(f"⏱️  SEARCH | query='{request.query}' | page={request.page} | total={total_hits} | time={_elapsed_ms:.2f}ms", flush=True)
     
     return final_response
