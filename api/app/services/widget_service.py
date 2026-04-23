@@ -32,6 +32,7 @@ SPECIAL FEATURES:
 
 import os
 import json
+import time
 import logging
 
 # External clients
@@ -120,6 +121,9 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
         dict: {"html": "<style>...</style><div>...suggestions...</div>..."}
     """
     
+    # 🆕 START TIMING
+    _start_time = time.perf_counter()
+    
     # =====================================================================
     # STEP 1: CLEAN AND PARSE INPUT
     # =====================================================================
@@ -155,6 +159,8 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     # Old behavior: showed "luxury sunglasses" default — confused users
     # New behavior: show NOTHING until user types or has history
     if not active_search_term:
+        _elapsed_ms = (time.perf_counter() - _start_time) * 1000
+        logger.info(f"⏱️  AUTOCOMPLETE | query='(empty)' | recents={len(valid_recents)} | time={_elapsed_ms:.2f}ms | mode=empty")
         return {"html": ""}
     
     # =====================================================================
@@ -451,5 +457,9 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     master_html = master_html.replace("__STYLES__", MEGA_MENU_STYLES)
     master_html = master_html.replace("__SCRIPTS__", MEGA_MENU_SCRIPTS)
     master_html = master_html.replace("__SIDEBAR__", sidebar_html)
+    
+# 🆕 LOG TIMING
+    _elapsed_ms = (time.perf_counter() - _start_time) * 1000
+    logger.info(f"⏱️  AUTOCOMPLETE | query='{active_search_term}' | recents={len(valid_recents)} | time={_elapsed_ms:.2f}ms | mode=full")
     
     return {"html": master_html}

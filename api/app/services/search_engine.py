@@ -9,6 +9,7 @@ STRICT MODE: Pure Facets, True Global Counts, Perfect Sorting.
 import json
 import hashlib
 import logging
+import time
 import re
 
 from app.config import os_client, INDEX_NAME, openai_client
@@ -35,7 +36,7 @@ logger = logging.getLogger(__name__)
 MIN_RELEVANCE_SCORE = 15.0  
 
 async def execute_search(request: SearchRequest) -> dict:
-    
+    _start_time = time.perf_counter()  # 🆕 Start timing    
     request.page_size = DEFAULT_PAGE_SIZE if request.page_size != SMALL_PAGE_SIZE else SMALL_PAGE_SIZE
     
     request_data = request.model_dump()
@@ -306,4 +307,9 @@ async def execute_search(request: SearchRequest) -> dict:
     }
     
     await cache_set(cache_key, final_response, ttl_seconds=SEARCH_CACHE_TTL)
+    
+    # 🆕 LOG TIMING
+    _elapsed_ms = (time.perf_counter() - _start_time) * 1000
+    logger.info(f"⏱️  SEARCH | query='{request.query}' | page={request.page} | total={total_hits} | time={_elapsed_ms:.2f}ms")
+    
     return final_response
