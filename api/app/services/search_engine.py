@@ -141,18 +141,17 @@ async def execute_search(request: SearchRequest) -> dict:
             score_functions.append({"filter": {"match": {"name": acc}}, "weight": ACCESSORY_DEMOTION_WEIGHT})
             score_functions.append({"filter": {"match": {"category": acc}}, "weight": ACCESSORY_DEMOTION_WEIGHT})
     
-    # 🆕 MUST clause — query words must appear in name/category/brand (75% match)
-    # Prevents garbage like Jewelry/Toys when searching "dress for women"
+    # 🆕 STRICT MUST CLAUSE: All words must match! 
+    # Prevents garbage like "Jewelry" showing up when you search for "dresses"
     must_clauses = []
     if core_query:
         for item in multi_items:
             must_clauses.append({
                 "multi_match": {
                     "query": item,
-                    "fields": ["name^3", "category^2", "brand", "description"],
-                    "type": "best_fields",
-                    "operator": "or",
-                    "minimum_should_match": "75%"
+                    "fields": ["name^5", "category^3", "brand", "description"],
+                    "type": "cross_fields",
+                    "operator": "and"
                 }
             })
     
