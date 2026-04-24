@@ -1,6 +1,32 @@
 """
 =====================================================================================
-🌐 MEGA MENU WIDGET SERVICE (0.2s Ultra-Fast Vector AI)
+🌐 MEGA MENU WIDGET SERVICE (Amazon-Style)
+=====================================================================================
+This file generates the HTML for the search dropdown autocomplete widget.
+
+DESIGN: Pure Amazon-style
+  - Only text suggestions with search icons
+  - Bold highlighting of typed portion
+  - NO product cards grid (removed for clean UX)
+
+WORKFLOW:
+  1. Determine "active search term" (user's query OR recent OR default)
+  2. Run quick OpenSearch query ONLY to extract product thumbnails
+     (thumbnails are mixed into suggestions for visual richness)
+  3. Generate AI-powered autocomplete suggestions
+  4. Build sidebar HTML with suggestions + bold highlighting
+  5. Load template files and fill placeholders
+  6. Return final HTML string
+
+WHY WE STILL RUN OPENSEARCH:
+  Even though we don't show products, we use their thumbnails
+  as icons for some suggestions (makes dropdown more engaging).
+  This is a BACKGROUND task — user doesn't see the products.
+
+SPECIAL FEATURES:
+  - Competitor interceptor (Best Buy → TVs, Amazon → MacBooks)
+  - Empty search fallback → "luxury sunglasses" default
+  - Recent searches integration (uses user's last search if empty)
 =====================================================================================
 """
 
@@ -8,13 +34,23 @@ import os
 import json
 import time
 import logging
-import hashlib
-import re
+import hashlib  # 🚀 ADDED FOR CACHE SPEED
+import re       # 🚀 ADDED FOR IMAGE FIXES
 
 # External clients
 from app.config import os_client, INDEX_NAME, openai_client
+
+# NLP brain
 from app.nlp.semantic_matrix import extract_semantic_matrix
-from app.prompts.autocomplete_suggestions_prompt import build_fallback_suggestions
+
+# AI prompts (separated)
+from app.prompts.autocomplete_suggestions_prompt import (
+    AUTOCOMPLETE_SYSTEM_PROMPT,
+    build_autocomplete_user_prompt,
+    build_fallback_suggestions,
+)
+
+# 🚀 ADDED FOR CACHE SPEED
 from app.utils.cache import cache_get, cache_set
 
 # Constants
@@ -25,16 +61,38 @@ from app.core.constants import (
     WIDGET_BOOST_MULTI_MATCH,
     WIDGET_ACCESSORY_DEMOTION_WEIGHT,
     KNN_MIN_K,
+    AI_CHAT_MODEL,
     AI_EMBEDDING_MODEL,
+    AI_TEMPERATURE_BALANCED,
     MAX_AUTOCOMPLETE_SUGGESTIONS,
     DEFAULT_SEARCH_TERM,
-    AUTOCOMPLETE_CACHE_TTL  
 )
 
 logger = logging.getLogger(__name__)
 
+# =====================================================================
+# 🚀 ADDED FOR IMAGES: SMART URL EXTRACTOR
+# =====================================================================
+def extract_clean_image_url(image_data):
+    if not image_data:
+        return None
+    raw_str = str(image_data[0]) if isinstance(image_data, list) and len(image_data) > 0 else str(image_data)
+    
+    match = re.search(r'(https?://[^\s\'"\]]+)', raw_str)
+    if match: return match.group(1)
+        
+    match_rel = re.search(r'(/wp-content/[^\s\'"\]]+)', raw_str)
+    if match_rel: return f"https://venuemarketplace.xyz{match_rel.group(1)}"
+        
+    clean_img = raw_str.strip("['\"] ")
+    if clean_img.startswith("/"): return f"https://venuemarketplace.xyz{clean_img}"
+    if clean_img.startswith("//"): return f"https:{clean_img}"
+        
+    return clean_img if len(clean_img) > 5 else None
+
+
 # =========================================================================
-# 📂 TEMPLATE FILE LOADER
+# 📂 TEMPLATE FILE LOADER (Cached at Module Load)
 # =========================================================================
 TEMPLATE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -56,115 +114,194 @@ MEGA_MENU_STYLES = _load_template_file("styles.css")
 MEGA_MENU_SCRIPTS = _load_template_file("scripts.js")
 
 
-# =====================================================================
-# 🚀 SMART URL EXTRACTOR
-# =====================================================================
-def extract_clean_image_url(image_data):
-    if not image_data:
-        return None
-        
-    raw_str = str(image_data[0]) if isinstance(image_data, list) and len(image_data) > 0 else str(image_data)
-    
-    match = re.search(r'(https?://[^\s\'"\]]+)', raw_str)
-    if match:
-        return match.group(1)
-        
-    match_rel = re.search(r'(/wp-content/[^\s\'"\]]+)', raw_str)
-    if match_rel:
-        return f"https://venuemarketplace.xyz{match_rel.group(1)}"
-        
-    clean_img = raw_str.strip("['\"] ")
-    if clean_img.startswith("/"):
-        return f"https://venuemarketplace.xyz{clean_img}"
-    if clean_img.startswith("//"):
-        return f"https:{clean_img}"
-        
-    return clean_img if len(clean_img) > 5 else None
-
-
 # =========================================================================
 # 🌐 MAIN WIDGET FUNCTION
 # =========================================================================
 async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> dict:
     
+    # 🆕 START TIMING
     _start_time = time.perf_counter()
     
+    # =====================================================================
+    # STEP 1: CLEAN AND PARSE INPUT
+    # =====================================================================
     clean_query = query_string.strip().lower()
-    if clean_query == "*": clean_query = ""
     
+    if clean_query == "*":
+        clean_query = ""
+    
+    # =====================================================================
+    # STEP 2: PARSE RECENT SEARCHES
+    # =====================================================================
     recent_list = recent_searches.split("||")[:3] if recent_searches else []
-    valid_recents = [r.strip() for r in recent_list if r.strip() and r.strip().lower() not in ["null", "undefined", "[]", ""]]
+    valid_recents = [
+        r.strip()
+        for r in recent_list
+        if r.strip() and r.strip().lower() not in ["null", "undefined", "[]", ""]
+    ]
     
+    # =====================================================================
+    # STEP 3: DETERMINE ACTIVE SEARCH TERM
+    # =====================================================================
     active_search_term = clean_query
+    
     if not active_search_term and valid_recents:
         active_search_term = valid_recents[0].lower()
     
     if not active_search_term:
+        _elapsed_ms = (time.perf_counter() - _start_time) * 1000
+        print(f"⏱️  AUTOCOMPLETE | query='(empty)' | recents={len(valid_recents)} | time={_elapsed_ms:.2f}ms | mode=empty", flush=True)
         return {"html": ""}
     
-    if active_search_term == "best buy": active_search_term = "tv"
-    elif active_search_term == "amazon": active_search_term = "macbook"
-    
-    # 🚀 CACHE BUSTER V6 (Forces instant update for new speed logic)
+    # =====================================================================
+    # STEP 4: COMPETITOR INTERCEPTOR
+    # =====================================================================
+    if active_search_term == "best buy":
+        active_search_term = "tv"
+    elif active_search_term == "amazon":
+        active_search_term = "macbook"
+
+    # =====================================================================
+    # 🚀 ADDED FOR SPEED: THE CACHE SHIELD 🚀
+    # =====================================================================
     cache_string = f"{active_search_term}|{recent_searches}"
-    cache_key = f"widget_mega_menu_v6:{hashlib.md5(cache_string.encode()).hexdigest()}"
+    cache_key = f"widget_mega_menu_original_v1:{hashlib.md5(cache_string.encode()).hexdigest()}"
     
     cached_result = await cache_get(cache_key)
     if cached_result:
+        _elapsed_ms = (time.perf_counter() - _start_time) * 1000
+        print(f"⚡ CACHE HIT | query='{active_search_term}' | time={_elapsed_ms:.2f}ms | mode=FAST", flush=True)
         return cached_result
-
-    # STEP 4: FAST VECTOR EMBEDDING (Takes ~150ms)
+    
+    # =====================================================================
+    # STEP 5: GENERATE VECTOR EMBEDDING
+    # =====================================================================
     vector = None
     try:
-        resp = await openai_client.embeddings.create(input=active_search_term, model=AI_EMBEDDING_MODEL)
+        resp = await openai_client.embeddings.create(
+            input=active_search_term,
+            model=AI_EMBEDDING_MODEL
+        )
         vector = resp.data[0].embedding
-    except Exception:
-        pass
-        
+    except Exception as e:
+        logger.warning(f"⚠️ Widget embedding failed: {e}")
+    
+    # =====================================================================
+    # STEP 6: EXTRACT SEMANTIC MATRIX
+    # =====================================================================
     matrix = extract_semantic_matrix(active_search_term)
     core_query = matrix["core_query"]
     
-    # STEP 5: FAST OPENSEARCH QUERY (Takes ~20ms)
+    # =====================================================================
+    # STEP 7: BUILD OPENSEARCH FILTERS (for thumbnail fetch)
+    # =====================================================================
     filters = [{"term": {"in_stock": True}}]
     must_nots = []
     
     if matrix["min_price"] is not None or matrix["max_price"] is not None:
         price_range = {}
-        if matrix["min_price"] is not None: price_range["gte"] = matrix["min_price"]
-        if matrix["max_price"] is not None: price_range["lte"] = matrix["max_price"]
+        if matrix["min_price"] is not None:
+            price_range["gte"] = matrix["min_price"]
+        if matrix["max_price"] is not None:
+            price_range["lte"] = matrix["max_price"]
         filters.append({"range": {"price": price_range}})
     
     if matrix["is_sale"]:
         filters.append({"range": {"sale_price": {"gt": 0}}})
     
+    # =====================================================================
+    # STEP 8: BUILD SCORING (BOOST) CLAUSES
+    # =====================================================================
     semantic_shoulds = []
+    
     if vector:
-        semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": KNN_MIN_K}}})
-        
+        semantic_shoulds.append({
+            "knn": {
+                "embedding": {
+                    "vector": vector,
+                    "k": KNN_MIN_K
+                }
+            }
+        })
+    
     semantic_shoulds.extend([
-        {"match_phrase_prefix": {"name": {"query": core_query, "max_expansions": 10, "boost": 10}}},
-        {"match": {"category": {"query": core_query, "boost": 8}}},
-        {"match": {"brand": {"query": core_query, "boost": 5}}},
-        {"multi_match": {"query": core_query, "fields": ["name^5", "brand^4", "category^3"], "operator": "and"}}
+        {
+            "match_phrase": {
+                "brand": {
+                    "query": core_query,
+                    "boost": WIDGET_BOOST_BRAND
+                }
+            }
+        },
+        {
+            "match": {
+                "category": {
+                    "query": core_query,
+                    "boost": WIDGET_BOOST_CATEGORY
+                }
+            }
+        },
+        {
+            "match_phrase": {
+                "name": {
+                    "query": core_query,
+                    "boost": WIDGET_BOOST_NAME
+                }
+            }
+        }
     ])
     
+    if core_query:
+        semantic_shoulds.append({
+            "multi_match": {
+                "query": core_query,
+                "fields": ["name^5", "brand^4", "category^3"],
+                "operator": "and",
+                "boost": WIDGET_BOOST_MULTI_MATCH
+            }
+        })
+    
+    # =====================================================================
+    # STEP 9: ACCESSORY DEMOTION
+    # =====================================================================
     score_functions = []
     if not matrix["has_accessory_intent"]:
         for acc in matrix["accessory_keywords"]:
-            score_functions.append({"filter": {"match": {"name": acc}}, "weight": WIDGET_ACCESSORY_DEMOTION_WEIGHT})
-            score_functions.append({"filter": {"match": {"category": acc}}, "weight": WIDGET_ACCESSORY_DEMOTION_WEIGHT})
+            score_functions.append({
+                "filter": {"match": {"name": acc}},
+                "weight": WIDGET_ACCESSORY_DEMOTION_WEIGHT
+            })
+            score_functions.append({
+                "filter": {"match": {"category": acc}},
+                "weight": WIDGET_ACCESSORY_DEMOTION_WEIGHT
+            })
     
+    # =====================================================================
+    # STEP 10: FINAL OPENSEARCH QUERY (for thumbnails only)
+    # =====================================================================
     os_query = {
-        "size": 15,  
-        "_source": ["name", "images"], 
+        "size": 10,  
+        "_source": ["images"],  
         "query": {
             "function_score": {
-                "query": {"bool": {"should": semantic_shoulds, "minimum_should_match": 1, "filter": filters, "must_not": must_nots}},
-                "functions": score_functions, "score_mode": "multiply", "boost_mode": "multiply"
+                "query": {
+                    "bool": {
+                        "should": semantic_shoulds,
+                        "minimum_should_match": 1,
+                        "filter": filters,
+                        "must_not": must_nots
+                    }
+                },
+                "functions": score_functions,
+                "score_mode": "multiply",
+                "boost_mode": "multiply"
             }
         }
     }
     
+    # =====================================================================
+    # STEP 11: EXECUTE SEARCH (background — for thumbnails)
+    # =====================================================================
     try:
         response = os_client.search(index=INDEX_NAME, body=os_query)
         hits = response.get("hits", {}).get("hits", [])
@@ -173,94 +310,94 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
         hits = []
     
     # =====================================================================
-    # 🧠 THE 0.2 SECOND AI SMART SWITCH (No Slow Chat AI)
+    # STEP 12: GENERATE AI-POWERED AUTOCOMPLETE SUGGESTIONS
     # =====================================================================
-    word_count = len(active_search_term.split())
-    is_complex_query = word_count >= 3
-    
     ai_suggestions = []
-
-    if is_complex_query:
-        # --- MODE 1: PURE VECTOR AI (~200ms) ---
-        seen_names = set()
-        for hit in hits:
-            name = hit.get("_source", {}).get("name", "")
-            clean_name = str(name).strip()
-            lower_name = clean_name.lower()
-            
-            if lower_name and lower_name not in seen_names:
-                seen_names.add(lower_name)
-                # For complex queries, show a slightly longer, highly relevant product name
-                short_title = " ".join(clean_name.split()[:6]) 
-                ai_suggestions.append(short_title)
-                
-                if len(ai_suggestions) >= MAX_AUTOCOMPLETE_SUGGESTIONS:
-                    break
-                    
-        if not ai_suggestions:
-            ai_suggestions = build_fallback_suggestions(active_search_term)
-            
-    else:
-        # --- MODE 2: LIGHTNING FAST PREFIX (~20ms) ---
-        seen_names = set()
-        for hit in hits:
-            name = hit.get("_source", {}).get("name", "")
-            clean_name = str(name).strip()
-            lower_name = clean_name.lower()
-            
-            if lower_name and lower_name not in seen_names:
-                seen_names.add(lower_name)
-                # Shorten simple queries to 4 words
-                short_title = " ".join(clean_name.split()[:4])
-                ai_suggestions.append(short_title)
-                
-                if len(ai_suggestions) >= MAX_AUTOCOMPLETE_SUGGESTIONS:
-                    break
-
-        if not ai_suggestions:
-            ai_suggestions = build_fallback_suggestions(active_search_term)
-
+    try:
+        llm_suggestion_response = await openai_client.chat.completions.create(
+            model=AI_CHAT_MODEL,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": AUTOCOMPLETE_SYSTEM_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": build_autocomplete_user_prompt(active_search_term)
+                }
+            ],
+            temperature=AI_TEMPERATURE_BALANCED,  
+            max_tokens=400
+        )
+        
+        parsed_suggestions = json.loads(llm_suggestion_response.choices[0].message.content)
+        ai_suggestions = parsed_suggestions.get("suggestions", [])[:MAX_AUTOCOMPLETE_SUGGESTIONS]
+    except Exception as e:
+        logger.error(f"❌ AI Suggestion Error: {e}")
+        ai_suggestions = build_fallback_suggestions(active_search_term)
+    
     # =====================================================================
-    # 🚀 BULLETPROOF IMAGE COLLECTOR
+    # 🚀 STEP 13 ADDED FOR IMAGES: COLLECT PRODUCT THUMBNAILS WITH FIX
     # =====================================================================
     product_thumbs = []
     seen_thumbs = set()
     
     for hit in hits:
         images = hit.get("_source", {}).get("images", [])
+        
+        # USE OUR NEW SMART EXTRACTOR HERE
         thumb_url = extract_clean_image_url(images)
         
         if thumb_url and thumb_url not in seen_thumbs:
             seen_thumbs.add(thumb_url)
             product_thumbs.append(thumb_url)
+            
             if len(product_thumbs) >= len(ai_suggestions):
                 break
     
     # =====================================================================
-    # 🚀 SIDEBAR HTML BUILDER
+    # STEP 14: BUILD SIDEBAR HTML (AI Suggestions — Amazon Style)
     # =====================================================================
     sidebar_html = ""
     thumb_used = 0
     
+    # Fallback JS to prevent broken image squares from showing up
     fallback_js = "this.onerror=null; this.outerHTML='<i class=&quot;fas fa-search&quot; style=&quot;color:#9ca3af; width:24px; font-size:14px; text-align:center; display:inline-block;&quot;></i>';"
     
     for i, suggestion in enumerate(ai_suggestions):
         safe_suggestion = suggestion.replace("'", "\\'")
-        click_js = f"document.getElementById('search_query').value='{safe_suggestion}'; const btn=document.getElementById('searchBtn'); if(btn) btn.click(); else window.location.href='/search.php?search_query={safe_suggestion}&section=content';"
+        
+        click_js = (
+            f"document.getElementById('search_query').value='{safe_suggestion}'; "
+            f"const btn=document.getElementById('searchBtn'); "
+            f"if(btn) btn.click(); "
+            f"else window.location.href='/search.php?search_query={safe_suggestion}&section=content';"
+        )
         
         if thumb_used < len(product_thumbs):
             thumb_url = product_thumbs[thumb_used]
             thumb_used += 1
-            icon_html = f'<img src="{thumb_url}" onerror="{fallback_js}" style="width:24px; height:24px; object-fit:contain; border-radius:3px; flex-shrink:0;">'
+            # ADDED THE ONERROR FIX HERE
+            icon_html = (
+                f'<img src="{thumb_url}" onerror="{fallback_js}" style="width:24px; height:24px; '
+                f'object-fit:contain; border-radius:3px; flex-shrink:0;">'
+            )
         else:
-            icon_html = '<i class="fas fa-search" style="color:#9ca3af; width:24px; font-size: 14px; text-align:center; display:inline-block;"></i>'
+            icon_html = (
+                '<i class="fas fa-search" style="color:#9ca3af; '
+                'width:24px; font-size: 14px; text-align:center; display:inline-block;"></i>'
+            )
         
         q = active_search_term.lower()
         s_lower = suggestion.lower()
         
         if q in s_lower:
             idx = s_lower.index(q)
-            highlighted = f"{suggestion[:idx+len(q)]}<b>{suggestion[idx+len(q):]}</b>"
+            highlighted = (
+                f"{suggestion[:idx+len(q)]}" +           
+                f"<b>{suggestion[idx+len(q):]}</b>"      
+            )
         else:
             highlighted = f"<b>{suggestion}</b>"
         
@@ -273,15 +410,20 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
         </div>
         """
     
+# =====================================================================
+    # STEP 15: ASSEMBLE FINAL HTML FROM TEMPLATE
+    # =====================================================================
     master_html = MEGA_MENU_TEMPLATE
     master_html = master_html.replace("__STYLES__", MEGA_MENU_STYLES)
     master_html = master_html.replace("__SCRIPTS__", MEGA_MENU_SCRIPTS)
     master_html = master_html.replace("__SIDEBAR__", sidebar_html)
     
+    # 🚀 ADDED FOR CACHE SPEED: SAVE TO REDIS FOR 1 HOUR
     final_response = {"html": master_html}
-    await cache_set(cache_key, final_response, ttl_seconds=AUTOCOMPLETE_CACHE_TTL)
+    await cache_set(cache_key, final_response, ttl_seconds=3600)
     
+# 🆕 LOG TIMING
     _elapsed_ms = (time.perf_counter() - _start_time) * 1000
-    print(f"🚀 AUTOCOMPLETE (0.2s VECTOR AI) | query='{active_search_term}' | time={_elapsed_ms:.2f}ms", flush=True)
-
+    print(f"⏱️  AUTOCOMPLETE | query='{active_search_term}' | recents={len(valid_recents)} | time={_elapsed_ms:.2f}ms | mode=full", flush=True)
+    
     return final_response
