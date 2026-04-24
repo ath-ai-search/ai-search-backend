@@ -9,7 +9,7 @@ import json
 import time
 import logging
 import hashlib
-import re  # 🚀 SHUBAM WE ADDED THIS: For bulletproof URL extraction
+import re
 
 # External clients
 from app.config import os_client, INDEX_NAME, openai_client
@@ -63,27 +63,22 @@ MEGA_MENU_SCRIPTS = _load_template_file("scripts.js")
 
 
 # =====================================================================
-# 🚀 SMART URL EXTRACTOR (Fixes the Bracket Bug!)
+# 🚀 SMART URL EXTRACTOR
 # =====================================================================
 def extract_clean_image_url(image_data):
-    """Safely extracts a real URL even if the DB sends messy stringified arrays."""
     if not image_data:
         return None
         
-    # Convert to string to handle both lists and stringified lists
     raw_str = str(image_data[0]) if isinstance(image_data, list) and len(image_data) > 0 else str(image_data)
     
-    # 1. Search for a direct http/https link hiding in the string
     match = re.search(r'(https?://[^\s\'"\]]+)', raw_str)
     if match:
         return match.group(1)
         
-    # 2. Search for a relative WordPress path and attach your domain
     match_rel = re.search(r'(/wp-content/[^\s\'"\]]+)', raw_str)
     if match_rel:
         return f"https://venuemarketplace.xyz{match_rel.group(1)}"
         
-    # 3. Clean basic junk off if regex missed
     clean_img = raw_str.strip("['\"] ")
     if clean_img.startswith("/"):
         return f"https://venuemarketplace.xyz{clean_img}"
@@ -100,15 +95,12 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     
     _start_time = time.perf_counter()
     
-    # STEP 1: CLEAN AND PARSE INPUT
     clean_query = query_string.strip().lower()
     if clean_query == "*": clean_query = ""
     
-    # STEP 2: PARSE RECENT SEARCHES
     recent_list = recent_searches.split("||")[:3] if recent_searches else []
     valid_recents = [r.strip() for r in recent_list if r.strip() and r.strip().lower() not in ["null", "undefined", "[]", ""]]
     
-    # STEP 3: DETERMINE ACTIVE SEARCH TERM
     active_search_term = clean_query
     if not active_search_term and valid_recents:
         active_search_term = valid_recents[0].lower()
@@ -119,15 +111,13 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     if active_search_term == "best buy": active_search_term = "tv"
     elif active_search_term == "amazon": active_search_term = "macbook"
     
-    # 🚀 CACHE BUSTER V4 (Forces immediate visual update)
     cache_string = f"{active_search_term}|{recent_searches}"
-    cache_key = f"widget_mega_menu_v4:{hashlib.md5(cache_string.encode()).hexdigest()}"
+    cache_key = f"widget_mega_menu_v5:{hashlib.md5(cache_string.encode()).hexdigest()}"
     
     cached_result = await cache_get(cache_key)
     if cached_result:
         return cached_result
 
-    # STEP 4: VECTOR & SEMANTICS
     vector = None
     try:
         resp = await openai_client.embeddings.create(input=active_search_term, model=AI_EMBEDDING_MODEL)
@@ -138,7 +128,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     matrix = extract_semantic_matrix(active_search_term)
     core_query = matrix["core_query"]
     
-    # STEP 5: OPENSEARCH QUERY
     filters = [{"term": {"in_stock": True}}]
     must_nots = []
     
@@ -155,10 +144,11 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     if vector:
         semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": KNN_MIN_K}}})
         
+    # 🚀 SHUBAM WE FIXED THIS: Only 'name' gets prefix matching. Category and Brand get standard matching!
     semantic_shoulds.extend([
         {"match_phrase_prefix": {"name": {"query": core_query, "max_expansions": 10, "boost": 10}}},
-        {"match_phrase_prefix": {"category": {"query": core_query, "max_expansions": 10, "boost": 8}}},
-        {"match_phrase_prefix": {"brand": {"query": core_query, "max_expansions": 10, "boost": 5}}},
+        {"match": {"category": {"query": core_query, "boost": 8}}},
+        {"match": {"brand": {"query": core_query, "boost": 5}}},
         {"multi_match": {"query": core_query, "fields": ["name^5", "brand^4", "category^3"], "operator": "and"}}
     ])
     
@@ -237,8 +227,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     
     for hit in hits:
         images = hit.get("_source", {}).get("images", [])
-        
-        # Pass raw image data into our smart extractor
         thumb_url = extract_clean_image_url(images)
         
         if thumb_url and thumb_url not in seen_thumbs:
@@ -253,7 +241,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     sidebar_html = ""
     thumb_used = 0
     
-    # Safe HTML escaping for the fallback icon so it never breaks the layout
     fallback_js = "this.onerror=null; this.outerHTML='<i class=&quot;fas fa-search&quot; style=&quot;color:#9ca3af; width:24px; font-size:14px; text-align:center; display:inline-block;&quot;></i>';"
     
     for i, suggestion in enumerate(ai_suggestions):
@@ -285,7 +272,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
         </div>
         """
     
-    # ASSEMBLE HTML AND SAVE TO CACHE
     master_html = MEGA_MENU_TEMPLATE
     master_html = master_html.replace("__STYLES__", MEGA_MENU_STYLES)
     master_html = master_html.replace("__SCRIPTS__", MEGA_MENU_SCRIPTS)
