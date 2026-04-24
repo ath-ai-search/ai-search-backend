@@ -1,6 +1,6 @@
 """
 =====================================================================================
-🌐 MEGA MENU WIDGET SERVICE (Hybrid AI + Speed + Bulletproof Images)
+🌐 MEGA MENU WIDGET SERVICE (0.2s Ultra-Fast Vector AI)
 =====================================================================================
 """
 
@@ -14,11 +14,7 @@ import re
 # External clients
 from app.config import os_client, INDEX_NAME, openai_client
 from app.nlp.semantic_matrix import extract_semantic_matrix
-from app.prompts.autocomplete_suggestions_prompt import (
-    AUTOCOMPLETE_SYSTEM_PROMPT,
-    build_autocomplete_user_prompt,
-    build_fallback_suggestions,
-)
+from app.prompts.autocomplete_suggestions_prompt import build_fallback_suggestions
 from app.utils.cache import cache_get, cache_set
 
 # Constants
@@ -29,9 +25,7 @@ from app.core.constants import (
     WIDGET_BOOST_MULTI_MATCH,
     WIDGET_ACCESSORY_DEMOTION_WEIGHT,
     KNN_MIN_K,
-    AI_CHAT_MODEL,
     AI_EMBEDDING_MODEL,
-    AI_TEMPERATURE_BALANCED,
     MAX_AUTOCOMPLETE_SUGGESTIONS,
     DEFAULT_SEARCH_TERM,
     AUTOCOMPLETE_CACHE_TTL  
@@ -111,13 +105,15 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     if active_search_term == "best buy": active_search_term = "tv"
     elif active_search_term == "amazon": active_search_term = "macbook"
     
+    # 🚀 CACHE BUSTER V6 (Forces instant update for new speed logic)
     cache_string = f"{active_search_term}|{recent_searches}"
-    cache_key = f"widget_mega_menu_v5:{hashlib.md5(cache_string.encode()).hexdigest()}"
+    cache_key = f"widget_mega_menu_v6:{hashlib.md5(cache_string.encode()).hexdigest()}"
     
     cached_result = await cache_get(cache_key)
     if cached_result:
         return cached_result
 
+    # STEP 4: FAST VECTOR EMBEDDING (Takes ~150ms)
     vector = None
     try:
         resp = await openai_client.embeddings.create(input=active_search_term, model=AI_EMBEDDING_MODEL)
@@ -128,6 +124,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     matrix = extract_semantic_matrix(active_search_term)
     core_query = matrix["core_query"]
     
+    # STEP 5: FAST OPENSEARCH QUERY (Takes ~20ms)
     filters = [{"term": {"in_stock": True}}]
     must_nots = []
     
@@ -144,7 +141,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     if vector:
         semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": KNN_MIN_K}}})
         
-    # 🚀 SHUBAM WE FIXED THIS: Only 'name' gets prefix matching. Category and Brand get standard matching!
     semantic_shoulds.extend([
         {"match_phrase_prefix": {"name": {"query": core_query, "max_expansions": 10, "boost": 10}}},
         {"match": {"category": {"query": core_query, "boost": 8}}},
@@ -177,7 +173,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
         hits = []
     
     # =====================================================================
-    # 🧠 THE HYBRID SMART SWITCH
+    # 🧠 THE 0.2 SECOND AI SMART SWITCH (No Slow Chat AI)
     # =====================================================================
     word_count = len(active_search_term.split())
     is_complex_query = word_count >= 3
@@ -185,23 +181,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     ai_suggestions = []
 
     if is_complex_query:
-        try:
-            llm_suggestion_response = await openai_client.chat.completions.create(
-                model=AI_CHAT_MODEL,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": AUTOCOMPLETE_SYSTEM_PROMPT},
-                    {"role": "user", "content": build_autocomplete_user_prompt(active_search_term)}
-                ],
-                temperature=AI_TEMPERATURE_BALANCED,  
-                max_tokens=400
-            )
-            parsed_suggestions = json.loads(llm_suggestion_response.choices[0].message.content)
-            ai_suggestions = parsed_suggestions.get("suggestions", [])[:MAX_AUTOCOMPLETE_SUGGESTIONS]
-        except Exception:
-            ai_suggestions = build_fallback_suggestions(active_search_term)
-            
-    else:
+        # --- MODE 1: PURE VECTOR AI (~200ms) ---
         seen_names = set()
         for hit in hits:
             name = hit.get("_source", {}).get("name", "")
@@ -210,7 +190,28 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
             
             if lower_name and lower_name not in seen_names:
                 seen_names.add(lower_name)
-                short_title = " ".join(clean_name.split()[:5])
+                # For complex queries, show a slightly longer, highly relevant product name
+                short_title = " ".join(clean_name.split()[:6]) 
+                ai_suggestions.append(short_title)
+                
+                if len(ai_suggestions) >= MAX_AUTOCOMPLETE_SUGGESTIONS:
+                    break
+                    
+        if not ai_suggestions:
+            ai_suggestions = build_fallback_suggestions(active_search_term)
+            
+    else:
+        # --- MODE 2: LIGHTNING FAST PREFIX (~20ms) ---
+        seen_names = set()
+        for hit in hits:
+            name = hit.get("_source", {}).get("name", "")
+            clean_name = str(name).strip()
+            lower_name = clean_name.lower()
+            
+            if lower_name and lower_name not in seen_names:
+                seen_names.add(lower_name)
+                # Shorten simple queries to 4 words
+                short_title = " ".join(clean_name.split()[:4])
                 ai_suggestions.append(short_title)
                 
                 if len(ai_suggestions) >= MAX_AUTOCOMPLETE_SUGGESTIONS:
@@ -280,4 +281,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     final_response = {"html": master_html}
     await cache_set(cache_key, final_response, ttl_seconds=AUTOCOMPLETE_CACHE_TTL)
     
+    _elapsed_ms = (time.perf_counter() - _start_time) * 1000
+    print(f"🚀 AUTOCOMPLETE (0.2s VECTOR AI) | query='{active_search_term}' | time={_elapsed_ms:.2f}ms", flush=True)
+
     return final_response
