@@ -100,9 +100,9 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     if active_search_term == "best buy": active_search_term = "tv"
     elif active_search_term == "amazon": active_search_term = "macbook"
     
-    # 🚀 CACHE BUSTER ADDED (Changed key to v2 to wipe out old broken images)
+    # 🚀 THE CACHE SHIELD
     cache_string = f"{active_search_term}|{recent_searches}"
-    cache_key = f"widget_mega_menu_v2:{hashlib.md5(cache_string.encode()).hexdigest()}"
+    cache_key = f"widget_mega_menu:{hashlib.md5(cache_string.encode()).hexdigest()}"
     
     cached_result = await cache_get(cache_key)
     if cached_result:
@@ -170,7 +170,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
         hits = []
     
     # =====================================================================
-    # 🧠 THE HYBRID SMART SWITCH
+    # 🧠 SHUBAM WE ADDED THIS: THE HYBRID SMART SWITCH
     # =====================================================================
     word_count = len(active_search_term.split())
     is_complex_query = word_count >= 3
@@ -219,7 +219,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
             ai_suggestions = build_fallback_suggestions(active_search_term)
 
     # =====================================================================
-    # 🚀 SHUBAM FIX 1: STRICT URL VALIDATION
+    # STEP 6: COLLECT THUMBNAILS & BUILD HTML
     # =====================================================================
     product_thumbs = []
     seen_thumbs = set()
@@ -227,23 +227,14 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     for hit in hits:
         images = hit.get("_source", {}).get("images", [])
         thumb = images[0] if isinstance(images, list) and images else None
-        
-        # Only accept the image if it is a REAL link starting with "http"
-        if thumb and isinstance(thumb, str) and thumb.startswith("http"):
-            if thumb not in seen_thumbs:
-                seen_thumbs.add(thumb)
-                product_thumbs.append(thumb)
-                if len(product_thumbs) >= len(ai_suggestions):
-                    break
+        if thumb and thumb not in seen_thumbs:
+            seen_thumbs.add(thumb)
+            product_thumbs.append(thumb)
+            if len(product_thumbs) >= len(ai_suggestions):
+                break
     
-    # =====================================================================
-    # 🚀 SHUBAM FIX 2: BROWSER FALLBACK JS FOR DEAD LINKS
-    # =====================================================================
     sidebar_html = ""
     thumb_used = 0
-    
-    # If the image fails to load, this JS instantly swaps it to a magnifying glass
-    fallback_js = 'this.outerHTML="<i class=\\'fas fa-search\\' style=\\'color:#9ca3af; width:24px; font-size:14px; text-align:center; display:inline-block;\\'></i>";'
     
     for i, suggestion in enumerate(ai_suggestions):
         safe_suggestion = suggestion.replace("'", "\\'")
@@ -252,7 +243,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
         if thumb_used < len(product_thumbs):
             thumb_url = product_thumbs[thumb_used]
             thumb_used += 1
-            icon_html = f'<img src="{thumb_url}" onerror=\'{fallback_js}\' style="width:24px; height:24px; object-fit:contain; border-radius:3px; flex-shrink:0;">'
+            icon_html = f'<img src="{thumb_url}" style="width:24px; height:24px; object-fit:contain; border-radius:3px; flex-shrink:0;">'
         else:
             icon_html = '<i class="fas fa-search" style="color:#9ca3af; width:24px; font-size: 14px; text-align:center; display:inline-block;"></i>'
         
