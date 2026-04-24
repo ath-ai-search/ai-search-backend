@@ -141,18 +141,19 @@ async def execute_search(request: SearchRequest) -> dict:
             score_functions.append({"filter": {"match": {"name": acc}}, "weight": ACCESSORY_DEMOTION_WEIGHT})
             score_functions.append({"filter": {"match": {"category": acc}}, "weight": ACCESSORY_DEMOTION_WEIGHT})
     
-    # 🆕 SMART MUST CLAUSE: Balances Strictness and Long-Tail Queries
-    # 1-2 words = 100% match. 3+ words = 70% match (allows missing a word like "shoe" vs "sneaker")
+    # 🆕 STRICT ENTERPRISE MATCH (Live Fix)
+    # 1. REMOVED "description" to stop garbage products from matching!
+    # 2. Uses "cross_fields" so "Adidas" matches the Brand and "Shoes" matches the Category perfectly.
     must_clauses = []
     if core_query:
         for item in multi_items:
             must_clauses.append({
                 "multi_match": {
                     "query": item,
-                    "fields": ["name^5", "category^3", "brand", "description"],
-                    "type": "best_fields",
+                    "fields": ["name^7", "category^4", "brand^3"], 
+                    "type": "cross_fields",
                     "operator": "or",
-                    "minimum_should_match": "2<70%"
+                    "minimum_should_match": "2<75%"
                 }
             })
     
