@@ -85,6 +85,8 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
         active_search_term = valid_recents[0].lower()
     
     if not active_search_term:
+        _elapsed_ms = (time.perf_counter() - _start_time) * 1000
+        print(f"⏱️  AUTOCOMPLETE | query='(empty)' | time={_elapsed_ms:.2f}ms | mode=empty", flush=True)
         return {"html": ""}
     
     # 3. COMPETITOR INTERCEPTOR
@@ -97,6 +99,8 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     
     cached_result = await cache_get(cache_key)
     if cached_result:
+        _elapsed_ms = (time.perf_counter() - _start_time) * 1000
+        print(f"⏱️  AUTOCOMPLETE | query='{active_search_term}' | time={_elapsed_ms:.2f}ms | mode=CACHED ⚡", flush=True)
         return cached_result
     
     # 5. FAST OPENSEARCH QUERY (Pulls Real Product Names + Images)
@@ -241,5 +245,8 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     
     final_response = {"html": master_html}
     await cache_set(cache_key, final_response, ttl_seconds=3600)
+    
+    _elapsed_ms = (time.perf_counter() - _start_time) * 1000
+    print(f"⏱️  AUTOCOMPLETE | query='{active_search_term}' | time={_elapsed_ms:.2f}ms | mode=full", flush=True)
     
     return final_response
