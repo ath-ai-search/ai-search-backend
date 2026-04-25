@@ -1,10 +1,10 @@
 """
 =====================================================================================
-⚡ ULTRA-FAST MEGA MENU WIDGET SERVICE (FIXED)
+🌟 HYBRID MEGA MENU WIDGET (Smart Filter & Real Product Fallback)
 =====================================================================================
-This file generates the HTML for the search dropdown autocomplete widget.
-We have STRIPPED OUT all slow OpenAI calls. It now uses pure OpenSearch 
-Prefix Matching (safely avoiding keyword errors) to return results in under 50ms!
+Restores the OpenAI ChatGPT logic for perfect, human-like suggestions.
+Includes a Smart Filter to block dumb/repetitive AI suggestions for long queries.
+If the AI gets confused, it falls back to REAL product names from the database!
 =====================================================================================
 """
 
@@ -15,11 +15,11 @@ import logging
 import hashlib
 import re
 
-from app.config import os_client, INDEX_NAME
+from app.config import os_client, INDEX_NAME, openai_client
 from app.nlp.semantic_matrix import extract_semantic_matrix
-from app.prompts.autocomplete_suggestions_prompt import build_fallback_suggestions
+from app.prompts.autocomplete_suggestions_prompt import AUTOCOMPLETE_SYSTEM_PROMPT, build_autocomplete_user_prompt
 from app.utils.cache import cache_get, cache_set
-from app.core.constants import MAX_AUTOCOMPLETE_SUGGESTIONS
+from app.core.constants import AI_CHAT_MODEL, AI_TEMPERATURE_BALANCED, MAX_AUTOCOMPLETE_SUGGESTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ MEGA_MENU_SCRIPTS = _load_template_file("scripts.js")
 
 
 # =========================================================================
-# ⚡ FAST WIDGET FUNCTION
+# 🌟 HYBRID WIDGET FUNCTION
 # =========================================================================
 async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> dict:
     _start_time = time.perf_counter()
@@ -85,8 +85,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
         active_search_term = valid_recents[0].lower()
     
     if not active_search_term:
-        _elapsed_ms = (time.perf_counter() - _start_time) * 1000
-        print(f"⏱️  AUTOCOMPLETE | query='(empty)' | time={_elapsed_ms:.2f}ms | mode=empty", flush=True)
         return {"html": ""}
     
     # 3. COMPETITOR INTERCEPTOR
@@ -95,51 +93,29 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
 
     # 4. CACHE SHIELD
     cache_string = f"{active_search_term}|{recent_searches}"
-    cache_key = f"widget_mega_menu_fast_v3:{hashlib.md5(cache_string.encode()).hexdigest()}"
+    cache_key = f"widget_mega_menu_hybrid_v6:{hashlib.md5(cache_string.encode()).hexdigest()}"
     
     cached_result = await cache_get(cache_key)
     if cached_result:
-        _elapsed_ms = (time.perf_counter() - _start_time) * 1000
-        print(f"⚡ CACHE HIT | query='{active_search_term}' | time={_elapsed_ms:.2f}ms", flush=True)
         return cached_result
     
-    matrix = extract_semantic_matrix(active_search_term)
-    core_query = matrix["core_query"]
-    
-    # 5. BUILD ULTRA-FAST TEXT SEARCH (NO OPENAI)
-    filters = [{"term": {"in_stock": True}}]
-    if matrix["min_price"] is not None or matrix["max_price"] is not None:
-        price_range = {}
-        if matrix["min_price"] is not None: price_range["gte"] = matrix["min_price"]
-        if matrix["max_price"] is not None: price_range["lte"] = matrix["max_price"]
-        filters.append({"range": {"price": price_range}})
-    
-    if matrix["is_sale"]: filters.append({"range": {"sale_price": {"gt": 0}}})
-    
-    # 🚀 THE FIX: Safe Prefix Matching that won't crash on keywords
-    text_shoulds = []
-    if core_query:
-        text_shoulds.extend([
-            {"match_phrase_prefix": {"name": {"query": core_query, "boost": 5.0}}},
-            {"match": {"category": {"query": core_query, "boost": 3.0}}}, # Changed to standard match
-            {"match_phrase": {"brand": {"query": core_query, "boost": 2.0}}} # Changed to standard phrase
-        ])
-    else:
-        text_shoulds.append({"match_all": {}})
-        
+    # 5. FAST OPENSEARCH QUERY (Pulls Real Product Names + Images)
     os_query = {
-        "size": 15,  
+        "size": 10,  
         "_source": ["name", "images"],  
         "query": {
             "bool": {
-                "should": text_shoulds,
+                "should": [
+                    {"match_phrase_prefix": {"name": {"query": active_search_term, "boost": 5.0}}},
+                    {"match": {"category": {"query": active_search_term, "boost": 3.0}}},
+                    {"match_phrase": {"brand": {"query": active_search_term, "boost": 2.0}}}
+                ],
                 "minimum_should_match": 1,
-                "filter": filters
+                "filter": [{"term": {"in_stock": True}}]
             }
         }
     }
     
-    # 6. EXECUTE OPENSEARCH
     try:
         response = os_client.search(index=INDEX_NAME, body=os_query)
         hits = response.get("hits", {}).get("hits", [])
@@ -147,34 +123,81 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
         logger.error(f"❌ OpenSearch Widget Error: {e}")
         hits = []
     
-    # 7. EXTRACT SUGGESTIONS DIRECTLY FROM DATABASE HITS (Bypasses LLM)
+    # 6. RESTORE PERFECT OPENAI SUGGESTIONS WITH A SMART FILTER
     ai_suggestions = []
-    product_thumbs = []
-    seen_suggestions = set()
-    
-    for hit in hits:
-        source = hit.get("_source", {})
-        name = source.get("name", "")
-        if not name: continue
-            
-        # Clean up name to make it look like a neat 4-word suggestion
-        clean_name = re.sub(r'[^a-zA-Z0-9\s]', '', name)
-        words = clean_name.split()
-        short_name = " ".join(words[:4]).lower() # Take first 4 words
+    try:
+        llm_suggestion_response = await openai_client.chat.completions.create(
+            model=AI_CHAT_MODEL,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": AUTOCOMPLETE_SYSTEM_PROMPT},
+                {"role": "user", "content": build_autocomplete_user_prompt(active_search_term)}
+            ],
+            temperature=AI_TEMPERATURE_BALANCED,  
+            max_tokens=200 
+        )
         
-        if short_name not in seen_suggestions:
-            seen_suggestions.add(short_name)
-            ai_suggestions.append(short_name)
+        parsed_suggestions = json.loads(llm_suggestion_response.choices[0].message.content)
+        raw_suggestions = parsed_suggestions.get("suggestions", [])
+        
+        # 🛡️ THE SMART FILTER: Block dumb repetitive AI suggestions!
+        q_low = active_search_term.lower()
+        q_word_count = len(q_low.split())
+        
+        for s in raw_suggestions:
+            s_low = s.lower()
             
-            images = source.get("images", [])
-            product_thumbs.append(extract_clean_image_url(images))
+            # Rule 1: Don't repeat "for" if it's already in the query ("shoes for mem... for men")
+            if " for " in q_low and s_low.count(" for ") > q_low.count(" for "):
+                continue
+                
+            # Rule 2: Don't slap "Cheap" or "Best" on a long, specific query
+            if q_word_count >= 3 and any(s_low.startswith(x) for x in ["cheap ", "best ", "branded "]):
+                continue
             
+            ai_suggestions.append(s)
             if len(ai_suggestions) >= MAX_AUTOCOMPLETE_SUGGESTIONS:
                 break
-                
+
+    except Exception as e:
+        logger.error(f"❌ AI Suggestion Error: {e}")
+    
+    # 7. REAL PRODUCT FALLBACK (If AI fails or gets filtered out)
+    product_thumbs = []
+    seen_thumbs = set()
+    
     if not ai_suggestions:
-        ai_suggestions = build_fallback_suggestions(active_search_term)
-        product_thumbs = [None] * len(ai_suggestions)
+        # AI gave garbage, so we pull 100% real product names from your store!
+        seen_names = set()
+        for hit in hits:
+            name = hit.get("_source", {}).get("name", "")
+            images = hit.get("_source", {}).get("images", [])
+            
+            if name:
+                # Clean the name to look like a clean search suggestion (first 5 words)
+                clean_name = re.sub(r'[^a-zA-Z0-9\s\-]', '', name)
+                short_name = " ".join(clean_name.split()[:5]).title()
+                
+                if short_name.lower() not in seen_names:
+                    seen_names.add(short_name.lower())
+                    ai_suggestions.append(short_name)
+                    
+                    # Bind the exact real image to this real product
+                    t_url = extract_clean_image_url(images)
+                    product_thumbs.append(t_url)
+                    
+                    if len(ai_suggestions) >= MAX_AUTOCOMPLETE_SUGGESTIONS:
+                        break
+    else:
+        # AI suggestions were good, just grab the images sequentially
+        for hit in hits:
+            images = hit.get("_source", {}).get("images", [])
+            thumb_url = extract_clean_image_url(images)
+            if thumb_url and thumb_url not in seen_thumbs:
+                seen_thumbs.add(thumb_url)
+                product_thumbs.append(thumb_url)
+                if len(product_thumbs) >= len(ai_suggestions):
+                    break
     
     # 8. BUILD SIDEBAR HTML
     sidebar_html = ""
@@ -198,13 +221,14 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
             idx = s_lower.index(q)
             highlighted = f"{suggestion[:idx+len(q)]}<b>{suggestion[idx+len(q):]}</b>"      
         else:
-            highlighted = f"<b>{suggestion}</b>"
+            # Safe highlight: Don't awkwardly bold the whole string if it's a real product name
+            highlighted = suggestion 
         
         sidebar_html += f"""
         <div class='bclouds-side-item' onclick="{click_js}">
             <div style='display:flex; align-items:center; gap:14px;'>
                 {icon_html}
-                <span style="font-size: 15px; text-transform: capitalize;">{highlighted}</span>
+                <span style="font-size: 15px;">{highlighted}</span>
             </div>
         </div>
         """
@@ -217,8 +241,5 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     
     final_response = {"html": master_html}
     await cache_set(cache_key, final_response, ttl_seconds=3600)
-    
-    _elapsed_ms = (time.perf_counter() - _start_time) * 1000
-    print(f"🚀 FAST AUTOCOMPLETE | query='{active_search_term}' | time={_elapsed_ms:.2f}ms", flush=True)
     
     return final_response
