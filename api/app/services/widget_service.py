@@ -1,10 +1,10 @@
 """
 =====================================================================================
-🌟 HYBRID MEGA MENU WIDGET (Smart Filter & Real Product Fallback)
+🌟 HYBRID MEGA MENU WIDGET (Smart Core-Query Image Fetching)
 =====================================================================================
 Restores the OpenAI ChatGPT logic for perfect, human-like suggestions.
 Includes a Smart Filter to block dumb/repetitive AI suggestions for long queries.
-If the AI gets confused, it falls back to REAL product names from the database!
+Uses Semantic Matrix to extract the "Core Query" so images ALWAYS load!
 =====================================================================================
 """
 
@@ -93,22 +93,31 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
 
     # 4. CACHE SHIELD
     cache_string = f"{active_search_term}|{recent_searches}"
-    cache_key = f"widget_mega_menu_hybrid_v6:{hashlib.md5(cache_string.encode()).hexdigest()}"
+    cache_key = f"widget_mega_menu_hybrid_v7:{hashlib.md5(cache_string.encode()).hexdigest()}"
     
     cached_result = await cache_get(cache_key)
     if cached_result:
         return cached_result
     
-    # 5. FAST OPENSEARCH QUERY (Pulls Real Product Names + Images)
+    # 5. 🚀 EXTRACT CORE QUERY (Strips out "under $100" so images ALWAYS load)
+    try:
+        matrix = extract_semantic_matrix(active_search_term)
+        core_query = matrix.get("core_query", active_search_term)
+        if not core_query:
+            core_query = active_search_term
+    except Exception:
+        core_query = active_search_term
+
+    # 6. FAST OPENSEARCH QUERY (Pulls Real Product Images using the CORE word)
     os_query = {
-        "size": 10,  
+        "size": 15,  
         "_source": ["name", "images"],  
         "query": {
             "bool": {
                 "should": [
-                    {"match_phrase_prefix": {"name": {"query": active_search_term, "boost": 5.0}}},
-                    {"match": {"category": {"query": active_search_term, "boost": 3.0}}},
-                    {"match_phrase": {"brand": {"query": active_search_term, "boost": 2.0}}}
+                    {"match_phrase_prefix": {"name": {"query": core_query, "boost": 5.0}}},
+                    {"match": {"category": {"query": core_query, "boost": 3.0}}},
+                    {"match_phrase": {"brand": {"query": core_query, "boost": 2.0}}}
                 ],
                 "minimum_should_match": 1,
                 "filter": [{"term": {"in_stock": True}}]
@@ -123,7 +132,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
         logger.error(f"❌ OpenSearch Widget Error: {e}")
         hits = []
     
-    # 6. RESTORE PERFECT OPENAI SUGGESTIONS WITH A SMART FILTER
+    # 7. RESTORE PERFECT OPENAI SUGGESTIONS WITH A SMART FILTER
     ai_suggestions = []
     try:
         llm_suggestion_response = await openai_client.chat.completions.create(
@@ -146,35 +155,26 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
         
         for s in raw_suggestions:
             s_low = s.lower()
-            
-            # Rule 1: Don't repeat "for" if it's already in the query ("shoes for mem... for men")
-            if " for " in q_low and s_low.count(" for ") > q_low.count(" for "):
-                continue
-                
-            # Rule 2: Don't slap "Cheap" or "Best" on a long, specific query
-            if q_word_count >= 3 and any(s_low.startswith(x) for x in ["cheap ", "best ", "branded "]):
-                continue
+            if " for " in q_low and s_low.count(" for ") > q_low.count(" for "): continue
+            if q_word_count >= 3 and any(s_low.startswith(x) for x in ["cheap ", "best ", "branded "]): continue
             
             ai_suggestions.append(s)
-            if len(ai_suggestions) >= MAX_AUTOCOMPLETE_SUGGESTIONS:
-                break
+            if len(ai_suggestions) >= MAX_AUTOCOMPLETE_SUGGESTIONS: break
 
     except Exception as e:
         logger.error(f"❌ AI Suggestion Error: {e}")
     
-    # 7. REAL PRODUCT FALLBACK (If AI fails or gets filtered out)
+    # 8. REAL PRODUCT FALLBACK & IMAGE BINDING
     product_thumbs = []
     seen_thumbs = set()
     
     if not ai_suggestions:
-        # AI gave garbage, so we pull 100% real product names from your store!
         seen_names = set()
         for hit in hits:
             name = hit.get("_source", {}).get("name", "")
             images = hit.get("_source", {}).get("images", [])
             
             if name:
-                # Clean the name to look like a clean search suggestion (first 5 words)
                 clean_name = re.sub(r'[^a-zA-Z0-9\s\-]', '', name)
                 short_name = " ".join(clean_name.split()[:5]).title()
                 
@@ -182,24 +182,19 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
                     seen_names.add(short_name.lower())
                     ai_suggestions.append(short_name)
                     
-                    # Bind the exact real image to this real product
                     t_url = extract_clean_image_url(images)
                     product_thumbs.append(t_url)
-                    
-                    if len(ai_suggestions) >= MAX_AUTOCOMPLETE_SUGGESTIONS:
-                        break
+                    if len(ai_suggestions) >= MAX_AUTOCOMPLETE_SUGGESTIONS: break
     else:
-        # AI suggestions were good, just grab the images sequentially
         for hit in hits:
             images = hit.get("_source", {}).get("images", [])
             thumb_url = extract_clean_image_url(images)
             if thumb_url and thumb_url not in seen_thumbs:
                 seen_thumbs.add(thumb_url)
                 product_thumbs.append(thumb_url)
-                if len(product_thumbs) >= len(ai_suggestions):
-                    break
+                if len(product_thumbs) >= len(ai_suggestions): break
     
-    # 8. BUILD SIDEBAR HTML
+    # 9. BUILD SIDEBAR HTML
     sidebar_html = ""
     fallback_js = "this.onerror=null; this.outerHTML='<i class=&quot;fas fa-search&quot; style=&quot;color:#9ca3af; width:24px; font-size:14px; text-align:center; display:inline-block;&quot;></i>';"
     
@@ -221,7 +216,6 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
             idx = s_lower.index(q)
             highlighted = f"{suggestion[:idx+len(q)]}<b>{suggestion[idx+len(q):]}</b>"      
         else:
-            # Safe highlight: Don't awkwardly bold the whole string if it's a real product name
             highlighted = suggestion 
         
         sidebar_html += f"""
@@ -233,7 +227,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
         </div>
         """
     
-    # 9. ASSEMBLE FINAL HTML
+    # 10. ASSEMBLE FINAL HTML
     master_html = MEGA_MENU_TEMPLATE
     master_html = master_html.replace("__STYLES__", MEGA_MENU_STYLES)
     master_html = master_html.replace("__SCRIPTS__", MEGA_MENU_SCRIPTS)
