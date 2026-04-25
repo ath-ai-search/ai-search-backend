@@ -144,7 +144,6 @@ async def execute_search(request: SearchRequest) -> dict:
     # 🆕 STRICT ENTERPRISE MATCH (Live Fix)
     # 1. REMOVED "description" to stop garbage products from matching!
     # 2. Uses "cross_fields" so "Adidas" matches the Brand and "Shoes" matches the Category perfectly.
-    # 🆕 BALANCED MATCHING (Fixes 0 results for descriptive words)
     must_clauses = []
     if core_query:
         for item in multi_items:
@@ -154,7 +153,7 @@ async def execute_search(request: SearchRequest) -> dict:
                     "fields": ["name^7", "category^4", "brand^3"], 
                     "type": "cross_fields",
                     "operator": "or",
-                    "minimum_should_match": "50%"
+                    "minimum_should_match": "2<75%"
                 }
             })
     
