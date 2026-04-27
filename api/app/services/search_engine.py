@@ -141,9 +141,8 @@ async def execute_search(request: SearchRequest) -> dict:
             score_functions.append({"filter": {"match": {"name": acc}}, "weight": ACCESSORY_DEMOTION_WEIGHT})
             score_functions.append({"filter": {"match": {"category": acc}}, "weight": ACCESSORY_DEMOTION_WEIGHT})
     
-    # 🆕 STRICT ENTERPRISE MATCH (Live Fix)
-    # 1. REMOVED "description" to stop garbage products from matching!
-    # 2. Uses "cross_fields" so "Adidas" matches the Brand and "Shoes" matches the Category perfectly.
+    # 🆕 SMART TYPO & VOICE SEARCH MATCH (Live Fix)
+    # Uses "fuzziness": "AUTO" to automatically fix spelling mistakes like "baes" -> "bags"
     must_clauses = []
     if core_query:
         for item in multi_items:
@@ -151,9 +150,8 @@ async def execute_search(request: SearchRequest) -> dict:
                 "multi_match": {
                     "query": item,
                     "fields": ["name^7", "category^4", "brand^3"], 
-                    "type": "cross_fields",
-                    "operator": "or",
-                    "minimum_should_match": "2<75%"
+                    "fuzziness": "AUTO",
+                    "operator": "or"
                 }
             })
     
