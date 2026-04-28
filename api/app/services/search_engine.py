@@ -63,13 +63,16 @@ async def execute_search(request: SearchRequest) -> dict:
         multi_items = [core_query]
         core_query_for_vector = core_query
     
+    # 🚀 SMART ROUTING (SPEED FIX): Only use AI Vector math if > 2 words
     vector = None
     if core_query_for_vector:
-        try:
-            resp = await openai_client.embeddings.create(input=core_query_for_vector, model=AI_EMBEDDING_MODEL)
-            vector = resp.data[0].embedding
-        except Exception as e:
-            logger.error(f"❌ OpenAI Embedding Failed: {e}")
+        word_count = len(core_query_for_vector.split())
+        if word_count > 2:
+            try:
+                resp = await openai_client.embeddings.create(input=core_query_for_vector, model=AI_EMBEDDING_MODEL)
+                vector = resp.data[0].embedding
+            except Exception as e:
+                logger.error(f"❌ OpenAI Embedding Failed: {e}")
     
     filters = [{"term": {"in_stock": True}}]
     must_nots = []
@@ -145,30 +148,10 @@ async def execute_search(request: SearchRequest) -> dict:
     # Uses "fuzziness": "AUTO" to automatically fix spelling mistakes like "baes" -> "bags"
     must_clauses = []
     if core_query:
-        # Check if this is a mixed history query from the frontend using "|"
-        if "|" in core_query:
-            mixed_items = [x.strip() for x in core_query.split("|") if x.strip()]
-            should_clauses = []
-            for item in mixed_items:
-                should_clauses.append({
-                    "multi_match": {
-                        "query": item,
-                        "fields": ["name^7", "category^4", "brand^3"], 
-                        "fuzziness": "AUTO"
-                    }
-                })
-            # Tell OpenSearch: Match AT LEAST ONE of these categories (OR condition)
-            must_clauses.append({
-                "bool": {
-                    "should": should_clauses,
-                    "minimum_should_match": 1
-                }
-            })
-        else:
-            # Standard single search from the main search bar
+        for item in multi_items:
             must_clauses.append({
                 "multi_match": {
-                    "query": core_query,
+                    "query": item,
                     "fields": ["name^7", "category^4", "brand^3"], 
                     "fuzziness": "AUTO",
                     "operator": "or"
