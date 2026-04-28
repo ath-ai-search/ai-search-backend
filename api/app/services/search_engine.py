@@ -65,20 +65,11 @@ async def execute_search(request: SearchRequest) -> dict:
     
     vector = None
     if core_query_for_vector:
-        # 🆕 Check Redis cache for embedding (saves 1-2 seconds on repeat queries)
-        embedding_cache_key = f"emb:{CACHE_VERSION}:{hashlib.md5(core_query_for_vector.encode()).hexdigest()}"
-        cached_embedding = await cache_get(embedding_cache_key)
-        
-        if cached_embedding and isinstance(cached_embedding, dict) and "vector" in cached_embedding:
-            vector = cached_embedding["vector"]
-        else:
-            try:
-                resp = await openai_client.embeddings.create(input=core_query_for_vector, model=AI_EMBEDDING_MODEL)
-                vector = resp.data[0].embedding
-                # Cache embedding for 24 hours
-                await cache_set(embedding_cache_key, {"vector": vector}, ttl_seconds=86400)
-            except Exception as e:
-                logger.error(f"❌ OpenAI Embedding Failed: {e}")
+        try:
+            resp = await openai_client.embeddings.create(input=core_query_for_vector, model=AI_EMBEDDING_MODEL)
+            vector = resp.data[0].embedding
+        except Exception as e:
+            logger.error(f"❌ OpenAI Embedding Failed: {e}")
     
     filters = [{"term": {"in_stock": True}}]
     must_nots = []
