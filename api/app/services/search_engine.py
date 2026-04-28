@@ -63,16 +63,13 @@ async def execute_search(request: SearchRequest) -> dict:
         multi_items = [core_query]
         core_query_for_vector = core_query
     
-    # 🚀 SMART ROUTING (SPEED FIX): Only use AI Vector math if > 2 words
     vector = None
     if core_query_for_vector:
-        word_count = len(core_query_for_vector.split())
-        if word_count > 2:
-            try:
-                resp = await openai_client.embeddings.create(input=core_query_for_vector, model=AI_EMBEDDING_MODEL)
-                vector = resp.data[0].embedding
-            except Exception as e:
-                logger.error(f"❌ OpenAI Embedding Failed: {e}")
+        try:
+            resp = await openai_client.embeddings.create(input=core_query_for_vector, model=AI_EMBEDDING_MODEL)
+            vector = resp.data[0].embedding
+        except Exception as e:
+            logger.error(f"❌ OpenAI Embedding Failed: {e}")
     
     filters = [{"term": {"in_stock": True}}]
     must_nots = []

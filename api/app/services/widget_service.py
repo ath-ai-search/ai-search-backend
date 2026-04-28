@@ -127,8 +127,44 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
         logger.error(f"❌ OpenSearch Widget Error: {e}")
         hits = []
     
-   # 6. 🚀 LIGHTNING SPEED FIX: Skip slow ChatGPT and go straight to real products
+    # 6. RESTORE PERFECT OPENAI SUGGESTIONS WITH A SMART FILTER
     ai_suggestions = []
+    try:
+        llm_suggestion_response = await openai_client.chat.completions.create(
+            model=AI_CHAT_MODEL,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": AUTOCOMPLETE_SYSTEM_PROMPT},
+                {"role": "user", "content": build_autocomplete_user_prompt(active_search_term)}
+            ],
+            temperature=AI_TEMPERATURE_BALANCED,  
+            max_tokens=200 
+        )
+        
+        parsed_suggestions = json.loads(llm_suggestion_response.choices[0].message.content)
+        raw_suggestions = parsed_suggestions.get("suggestions", [])
+        
+        # 🛡️ THE SMART FILTER: Block dumb repetitive AI suggestions!
+        q_low = active_search_term.lower()
+        q_word_count = len(q_low.split())
+        
+        for s in raw_suggestions:
+            s_low = s.lower()
+            
+            # Rule 1: Don't repeat "for" if it's already in the query ("shoes for mem... for men")
+            if " for " in q_low and s_low.count(" for ") > q_low.count(" for "):
+                continue
+                
+            # Rule 2: Don't slap "Cheap" or "Best" on a long, specific query
+            if q_word_count >= 3 and any(s_low.startswith(x) for x in ["cheap ", "best ", "branded "]):
+                continue
+            
+            ai_suggestions.append(s)
+            if len(ai_suggestions) >= MAX_AUTOCOMPLETE_SUGGESTIONS:
+                break
+
+    except Exception as e:
+        logger.error(f"❌ AI Suggestion Error: {e}")
     
     # 7. REAL PRODUCT FALLBACK (If AI fails or gets filtered out)
     product_thumbs = []
