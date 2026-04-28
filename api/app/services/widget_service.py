@@ -131,7 +131,7 @@ async def get_mega_menu_widget(query_string: str, recent_searches: str = "") -> 
     # - 1-2 words ("shoes") → OpenSearch only (50-100ms ⚡)
     # - 3+ words ("shoes for kids running") → OpenAI (1500ms but smart)
     word_count = len(active_search_term.split())
-    use_openai = word_count >= 3
+    use_openai = word_count >= 4  # 🆕 Only 4+ words go to OpenAI (was 3)
     
     ai_suggestions = []
     product_thumbs = []
