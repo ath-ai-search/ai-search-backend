@@ -145,10 +145,30 @@ async def execute_search(request: SearchRequest) -> dict:
     # Uses "fuzziness": "AUTO" to automatically fix spelling mistakes like "baes" -> "bags"
     must_clauses = []
     if core_query:
-        for item in multi_items:
+        # Check if this is a mixed history query from the frontend using "|"
+        if "|" in core_query:
+            mixed_items = [x.strip() for x in core_query.split("|") if x.strip()]
+            should_clauses = []
+            for item in mixed_items:
+                should_clauses.append({
+                    "multi_match": {
+                        "query": item,
+                        "fields": ["name^7", "category^4", "brand^3"], 
+                        "fuzziness": "AUTO"
+                    }
+                })
+            # Tell OpenSearch: Match AT LEAST ONE of these categories (OR condition)
+            must_clauses.append({
+                "bool": {
+                    "should": should_clauses,
+                    "minimum_should_match": 1
+                }
+            })
+        else:
+            # Standard single search from the main search bar
             must_clauses.append({
                 "multi_match": {
-                    "query": item,
+                    "query": core_query,
                     "fields": ["name^7", "category^4", "brand^3"], 
                     "fuzziness": "AUTO",
                     "operator": "or"
