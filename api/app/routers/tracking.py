@@ -10,8 +10,8 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 # =====================================================================
 # ⚙️ CONFIGURATION & SETUP
 # =====================================================================
-# ⚠️ IMPORTANT: Change the password 'postgres' to your actual pgAdmin password!
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/venue_ai")
+# Hardcoded for local testing only! Do not upload this to a public GitHub repo.
+DATABASE_URL = "postgresql://postgres:shubham16@localhost:5432/venue_ai"
 
 logger = logging.getLogger("TrackerAPI")
 
