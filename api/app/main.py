@@ -27,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Import router
 from app.routers import search
-
+from app.routers import tracking  # 👈 ADD THIS LINE
 # Import services we call directly from top-level routes
 from app.services.autocomplete import execute_autocomplete
 from app.services.widget_service import get_mega_menu_widget
@@ -57,6 +57,8 @@ app.add_middleware(
 # All routes in routers/search.py will be prefixed with /search
 # Example: @router.post("") becomes POST /search
 app.include_router(search.router, prefix="/search", tags=["Search"])
+# 👈 ADD THIS NEW LINE BELOW:
+app.include_router(tracking.router)
 
 
 # =========================================================================
