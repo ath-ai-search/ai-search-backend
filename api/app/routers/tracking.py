@@ -36,7 +36,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 # ⚙️ CONFIG
 # ============================================================
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/venue_ai")
+DATABASE_URL = "postgresql://postgres:shubham16@localhost:5432/venue_ai"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("TrackingAPI")
 
