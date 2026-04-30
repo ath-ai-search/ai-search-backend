@@ -14,32 +14,46 @@ INDEX = os.getenv("OPENSEARCH_INDEX", "products")
 # ==========================
 def format_response(data):
     hits = data.get("hits", {}).get("hits", [])
-
     results = []
     for hit in hits:
         src = hit.get("_source", {})
-
         results.append({
-            "id": hit.get("_id"),
+            "id": src.get("product_id"),         # ✅ Using the real product_id
             "name": src.get("name"),
             "price": src.get("price"),
-            "sale_price": src.get("sale_price"),  # ✅ Included sale price
+            "sale_price": src.get("sale_price"),
             "image": src.get("image") or src.get("primary_image"),
-            "url": src.get("url")                 # ✅ Included product URL
+            "url": src.get("url")
         })
-
     return results
 
 # ==========================
-# STEP 1: GET EMBEDDING (FAST)
+# STEP 1: GET EMBEDDING (UPDATED 🚀)
 # ==========================
 def get_embedding(product_id):
     if not OPENSEARCH_URL:
         raise ValueError("OPENSEARCH_HOST is missing from .env file!")
         
-    res = requests.get(f"{OPENSEARCH_URL}/{INDEX}/_doc/{product_id}")
+    # We now search for the specific "product_id" field inside the document
+    res = requests.post(
+        f"{OPENSEARCH_URL}/{INDEX}/_search",
+        json={
+            "query": {
+                "term": {
+                    "product_id": product_id
+                }
+            },
+            "size": 1
+        }
+    )
+    
     data = res.json()
-    return data.get("_source", {}).get("embedding")
+    hits = data.get("hits", {}).get("hits", [])
+    
+    if not hits:
+        return None
+        
+    return hits[0].get("_source", {}).get("embedding")
 
 # ==========================
 # STEP 2: AI SIMILAR SEARCH
@@ -68,7 +82,7 @@ def ai_search(vector, product_id, category_id, page, size):
                                 {"term": {"category_id": category_id}}
                             ] if category_id else [],
                             "must_not": [
-                                {"term": {"_id": product_id}}
+                                {"term": {"product_id": product_id}} # ✅ Exclude current product
                             ]
                         }
                     },
@@ -104,8 +118,9 @@ def fallback_search(product_id, category_id, page, size):
                                 "fields": ["name^3", "description"],
                                 "like": [
                                     {
-                                        "_index": INDEX,
-                                        "_id": product_id
+                                        "doc": {
+                                            "product_id": product_id
+                                        }
                                     }
                                 ],
                                 "min_term_freq": 1,
@@ -117,7 +132,7 @@ def fallback_search(product_id, category_id, page, size):
                         {"term": {"category_id": category_id}}
                     ] if category_id else [],
                     "must_not": [
-                        {"term": {"_id": product_id}}
+                        {"term": {"product_id": product_id}} # ✅ Exclude current product
                     ]
                 }
             }
