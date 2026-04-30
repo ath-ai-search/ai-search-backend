@@ -26,6 +26,7 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import router
+from api.app.routers import similar
 from app.routers import search
 from app.routers import tracking  # 👈 ADD THIS LINE
 # Import services we call directly from top-level routes
@@ -59,6 +60,7 @@ app.add_middleware(
 app.include_router(search.router, prefix="/search", tags=["Search"])
 # 👈 ADD THIS NEW LINE BELOW:
 app.include_router(tracking.router)
+app.include_router(similar.router)
 
 
 # =========================================================================
