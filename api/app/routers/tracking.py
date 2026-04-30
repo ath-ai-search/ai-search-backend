@@ -194,10 +194,7 @@ def save_events_to_db(events_data: List[EventItem]):
                 db.add(metric)
 
             # ✅ UPDATED METRIC LOGIC
-            if e.event_type == EventType.search:
-                # 🚨 FIX 2: Correctly count search events as impressions!
-                metric.impressions += 1
-            elif e.event_type == EventType.view:
+            if e.event_type == EventType.view:
                 metric.impressions += 1   # NEW
                 metric.views += 1
             elif e.event_type == EventType.click:
