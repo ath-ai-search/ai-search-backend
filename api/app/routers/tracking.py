@@ -153,7 +153,6 @@ class EventItem(BaseModel):
     position: Optional[int] = None
     value: Optional[float] = None
     source: Optional[str] = None
-    timestamp: Optional[str] = None
     value: Optional[float] = None
     class Config:
         extra = "ignore"
