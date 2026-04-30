@@ -184,7 +184,7 @@ def save_events_to_db(events_data: List[EventItem]):
                 # 🚨 FIX 1: Explicitly set the starting numbers to 0 to prevent the NoneType crash!
                 metric = ProductMetricsDB(
                     product_id=e.product_id,
-                    search=0,          # NEW
+                    searches=0,          # NEW
                     impressions=0,
                     views=0,
                     clicks=0,
