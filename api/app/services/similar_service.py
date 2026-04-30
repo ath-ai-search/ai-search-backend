@@ -1,17 +1,13 @@
 import os
-import requests
 import logging
-from dotenv import load_dotenv
-
-load_dotenv()
-
-OPENSEARCH_URL = os.getenv("OPENSEARCH_HOST")
-INDEX = os.getenv("OPENSEARCH_INDEX", "products")
+from app.config import os_client, INDEX_NAME
 
 logger = logging.getLogger(__name__)
 
-print(f"DEBUG: OPENSEARCH_URL is: {OPENSEARCH_URL}")
-print(f"DEBUG: INDEX is: {INDEX}")
+# Use the same INDEX_NAME from config (works with AOSS auth)
+INDEX = INDEX_NAME
+
+print(f"DEBUG: Using INDEX: {INDEX}")
 
 
 # ==========================
@@ -24,7 +20,7 @@ def format_response(data):
     for hit in hits:
         src = hit.get("_source", {})
         
-        # Extract first image from images field (string or list)
+        # Extract first image
         raw_images = src.get("images", "")
         img_url = None
         
@@ -33,18 +29,14 @@ def format_response(data):
         elif isinstance(raw_images, str) and raw_images:
             img_url = raw_images.split(',')[0].strip()
         
-        # Fallback to other image fields
         if not img_url:
             img_url = src.get("image") or src.get("primary_image")
         
-        # Build product URL
         product_url = src.get("url") or src.get("product_url") or ""
         
-        # Get prices
         price = src.get("price", 0)
         sale_price = src.get("sale_price", 0)
         
-        # Calculate discount if on sale
         discount_percent = 0
         if sale_price and price and sale_price < price:
             discount_percent = round(((price - sale_price) / price) * 100)
@@ -67,52 +59,32 @@ def format_response(data):
 
 
 # ==========================
-# STEP 1: GET EMBEDDING (BULLETPROOF)
+# STEP 1: GET EMBEDDING (using os_client with AWS auth)
 # ==========================
 def get_embedding(product_id):
-    """
-    Tries multiple strategies to find embedding:
-    1. Search by product_id field
-    2. Search by _id
-    3. Try multiple embedding field names
-    """
-    if not OPENSEARCH_URL:
-        raise ValueError("OPENSEARCH_HOST is missing from .env file!")
-    
-    # Convert to string (OpenSearch stores as keyword)
+    """Find product and extract embedding using authenticated os_client."""
     product_id_str = str(product_id).strip()
     
-    # Try multiple search strategies
+    # Try multiple strategies to find the product
     queries = [
-        # Strategy 1: Exact match on product_id
+        # Strategy 1: Exact term match on product_id
         {
             "query": {"term": {"product_id": product_id_str}},
             "size": 1,
-            "_source": True  # Include all fields
-        },
-        # Strategy 2: Match on product_id
-        {
-            "query": {"match": {"product_id": product_id_str}},
-            "size": 1,
             "_source": True
         },
-        # Strategy 3: Match on _id
+        # Strategy 2: Match on product_id (handles different mappings)
         {
-            "query": {"term": {"_id": product_id_str}},
+            "query": {"match": {"product_id": product_id_str}},
             "size": 1,
             "_source": True
         }
     ]
     
-    for i, query in enumerate(queries, 1):
+    for i, query_body in enumerate(queries, 1):
         try:
-            res = requests.post(
-                f"{OPENSEARCH_URL}/{INDEX}/_search",
-                json=query,
-                timeout=10
-            )
-            data = res.json()
-            hits = data.get("hits", {}).get("hits", [])
+            response = os_client.search(index=INDEX, body=query_body)
+            hits = response.get("hits", {}).get("hits", [])
             
             if hits:
                 source = hits[0].get("_source", {})
@@ -125,13 +97,15 @@ def get_embedding(product_id):
                         return embedding
                 
                 # Product found but no embedding
-                print(f"⚠️  Product {product_id_str} found but no embedding field. Available fields: {list(source.keys())[:10]}")
+                available_fields = list(source.keys())[:15]
+                print(f"⚠️  Product {product_id_str} found (strategy {i}) but no embedding field. Available fields: {available_fields}")
                 return None
+                
         except Exception as e:
             print(f"❌ Strategy {i} failed: {e}")
             continue
     
-    print(f"❌ Product {product_id_str} not found in any strategy")
+    print(f"❌ Product {product_id_str} not found in OpenSearch")
     return None
 
 
@@ -141,7 +115,6 @@ def get_embedding(product_id):
 def ai_search(vector, product_id, category_id, page, size):
     product_id_str = str(product_id).strip()
     
-    # Build filters list
     filters = [{"term": {"in_stock": True}}]
     if category_id:
         filters.append({"term": {"category_id": category_id}})
@@ -149,7 +122,7 @@ def ai_search(vector, product_id, category_id, page, size):
     query_body = {
         "from": (page - 1) * size,
         "size": size,
-        "_source": {"excludes": ["embedding", "vector"]},  # Don't send huge vectors back
+        "_source": {"excludes": ["embedding", "vector", "embeddings"]},
         "query": {
             "function_score": {
                 "query": {
@@ -185,12 +158,8 @@ def ai_search(vector, product_id, category_id, page, size):
     }
     
     try:
-        res = requests.post(
-            f"{OPENSEARCH_URL}/{INDEX}/_search",
-            json=query_body,
-            timeout=15
-        )
-        return res.json()
+        response = os_client.search(index=INDEX, body=query_body)
+        return response
     except Exception as e:
         print(f"❌ AI search failed: {e}")
         return {"hits": {"hits": []}}
@@ -209,7 +178,7 @@ def fallback_search(product_id, category_id, page, size):
     query_body = {
         "from": (page - 1) * size,
         "size": size,
-        "_source": {"excludes": ["embedding", "vector"]},
+        "_source": {"excludes": ["embedding", "vector", "embeddings"]},
         "query": {
             "bool": {
                 "must": [
@@ -237,12 +206,17 @@ def fallback_search(product_id, category_id, page, size):
     }
     
     try:
-        res = requests.post(
-            f"{OPENSEARCH_URL}/{INDEX}/_search",
-            json=query_body,
-            timeout=15
-        )
-        return res.json()
+        response = os_client.search(index=INDEX, body=query_body)
+        return response
     except Exception as e:
         print(f"❌ Fallback search failed: {e}")
-        return {"hits": {"hits": []}}
+        # Try without _id (if the product_id format doesn't match _id)
+        try:
+            query_body["query"]["bool"]["must"][0]["more_like_this"]["like"] = [
+                f"product_id:{product_id_str}"
+            ]
+            response = os_client.search(index=INDEX, body=query_body)
+            return response
+        except Exception as e2:
+            print(f"❌ Fallback retry failed: {e2}")
+            return {"hits": {"hits": []}}

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from app.services.similar_service import (
     get_embedding, 
     ai_search, 
@@ -16,12 +16,7 @@ def ai_similar_products(
     page: int = 1,
     size: int = 8
 ):
-    """
-    AI-powered similar products using vector embeddings.
-    Falls back to text-similarity if no embedding found.
-    """
     try:
-        # Try AI search first
         vector = get_embedding(product_id)
         
         if vector:
@@ -35,7 +30,6 @@ def ai_similar_products(
                     "count": len(results)
                 }
         
-        # Fallback: text similarity (no embedding needed)
         print(f"ℹ️  Falling back to text similarity for product {product_id}")
         fallback_data = fallback_search(product_id, category_id, page, size)
         results = format_response(fallback_data)
@@ -62,10 +56,6 @@ def similar_products(
     page: int = 1,
     size: int = 8
 ):
-    """
-    Pure text-based similar products (no AI vector).
-    Faster, always works.
-    """
     try:
         data = fallback_search(product_id, category_id, page, size)
         results = format_response(data)
