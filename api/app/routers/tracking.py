@@ -144,7 +144,6 @@ Base.metadata.create_all(bind=engine)
 # ============================================================
 # 📦 SCHEMA
 # ============================================================
-
 class EventItem(BaseModel):
     event_type: EventType
     session_id: str
@@ -154,8 +153,10 @@ class EventItem(BaseModel):
     position: Optional[int] = None
     value: Optional[float] = None
     source: Optional[str] = None
-
-
+    timestamp: Optional[str] = None
+    value: Optional[float] = None
+    class Config:
+        extra = "ignore"
 class TrackingPayload(BaseModel):
     events: List[EventItem]
 
