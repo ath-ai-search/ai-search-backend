@@ -115,7 +115,11 @@ def get_embedding(product_id):
 def ai_search(vector, product_id, category_id, page, size):
     product_id_str = str(product_id).strip()
     
-    filters = [{"term": {"in_stock": True}}]
+    # 🆕 Only show products on sale (sale_price > 0)
+    filters = [
+        {"term": {"in_stock": True}},
+        {"range": {"sale_price": {"gt": 0}}}
+    ]
     if category_id:
         filters.append({"term": {"category_id": category_id}})
     
@@ -171,7 +175,11 @@ def ai_search(vector, product_id, category_id, page, size):
 def fallback_search(product_id, category_id, page, size):
     product_id_str = str(product_id).strip()
     
-    filters = [{"term": {"in_stock": True}}]
+    # 🆕 Only show products on sale (sale_price > 0)
+    filters = [
+        {"term": {"in_stock": True}},
+        {"range": {"sale_price": {"gt": 0}}}
+    ]
     if category_id:
         filters.append({"term": {"category_id": category_id}})
     
