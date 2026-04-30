@@ -115,11 +115,8 @@ def get_embedding(product_id):
 def ai_search(vector, product_id, category_id, page, size):
     product_id_str = str(product_id).strip()
     
-    # 🆕 Only show products on sale (sale_price > 0)
-    filters = [
-        {"term": {"in_stock": True}},
-        {"range": {"sale_price": {"gt": 0}}}
-    ]
+        # 🆕 Only in_stock filter (no sale filter — boost sales instead)
+    filters = [{"term": {"in_stock": True}}]
     if category_id:
         filters.append({"term": {"category_id": category_id}})
     
@@ -154,9 +151,15 @@ def ai_search(vector, product_id, category_id, page, size):
                             "factor": 0.1,
                             "missing": 1
                         }
+                    },
+                    {
+                        "filter": {"range": {"sale_price": {"gt": 0}}},
+                        "weight": 3.0
                     }
                 ],
                 "boost_mode": "sum"
+                ,
+                "score_mode": "sum"
             }
         }
     }
@@ -175,11 +178,8 @@ def ai_search(vector, product_id, category_id, page, size):
 def fallback_search(product_id, category_id, page, size):
     product_id_str = str(product_id).strip()
     
-    # 🆕 Only show products on sale (sale_price > 0)
-    filters = [
-        {"term": {"in_stock": True}},
-        {"range": {"sale_price": {"gt": 0}}}
-    ]
+    # 🆕 Only in_stock filter (boost sales in scoring instead)
+    filters = [{"term": {"in_stock": True}}]
     if category_id:
         filters.append({"term": {"category_id": category_id}})
     
@@ -188,27 +188,39 @@ def fallback_search(product_id, category_id, page, size):
         "size": size,
         "_source": {"excludes": ["embedding", "vector", "embeddings"]},
         "query": {
-            "bool": {
-                "must": [
-                    {
-                        "more_like_this": {
-                            "fields": ["name^3", "description", "category^2"],
-                            "like": [
-                                {
-                                    "_index": INDEX,
-                                    "_id": product_id_str
+            "function_score": {
+                "query": {
+                    "bool": {
+                        "must": [
+                            {
+                                "more_like_this": {
+                                    "fields": ["name^3", "description", "category^2"],
+                                    "like": [
+                                        {
+                                            "_index": INDEX,
+                                            "_id": product_id_str
+                                        }
+                                    ],
+                                    "min_term_freq": 1,
+                                    "max_query_terms": 12,
+                                    "minimum_should_match": "30%"
                                 }
-                            ],
-                            "min_term_freq": 1,
-                            "max_query_terms": 12,
-                            "minimum_should_match": "30%"
-                        }
+                            }
+                        ],
+                        "filter": filters,
+                        "must_not": [
+                            {"term": {"product_id": product_id_str}}
+                        ]
+                    }
+                },
+                "functions": [
+                    {
+                        "filter": {"range": {"sale_price": {"gt": 0}}},
+                        "weight": 3.0
                     }
                 ],
-                "filter": filters,
-                "must_not": [
-                    {"term": {"product_id": product_id_str}}
-                ]
+                "boost_mode": "sum",
+                "score_mode": "sum"
             }
         }
     }
