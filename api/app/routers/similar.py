@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from api.app.services.similar_service import (
+from app.services.similar_service import (
     get_embedding, 
     ai_search, 
     fallback_search, 
