@@ -114,6 +114,7 @@ class ProductMetricsDB(Base):
     __tablename__ = "product_metrics"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     product_id = Column(String(50), index=True, unique=True)
+    search=Column(Integer, default=0)        # ✅ NEW COLUMN
     impressions=Column(Integer, default=0)   # ✅ NEW
     views = Column(Integer, default=0)
     clicks = Column(Integer, default=0)
@@ -183,6 +184,7 @@ def save_events_to_db(events_data: List[EventItem]):
                 # 🚨 FIX 1: Explicitly set the starting numbers to 0 to prevent the NoneType crash!
                 metric = ProductMetricsDB(
                     product_id=e.product_id,
+                    search=0,          # NEW
                     impressions=0,
                     views=0,
                     clicks=0,
@@ -194,8 +196,9 @@ def save_events_to_db(events_data: List[EventItem]):
 
             # ✅ UPDATED METRIC LOGIC
             if e.event_type == EventType.search:
+                metric.search +=1
                 # 🚨 FIX 2: Correctly count search events as impressions!
-                metric.impressions += 1
+                # metric.impressions += 1
             elif e.event_type == EventType.view:
                 metric.impressions += 1   # NEW
                 metric.views += 1
