@@ -17,29 +17,40 @@ def format_response(data):
     results = []
     for hit in hits:
         src = hit.get("_source", {})
+        
+        # Handle the 'images' field (could be a list or a comma-separated string)
+        raw_images = src.get("images")
+        first_image = None
+        if isinstance(raw_images, str):
+            first_image = raw_images.split(',')[0].strip()
+        elif isinstance(raw_images, list) and len(raw_images) > 0:
+            first_image = raw_images[0]
+
         results.append({
-            "id": src.get("product_id"),         # ✅ Using the real product_id
+            "id": src.get("product_id"),
             "name": src.get("name"),
+            "category": src.get("category"),          # ✅ Added Category
             "price": src.get("price"),
             "sale_price": src.get("sale_price"),
-            "image": src.get("image") or src.get("primary_image"),
-            "url": src.get("url")
+            "image": first_image or src.get("image") or src.get("primary_image"),
+            "url": src.get("url"),
+            "product_url": src.get("url")             # ✅ Added Product URL
         })
     return results
 
 # ==========================
-# STEP 1: GET EMBEDDING (UPDATED 🚀)
+# STEP 1: GET EMBEDDING (FIXED 🚀)
 # ==========================
 def get_embedding(product_id):
     if not OPENSEARCH_URL:
         raise ValueError("OPENSEARCH_HOST is missing from .env file!")
         
-    # We now search for the specific "product_id" field inside the document
+    # We use "match" instead of "term" to be more flexible with data types
     res = requests.post(
         f"{OPENSEARCH_URL}/{INDEX}/_search",
         json={
             "query": {
-                "term": {
+                "match": {
                     "product_id": product_id
                 }
             },
@@ -82,7 +93,7 @@ def ai_search(vector, product_id, category_id, page, size):
                                 {"term": {"category_id": category_id}}
                             ] if category_id else [],
                             "must_not": [
-                                {"term": {"product_id": product_id}} # ✅ Exclude current product
+                                {"term": {"product_id": product_id}} 
                             ]
                         }
                     },
@@ -132,7 +143,7 @@ def fallback_search(product_id, category_id, page, size):
                         {"term": {"category_id": category_id}}
                     ] if category_id else [],
                     "must_not": [
-                        {"term": {"product_id": product_id}} # ✅ Exclude current product
+                        {"term": {"product_id": product_id}} 
                     ]
                 }
             }
