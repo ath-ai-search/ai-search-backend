@@ -66,7 +66,7 @@ class EventType(str, Enum):
     add_to_cart = "add_to_cart"
     purchase = "purchase"
     add_to_wishlist = "add_to_wishlist"
-    search="search"
+    # search="search"
 
 # ============================================================
 # 🗄️ TABLES
@@ -114,7 +114,7 @@ class ProductMetricsDB(Base):
     __tablename__ = "product_metrics"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     product_id = Column(String(50), index=True, unique=True)
-    searches = Column(Integer, default=0)
+    # search=Column(Integer, default=0)        # ✅ NEW COLUMN
     impressions=Column(Integer, default=0)   # ✅ NEW
     views = Column(Integer, default=0)
     clicks = Column(Integer, default=0)
@@ -184,7 +184,6 @@ def save_events_to_db(events_data: List[EventItem]):
                 # 🚨 FIX 1: Explicitly set the starting numbers to 0 to prevent the NoneType crash!
                 metric = ProductMetricsDB(
                     product_id=e.product_id,
-                    searches=0,          # NEW
                     impressions=0,
                     views=0,
                     clicks=0,
@@ -194,10 +193,9 @@ def save_events_to_db(events_data: List[EventItem]):
                 )
                 db.add(metric)
 
-
             # ✅ UPDATED METRIC LOGIC
             if e.event_type == EventType.search:
-                metric.searches += 1
+                # 🚨 FIX 2: Correctly count search events as impressions!
                 metric.impressions += 1
             elif e.event_type == EventType.view:
                 metric.impressions += 1   # NEW
@@ -228,7 +226,7 @@ def save_events_to_db(events_data: List[EventItem]):
                     db.add(ups)
 
                 weight_map = {
-                    EventType.search: 0.5, # 🚨 FIX 3: Give searches a small score weight!
+                    # EventType.search: 0.5, # 🚨 FIX 3: Give searches a small score weight!
                     EventType.view: 1,
                     EventType.click: 2,
                     EventType.add_to_cart: 5,
