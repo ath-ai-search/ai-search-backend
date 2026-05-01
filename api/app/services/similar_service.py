@@ -1,9 +1,12 @@
 import os
+import time
+import hashlib
 import logging
 from app.config import os_client, INDEX_NAME
+from app.utils.cache import cache_get, cache_set
+from app.core.constants import CACHE_VERSION
 
 logger = logging.getLogger(__name__)
-
 # Use the same INDEX_NAME from config (works with AOSS auth)
 INDEX = INDEX_NAME
 
@@ -110,15 +113,26 @@ def get_embedding(product_id):
 
 
 # ==========================
-# STEP 2: AI SIMILAR SEARCH (KNN Vector)
+# STEP 2: AI SIMILAR SEARCH (KNN Vector) — WITH CACHE
 # ==========================
-def ai_search(vector, product_id, category_id, page, size):
+async def ai_search(vector, product_id, category_id, page, size):
     product_id_str = str(product_id).strip()
+    
+    # 🆕 CHECK CACHE FIRST
+    cache_key_str = f"ai_similar:{product_id_str}:{category_id}:{page}:{size}"
+    cache_key = f"similar:{CACHE_VERSION}:{hashlib.md5(cache_key_str.encode()).hexdigest()}"
+    
+    _start = time.perf_counter()
+    cached = await cache_get(cache_key)
+    if cached:
+        elapsed = (time.perf_counter() - _start) * 1000
+        print(f"⚡ AI_SIMILAR | product={product_id_str} | time={elapsed:.2f}ms | mode=CACHED", flush=True)
+        return cached
     
     filters = [{"term": {"in_stock": True}}]
     if category_id:
         filters.append({"term": {"category_id": category_id}})
-    
+
     query_body = {
         "from": (page - 1) * size,
         "size": size,
@@ -159,6 +173,13 @@ def ai_search(vector, product_id, category_id, page, size):
     
     try:
         response = os_client.search(index=INDEX, body=query_body)
+        
+        # 🆕 SAVE TO CACHE (1 hour TTL)
+        await cache_set(cache_key, response, ttl_seconds=3600)
+        
+        elapsed = (time.perf_counter() - _start) * 1000
+        print(f"✅ AI_SIMILAR | product={product_id_str} | time={elapsed:.2f}ms | mode=full", flush=True)
+        
         return response
     except Exception as e:
         print(f"❌ AI search failed: {e}")
@@ -166,15 +187,26 @@ def ai_search(vector, product_id, category_id, page, size):
 
 
 # ==========================
-# STEP 3: FALLBACK SEARCH (More Like This)
+# STEP 3: FALLBACK SEARCH (More Like This) — WITH CACHE
 # ==========================
-def fallback_search(product_id, category_id, page, size):
+async def fallback_search(product_id, category_id, page, size):
     product_id_str = str(product_id).strip()
+    
+    # 🆕 CHECK CACHE FIRST
+    cache_key_str = f"fallback_similar:{product_id_str}:{category_id}:{page}:{size}"
+    cache_key = f"similar:{CACHE_VERSION}:{hashlib.md5(cache_key_str.encode()).hexdigest()}"
+    
+    _start = time.perf_counter()
+    cached = await cache_get(cache_key)
+    if cached:
+        elapsed = (time.perf_counter() - _start) * 1000
+        print(f"⚡ FALLBACK_SIMILAR | product={product_id_str} | time={elapsed:.2f}ms | mode=CACHED", flush=True)
+        return cached
     
     filters = [{"term": {"in_stock": True}}]
     if category_id:
         filters.append({"term": {"category_id": category_id}})
-    
+
     query_body = {
         "from": (page - 1) * size,
         "size": size,
@@ -207,6 +239,13 @@ def fallback_search(product_id, category_id, page, size):
     
     try:
         response = os_client.search(index=INDEX, body=query_body)
+        
+        # 🆕 SAVE TO CACHE
+        await cache_set(cache_key, response, ttl_seconds=3600)
+        
+        elapsed = (time.perf_counter() - _start) * 1000
+        print(f"✅ FALLBACK_SIMILAR | product={product_id_str} | time={elapsed:.2f}ms | mode=full", flush=True)
+        
         return response
     except Exception as e:
         print(f"❌ Fallback search failed: {e}")
@@ -216,6 +255,10 @@ def fallback_search(product_id, category_id, page, size):
                 f"product_id:{product_id_str}"
             ]
             response = os_client.search(index=INDEX, body=query_body)
+            
+            # 🆕 SAVE TO CACHE
+            await cache_set(cache_key, response, ttl_seconds=3600)
+            
             return response
         except Exception as e2:
             print(f"❌ Fallback retry failed: {e2}")

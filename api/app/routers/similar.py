@@ -10,7 +10,7 @@ router = APIRouter(tags=["Similar Products"])
 
 
 @router.get("/ai-similar-products")
-def ai_similar_products(
+async def ai_similar_products(
     product_id: str,
     category_id: str = "",
     page: int = 1,
@@ -20,7 +20,7 @@ def ai_similar_products(
         vector = get_embedding(product_id)
         
         if vector:
-            data = ai_search(vector, product_id, category_id, page, size)
+            data = await ai_search(vector, product_id, category_id, page, size)
             results = format_response(data)
             
             if results:
@@ -31,7 +31,7 @@ def ai_similar_products(
                 }
         
         print(f"ℹ️  Falling back to text similarity for product {product_id}")
-        fallback_data = fallback_search(product_id, category_id, page, size)
+        fallback_data = await fallback_search(product_id, category_id, page, size)
         results = format_response(fallback_data)
         
         return {
@@ -50,14 +50,14 @@ def ai_similar_products(
 
 
 @router.get("/similar-products")
-def similar_products(
+async def similar_products(
     product_id: str,
     category_id: str = "",
     page: int = 1,
     size: int = 8
 ):
     try:
-        data = fallback_search(product_id, category_id, page, size)
+        data = await fallback_search(product_id, category_id, page, size)
         results = format_response(data)
         
         return {
