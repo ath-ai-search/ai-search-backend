@@ -196,6 +196,10 @@ def save_events_to_db(events_data: List[EventItem]):
     try:
         db_events = []
         purchased_products = []
+        
+        # 🆕 Cache metrics + user scores within this batch to avoid duplicate inserts
+        metrics_cache = {}
+        ups_cache = {}
 
         for e in events_data:
 
@@ -216,21 +220,28 @@ def save_events_to_db(events_data: List[EventItem]):
                 continue
 
             # 2. PRODUCT METRICS — upsert (update or insert)
-            metric = db.query(ProductMetricsDB).filter_by(
-                product_id=e.product_id
-            ).first()
+            # 🆕 Check in-memory cache first to avoid duplicate inserts in same batch
+            if e.product_id in metrics_cache:
+                metric = metrics_cache[e.product_id]
+            else:
+                metric = db.query(ProductMetricsDB).filter_by(
+                    product_id=e.product_id
+                ).first()
 
-            if not metric:
-                metric = ProductMetricsDB(
-                    product_id=e.product_id,
-                    impressions=0,
-                    views=0,
-                    clicks=0,
-                    carts=0,
-                    purchases=0,
-                    wishlist=0
-                )
-                db.add(metric)
+                if not metric:
+                    metric = ProductMetricsDB(
+                        product_id=e.product_id,
+                        impressions=0,
+                        views=0,
+                        clicks=0,
+                        carts=0,
+                        purchases=0,
+                        wishlist=0
+                    )
+                    db.add(metric)
+                
+                # 🆕 Cache for next event in same batch
+                metrics_cache[e.product_id] = metric
 
             # Update counters based on event type
             if e.event_type == EventType.impression:
@@ -250,19 +261,28 @@ def save_events_to_db(events_data: List[EventItem]):
 
             # 3. USER PRODUCT SCORE — only if user is logged in
             if e.user_id and e.product_id:
-                ups = db.query(UserProductScoreDB).filter_by(
-                    user_id=e.user_id,
-                    product_id=e.product_id
-                ).first()
-
-                if not ups:
-                    ups = UserProductScoreDB(
+                ups_key = f"{e.user_id}:{e.product_id}"
+                
+                # 🆕 Check cache first to avoid duplicate inserts
+                if ups_key in ups_cache:
+                    ups = ups_cache[ups_key]
+                else:
+                    ups = db.query(UserProductScoreDB).filter_by(
                         user_id=e.user_id,
-                        product_id=e.product_id,
-                        score=0
-                    )
-                    db.add(ups)
+                        product_id=e.product_id
+                    ).first()
 
+                    if not ups:
+                        ups = UserProductScoreDB(
+                            user_id=e.user_id,
+                            product_id=e.product_id,
+                            score=0
+                        )
+                        db.add(ups)
+                    
+                    # 🆕 Cache for next event in same batch
+                    ups_cache[ups_key] = ups
+                    
                 # Score weights per event type
                 weight_map = {
                     EventType.search: 0.5,
