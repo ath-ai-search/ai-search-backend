@@ -219,71 +219,34 @@ def save_events_to_db(events_data: List[EventItem]):
             if not e.product_id:
                 continue
 
-            # 2. PRODUCT METRICS — upsert (update or insert)
-            # 🆕 Check in-memory cache first to avoid duplicate inserts in same batch
-            if e.product_id in metrics_cache:
-                metric = metrics_cache[e.product_id]
-            else:
-                metric = db.query(ProductMetricsDB).filter_by(
-                    product_id=e.product_id
-                ).first()
-
-                if not metric:
-                    metric = ProductMetricsDB(
-                        product_id=e.product_id,
-                        impressions=0,
-                        views=0,
-                        clicks=0,
-                        carts=0,
-                        purchases=0,
-                        wishlist=0
-                    )
-                    db.add(metric)
-                
-                # 🆕 Cache for next event in same batch
-                metrics_cache[e.product_id] = metric
-
-            # Update counters based on event type
+            # 2. PRODUCT METRICS — accumulate counts in dict (write at end with UPSERT)
+            if e.product_id not in metrics_cache:
+                metrics_cache[e.product_id] = {
+                    'impressions': 0, 'views': 0, 'clicks': 0,
+                    'carts': 0, 'purchases': 0, 'wishlist': 0
+                }
+            
+            counts = metrics_cache[e.product_id]
+            
             if e.event_type == EventType.impression:
-                metric.impressions += 1
+                counts['impressions'] += 1
             elif e.event_type == EventType.view:
-                metric.impressions += 1
-                metric.views += 1
+                counts['impressions'] += 1
+                counts['views'] += 1
             elif e.event_type == EventType.click:
-                metric.clicks += 1
+                counts['clicks'] += 1
             elif e.event_type == EventType.add_to_cart:
-                metric.carts += 1
+                counts['carts'] += 1
             elif e.event_type == EventType.purchase:
-                metric.purchases += 1
+                counts['purchases'] += 1
                 purchased_products.append(e.product_id)
             elif e.event_type in (EventType.add_to_wishlist, EventType.wishlist):
-                metric.wishlist += 1
+                counts['wishlist'] += 1
 
-            # 3. USER PRODUCT SCORE — only if user is logged in
+            # 3. USER PRODUCT SCORE — accumulate scores in dict
             if e.user_id and e.product_id:
-                ups_key = f"{e.user_id}:{e.product_id}"
+                ups_key = (e.user_id, e.product_id)
                 
-                # 🆕 Check cache first to avoid duplicate inserts
-                if ups_key in ups_cache:
-                    ups = ups_cache[ups_key]
-                else:
-                    ups = db.query(UserProductScoreDB).filter_by(
-                        user_id=e.user_id,
-                        product_id=e.product_id
-                    ).first()
-
-                    if not ups:
-                        ups = UserProductScoreDB(
-                            user_id=e.user_id,
-                            product_id=e.product_id,
-                            score=0
-                        )
-                        db.add(ups)
-                    
-                    # 🆕 Cache for next event in same batch
-                    ups_cache[ups_key] = ups
-                    
-                # Score weights per event type
                 weight_map = {
                     EventType.search: 0.5,
                     EventType.impression: 0,
@@ -294,8 +257,11 @@ def save_events_to_db(events_data: List[EventItem]):
                     EventType.add_to_wishlist: 6,
                     EventType.wishlist: 6
                 }
-
-                ups.score += weight_map.get(e.event_type, 0)
+                
+                if ups_key not in ups_cache:
+                    ups_cache[ups_key] = 0
+                
+                ups_cache[ups_key] += weight_map.get(e.event_type, 0)
 
             # 4. WISHLIST TABLE — save wishlist record if user is logged in
             if e.event_type in (EventType.add_to_wishlist, EventType.wishlist) and e.user_id:
@@ -304,6 +270,51 @@ def save_events_to_db(events_data: List[EventItem]):
                     product_id=e.product_id
                 ))
 
+        # 4.5 BULK UPSERT METRICS — write all accumulated counts using PostgreSQL UPSERT
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        
+        if metrics_cache:
+            for product_id, counts in metrics_cache.items():
+                if any(v > 0 for v in counts.values()):
+                    stmt = pg_insert(ProductMetricsDB).values(
+                        product_id=product_id,
+                        impressions=counts['impressions'],
+                        views=counts['views'],
+                        clicks=counts['clicks'],
+                        carts=counts['carts'],
+                        purchases=counts['purchases'],
+                        wishlist=counts['wishlist']
+                    )
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=['product_id'],
+                        set_={
+                            'impressions': ProductMetricsDB.__table__.c.impressions + counts['impressions'],
+                            'views': ProductMetricsDB.__table__.c.views + counts['views'],
+                            'clicks': ProductMetricsDB.__table__.c.clicks + counts['clicks'],
+                            'carts': ProductMetricsDB.__table__.c.carts + counts['carts'],
+                            'purchases': ProductMetricsDB.__table__.c.purchases + counts['purchases'],
+                            'wishlist': ProductMetricsDB.__table__.c.wishlist + counts['wishlist'],
+                        }
+                    )
+                    db.execute(stmt)
+        
+        # 4.6 BULK UPSERT USER SCORES
+        if ups_cache:
+            for (user_id, product_id), score_delta in ups_cache.items():
+                if score_delta > 0:
+                    stmt = pg_insert(UserProductScoreDB).values(
+                        user_id=user_id,
+                        product_id=product_id,
+                        score=score_delta
+                    )
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=['user_id', 'product_id'],
+                        set_={
+                            'score': UserProductScoreDB.__table__.c.score + score_delta
+                        }
+                    )
+                    db.execute(stmt)
+        
         # 5. ORDERS + ORDER ITEMS — created when purchase event happens
         if purchased_products:
             order = OrderDB(
