@@ -23,14 +23,13 @@ import os
 import logging
 from typing import List, Optional
 from datetime import datetime
-from enum import Enum
 from fastapi import APIRouter, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI
 from pydantic import BaseModel
 from sqlalchemy import (
     create_engine, Column, BigInteger, String,
-    Float, Integer, DateTime, Text
+    Float, Integer, DateTime, Text, UniqueConstraint
 )
 from sqlalchemy.orm import sessionmaker, declarative_base
 
@@ -74,22 +73,6 @@ engine = create_engine(
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
-
-# ============================================================
-# 📊 EVENT TYPE ENUM
-# All event types that JS frontend can send
-# ============================================================
-
-class EventType(str, Enum):
-    view = "view"
-    click = "click"
-    add_to_cart = "add_to_cart"
-    purchase = "purchase"
-    add_to_wishlist = "add_to_wishlist"
-    wishlist = "wishlist"                  # JS sends "wishlist"
-    search = "search"                      # JS sends "search"
-    search_no_result = "search_no_result"  # JS sends "search_no_result"
-    impression = "impression"              # JS sends "impression"
 
 # ============================================================
 # 🗄️ DATABASE TABLES
@@ -152,6 +135,11 @@ class UserProductScoreDB(Base):
     product_id = Column(String(255), index=True)
     score = Column(Float, default=0)
 
+    # ✅ FIX: Required for ON CONFLICT upsert to work correctly
+    __table_args__ = (
+        UniqueConstraint('user_id', 'product_id', name='uq_user_product'),
+    )
+
 
 class WishlistDB(Base):
     __tablename__ = "wishlist"
@@ -166,10 +154,12 @@ Base.metadata.create_all(bind=engine)
 # ============================================================
 # 📦 REQUEST SCHEMA
 # extra = "ignore" silently drops unknown fields like priority, retries, timestamp
+# ✅ FIX: event_type is plain str — not EventType enum
+#         This prevents 422 Unprocessable Entity when JS sends any event type
 # ============================================================
 
 class EventItem(BaseModel):
-    event_type: EventType
+    event_type: str          # ✅ FIX: was EventType enum — caused 422
     session_id: str
     product_id: Optional[str] = None
     user_id: Optional[str] = None
@@ -196,10 +186,22 @@ def save_events_to_db(events_data: List[EventItem]):
     try:
         db_events = []
         purchased_products = []
-        
-        # 🆕 Cache metrics + user scores within this batch to avoid duplicate inserts
+
+        # Cache metrics + user scores within this batch to avoid duplicate inserts
         metrics_cache = {}
         ups_cache = {}
+
+        # ✅ FIX: plain string keys (was EventType.xxx enum keys)
+        weight_map = {
+            "search": 0.5,
+            "impression": 0,
+            "view": 1,
+            "click": 2,
+            "add_to_cart": 5,
+            "purchase": 10,
+            "add_to_wishlist": 6,
+            "wishlist": 6
+        }
 
         for e in events_data:
 
@@ -218,9 +220,9 @@ def save_events_to_db(events_data: List[EventItem]):
             # Skip metrics update if no product_id
             if not e.product_id:
                 continue
-            
-            # 🆕 Skip impression events (we don't track passive viewing)
-            if e.event_type == EventType.impression:
+
+            # Skip impression events (we don't track passive viewing)
+            if e.event_type == "impression":  # ✅ FIX: was EventType.impression
                 continue
 
             # 2. PRODUCT METRICS — accumulate counts in dict (write at end with UPSERT)
@@ -229,44 +231,34 @@ def save_events_to_db(events_data: List[EventItem]):
                     'impressions': 0, 'views': 0, 'clicks': 0,
                     'carts': 0, 'purchases': 0, 'wishlist': 0
                 }
-            
+
             counts = metrics_cache[e.product_id]
-            
-            if e.event_type == EventType.view:
+
+            # ✅ FIX: plain string comparisons (was EventType.xxx)
+            if e.event_type == "view":
                 counts['impressions'] += 1
                 counts['views'] += 1
-            elif e.event_type == EventType.click:
+            elif e.event_type == "click":
                 counts['clicks'] += 1
-            elif e.event_type == EventType.add_to_cart:
+            elif e.event_type == "add_to_cart":
                 counts['carts'] += 1
-            elif e.event_type == EventType.purchase:
+            elif e.event_type == "purchase":
                 counts['purchases'] += 1
                 purchased_products.append(e.product_id)
-            elif e.event_type in (EventType.add_to_wishlist, EventType.wishlist):
+            elif e.event_type in ("add_to_wishlist", "wishlist"):  # ✅ FIX
                 counts['wishlist'] += 1
 
             # 3. USER PRODUCT SCORE — accumulate scores in dict
             if e.user_id and e.product_id:
                 ups_key = (e.user_id, e.product_id)
-                
-                weight_map = {
-                    EventType.search: 0.5,
-                    EventType.impression: 0,
-                    EventType.view: 1,
-                    EventType.click: 2,
-                    EventType.add_to_cart: 5,
-                    EventType.purchase: 10,
-                    EventType.add_to_wishlist: 6,
-                    EventType.wishlist: 6
-                }
-                
+
                 if ups_key not in ups_cache:
                     ups_cache[ups_key] = 0
-                
+
                 ups_cache[ups_key] += weight_map.get(e.event_type, 0)
 
             # 4. WISHLIST TABLE — save wishlist record if user is logged in
-            if e.event_type in (EventType.add_to_wishlist, EventType.wishlist) and e.user_id:
+            if e.event_type in ("add_to_wishlist", "wishlist") and e.user_id:  # ✅ FIX
                 db.add(WishlistDB(
                     user_id=e.user_id,
                     product_id=e.product_id
@@ -274,7 +266,7 @@ def save_events_to_db(events_data: List[EventItem]):
 
         # 4.5 BULK UPSERT METRICS — write all accumulated counts using PostgreSQL UPSERT
         from sqlalchemy.dialects.postgresql import insert as pg_insert
-        
+
         if metrics_cache:
             for product_id, counts in metrics_cache.items():
                 if any(v > 0 for v in counts.values()):
@@ -299,7 +291,7 @@ def save_events_to_db(events_data: List[EventItem]):
                         }
                     )
                     db.execute(stmt)
-        
+
         # 4.6 BULK UPSERT USER SCORES
         if ups_cache:
             for (user_id, product_id), score_delta in ups_cache.items():
@@ -316,7 +308,7 @@ def save_events_to_db(events_data: List[EventItem]):
                         }
                     )
                     db.execute(stmt)
-        
+
         # 5. ORDERS + ORDER ITEMS — created when purchase event happens
         if purchased_products:
             order = OrderDB(
@@ -353,11 +345,11 @@ def save_events_to_db(events_data: List[EventItem]):
         # Save all events to DB
         db.add_all(db_events)
         db.commit()
-        
-        # 🆕 Show breakdown
-        impressions_count = sum(1 for e in events_data if e.event_type == EventType.impression)
+
+        # ✅ FIX: plain string in logger (was EventType.impression)
+        impressions_count = sum(1 for e in events_data if e.event_type == "impression")
         real_actions = len(events_data) - impressions_count
-        
+
         if real_actions > 0:
             logger.info(f"✅ Processed {real_actions} real events + {impressions_count} impressions = {len(events_data)} total")
         else:
