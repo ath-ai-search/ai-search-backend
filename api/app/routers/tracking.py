@@ -160,7 +160,7 @@ Base.metadata.create_all(bind=engine)
 
 class EventItem(BaseModel):
     event_type: str          # ✅ FIX: was EventType enum — caused 422
-    session_id: str
+    session_id: Optional[str] = None
     product_id: Optional[str] = None
     user_id: Optional[str] = None
     query: Optional[str] = None
