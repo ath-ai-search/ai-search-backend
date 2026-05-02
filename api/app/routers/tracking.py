@@ -218,6 +218,10 @@ def save_events_to_db(events_data: List[EventItem]):
             # Skip metrics update if no product_id
             if not e.product_id:
                 continue
+            
+            # 🆕 Skip impression events (we don't track passive viewing)
+            if e.event_type == EventType.impression:
+                continue
 
             # 2. PRODUCT METRICS — accumulate counts in dict (write at end with UPSERT)
             if e.product_id not in metrics_cache:
@@ -228,9 +232,7 @@ def save_events_to_db(events_data: List[EventItem]):
             
             counts = metrics_cache[e.product_id]
             
-            if e.event_type == EventType.impression:
-                counts['impressions'] += 1
-            elif e.event_type == EventType.view:
+            if e.event_type == EventType.view:
                 counts['impressions'] += 1
                 counts['views'] += 1
             elif e.event_type == EventType.click:
