@@ -353,7 +353,15 @@ def save_events_to_db(events_data: List[EventItem]):
         # Save all events to DB
         db.add_all(db_events)
         db.commit()
-        logger.info(f"✅ Processed {len(events_data)} events successfully")
+        
+        # 🆕 Show breakdown
+        impressions_count = sum(1 for e in events_data if e.event_type == EventType.impression)
+        real_actions = len(events_data) - impressions_count
+        
+        if real_actions > 0:
+            logger.info(f"✅ Processed {real_actions} real events + {impressions_count} impressions = {len(events_data)} total")
+        else:
+            logger.info(f"⏭️  Batch of {impressions_count} impressions only (no real actions)")
 
     except Exception as err:
         db.rollback()
