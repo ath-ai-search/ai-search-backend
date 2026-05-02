@@ -486,11 +486,23 @@ def transform_product(raw: dict, category_map: dict, brand_map: dict, metrics_ma
         # to the final product data that gets indexed in OpenSearch
         result.update(variant_data)
         # =================================================================
-        product_stats = metrics_map.get(product_id, {
-            "trending_score": 1.0, "stats_views": 0, "stats_clicks": 0, "stats_carts": 0, "stats_purchases": 0
-        })
+        # 🧠 SMART MATCHER: Handles both Numeric IDs and URL Slugs!
+        
+        # 1. Clean up the BigCommerce URL to get just the text slug
+        # Example: "/dinggu-steel-toe-shoes/" becomes "dinggu-steel-toe-shoes"
+        slug = url.strip("/").split("/")[-1] if url else ""
+        
+        # 2. Try ID first. If it fails, try Slug. If BOTH fail, default to 0.
+        product_stats = metrics_map.get(product_id) or metrics_map.get(slug) or {
+            "trending_score": 1.0, 
+            "stats_views": 0, 
+            "stats_clicks": 0, 
+            "stats_carts": 0, 
+            "stats_purchases": 0
+        }
+        
         result.update(product_stats)
-        # Only add date if it actually exists (fixes AWS date parsing crash)
+        # =================================================================
         date_mod = raw.get("date_modified", "")
         if date_mod:
             result["date_modified"] = date_mod
