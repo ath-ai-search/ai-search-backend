@@ -65,7 +65,7 @@ def get_postgres_metrics() -> dict:
     logger.info("📊 Fetching historical metrics from PostgreSQL...")
     metrics_map = {}
     try:
-        conn = psycopg2.connect(host="172.31.37.226", database="venue_ai", user="postgres", password="shubham16")
+        conn = psycopg2.connect(host="localhost", database="venue_ai", user="postgres", password="shubham16")
         cursor = conn.cursor()
         cursor.execute("SELECT product_id, views, clicks, carts, purchases, wishlist FROM product_metrics;")
         for row in cursor.fetchall():
