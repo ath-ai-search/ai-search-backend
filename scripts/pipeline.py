@@ -39,6 +39,7 @@ import os
 from dotenv import load_dotenv
 import httpx
 import boto3
+import psycopg2
 
 logging.basicConfig(
     level="INFO",
@@ -59,6 +60,26 @@ CONFIG = {
     "OPENSEARCH_INDEX":         os.getenv("OPENSEARCH_INDEX", "products"),
     "DELETE_EXISTING_INDEX":    True, 
 }
+
+def get_postgres_metrics() -> dict:
+    logger.info("📊 Fetching historical metrics from PostgreSQL...")
+    metrics_map = {}
+    try:
+        conn = psycopg2.connect(host="172.31.37.226", database="venue_ai", user="postgres", password="shubham16")
+        cursor = conn.cursor()
+        cursor.execute("SELECT product_id, views, clicks, carts, purchases, wishlist FROM product_metrics;")
+        for row in cursor.fetchall():
+            product_id, views, clicks, carts, purchases, wishlist = row
+            trending_score = 1.0 + (views * 1) + (clicks * 2) + (wishlist * 3) + (carts * 5) + (purchases * 10)
+            metrics_map[str(product_id)] = {
+                "trending_score": trending_score, "stats_views": views, "stats_clicks": clicks, "stats_carts": carts, "stats_purchases": purchases
+            }
+    except Exception as e:
+        logger.error(f"❌ Could not connect to Postgres: {e}")
+    finally:
+        if 'cursor' in locals(): cursor.close()
+        if 'conn' in locals(): conn.close()
+    return metrics_map
 
 # ============================================================
 # BIGCOMMERCE EXTRACTOR
@@ -350,7 +371,7 @@ def extract_variant_data(raw_variants: list) -> dict:
     return variant_data
 
 
-def transform_product(raw: dict, category_map: dict, brand_map: dict) -> dict:
+def transform_product(raw: dict, category_map: dict, brand_map: dict, metrics_map: dict) -> dict:
     try:
         product_id  = str(raw.get("id", ""))
         name        = raw.get("name", "").strip()
@@ -465,7 +486,10 @@ def transform_product(raw: dict, category_map: dict, brand_map: dict) -> dict:
         # to the final product data that gets indexed in OpenSearch
         result.update(variant_data)
         # =================================================================
-        
+        product_stats = metrics_map.get(product_id, {
+            "trending_score": 1.0, "stats_views": 0, "stats_clicks": 0, "stats_carts": 0, "stats_purchases": 0
+        })
+        result.update(product_stats)
         # Only add date if it actually exists (fixes AWS date parsing crash)
         date_mod = raw.get("date_modified", "")
         if date_mod:
@@ -481,13 +505,13 @@ def transform_product(raw: dict, category_map: dict, brand_map: dict) -> dict:
             "search_text": raw.get("name", ""),
         }
 
-def transform_batch(raw_products: list[dict], category_map: dict, brand_map: dict) -> list[dict]:
+def transform_batch(raw_products: list[dict], category_map: dict, brand_map: dict, metrics_map: dict) -> list[dict]:
     results, skipped = [], 0
     for raw in raw_products:
         if not is_product_eligible(raw):
             skipped += 1
             continue
-        transformed = transform_product(raw, category_map, brand_map)
+        transformed = transform_product(raw, category_map, brand_map, metrics_map)
         if transformed.get("product_id"):
             results.append(transformed)
     if skipped:
@@ -573,7 +597,11 @@ PRODUCT_MAPPING = {
             "sort_order":    {"type": "integer"},
             "total_sold":    {"type": "integer"},
             "date_modified": {"type": "date", "ignore_malformed": True},
-            
+            "trending_score":  {"type": "float"},
+            "stats_views":     {"type": "integer"},
+            "stats_clicks":    {"type": "integer"},
+            "stats_carts":     {"type": "integer"},
+            "stats_purchases": {"type": "integer"},
             # =================================================================
             # 🆕 NEW VARIANT FIELDS (for dynamic faceted filtering)
             # =================================================================
@@ -684,13 +712,15 @@ async def run():
 
     category_map = await extractor.get_category_map()
     brand_map = await extractor.get_brand_map()
+    
+    metrics_map = get_postgres_metrics()
 
     indexer.create_index(delete_existing=CONFIG["DELETE_EXISTING_INDEX"])
 
     total_indexed, total_errors = 0, 0
 
     async for raw_page in extractor.get_all_products():
-        products = transform_batch(raw_page, category_map, brand_map)
+        products = transform_batch(raw_page, category_map, brand_map, metrics_map)
         if not products:
             continue
         
