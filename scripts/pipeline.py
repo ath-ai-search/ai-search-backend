@@ -72,7 +72,12 @@ def get_postgres_metrics() -> dict:
             product_id, views, clicks, carts, purchases, wishlist = row
             trending_score = 1.0 + (views * 1) + (clicks * 2) + (wishlist * 3) + (carts * 5) + (purchases * 10)
             metrics_map[str(product_id)] = {
-                "trending_score": trending_score, "stats_views": views, "stats_clicks": clicks, "stats_carts": carts, "stats_purchases": purchases
+                "trending_score": trending_score,
+                "stats_views": views,
+                "stats_clicks": clicks,
+                "stats_carts": carts,
+                "stats_purchases": purchases,
+                "stats_wishlist": wishlist  # 🆕 ADDED
             }
     except Exception as e:
         logger.error(f"❌ Could not connect to Postgres: {e}")
@@ -498,7 +503,8 @@ def transform_product(raw: dict, category_map: dict, brand_map: dict, metrics_ma
             "stats_views": 0, 
             "stats_clicks": 0, 
             "stats_carts": 0, 
-            "stats_purchases": 0
+            "stats_purchases": 0,
+            "stats_wishlist": 0
         }
         
         result.update(product_stats)
@@ -614,6 +620,7 @@ PRODUCT_MAPPING = {
             "stats_clicks":    {"type": "integer"},
             "stats_carts":     {"type": "integer"},
             "stats_purchases": {"type": "integer"},
+            "stats_wishlist":  {"type": "integer"},
             # =================================================================
             # 🆕 NEW VARIANT FIELDS (for dynamic faceted filtering)
             # =================================================================
