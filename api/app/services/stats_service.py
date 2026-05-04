@@ -44,7 +44,7 @@ logger = logging.getLogger("StatsService")
 # OpenSearch config (matches your existing config)
 OPENSEARCH_HOST = os.getenv(
     "OPENSEARCH_HOST",
-    "2ylfb0foyx8uh6deq90j.us-west-2.aoss.amazonaws.com"
+    "ud6wzyczsjqz2nc3fmw9.us-west-2.aoss.amazonaws.com"
 )
 OPENSEARCH_REGION = os.getenv("OPENSEARCH_REGION", "us-west-2")
 OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "products")
