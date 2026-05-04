@@ -18,10 +18,6 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-# ============================================================
-# ⚙️ CONFIG
-# ============================================================
-
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql://postgres:shubham16@localhost:5432/venue_ai"
@@ -30,12 +26,7 @@ DATABASE_URL = os.getenv(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("TrackingAPI")
 
-# ============================================================
-# 🚀 APP SETUP
-# ============================================================
-
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -45,23 +36,10 @@ app.add_middleware(
 
 router = APIRouter(tags=["Tracking"])
 
-# ============================================================
-# 🗄️ DATABASE SETUP
-# ============================================================
-
-engine = create_engine(
-    DATABASE_URL,
-    pool_size=10,
-    max_overflow=20,
-    pool_timeout=30
-)
-
+engine = create_engine(DATABASE_URL, pool_size=10, max_overflow=20, pool_timeout=30)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
-# ============================================================
-# 🗄️ DATABASE TABLES
-# ============================================================
 
 class EventDB(Base):
     _tablename_ = "events"
@@ -117,7 +95,6 @@ class ProductMetricsDB(Base):
     trending_score = Column(Numeric, default=0)
     last_seen = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
-    
     _table_args_ = (
         UniqueConstraint('visitor_id', 'product_id', name='uq_visitor_product'),
     )
@@ -134,9 +111,6 @@ class WishlistDB(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# ============================================================
-# 📦 REQUEST SCHEMA
-# ============================================================
 
 class EventItem(BaseModel):
     event_type: str
@@ -158,16 +132,7 @@ class TrackingPayload(BaseModel):
     events: List[EventItem]
 
 
-# ============================================================
-# 🆕 HELPER: Get the identity to use for storage
-# ============================================================
-
-def get_identity(event: EventItem) -> Optional[str]:
-    """
-    Returns the ID to use for tracking:
-    - If user logged in (user_id present): use user_id
-    - Otherwise: use visitor_id
-    """
+def get_identity(event):
     if event.user_id and event.user_id.strip() and event.user_id != "null":
         return event.user_id.strip()
     elif event.visitor_id and event.visitor_id.strip() and event.visitor_id != "null":
@@ -176,37 +141,20 @@ def get_identity(event: EventItem) -> Optional[str]:
         return None
 
 
-# ============================================================
-# 🧮 TRENDING SCORE CALCULATOR
-# ============================================================
-
 def calculate_trending_score(views, clicks, carts, wishlist, purchases):
-    return 1.0 + (
-        views * 1 +
-        clicks * 2 +
-        wishlist * 3 +
-        carts * 5 +
-        purchases * 10
-    )
+    return 1.0 + (views * 1 + clicks * 2 + wishlist * 3 + carts * 5 + purchases * 10)
 
 
-# ============================================================
-# 🔁 MAIN LOGIC — runs in background after API responds
-# ============================================================
-
-def save_events_to_db(events_data: List[EventItem]):
+def save_events_to_db(events_data):
     db = SessionLocal()
-
     try:
         db_events = []
         purchased_products = []
         metrics_cache = {}
 
         for e in events_data:
-            
             identity = get_identity(e)
 
-            # 1. RAW EVENT
             db_events.append(EventDB(
                 event_type=e.event_type,
                 product_id=e.product_id,
@@ -221,17 +169,13 @@ def save_events_to_db(events_data: List[EventItem]):
 
             if not e.product_id:
                 continue
-
             if e.event_type == "impression":
                 continue
-            
             if not identity:
-                logger.warning(f"⚠️  Event has no visitor_id or user_id, skipping metrics: {e.event_type}")
+                logger.warning(f"Event has no identity, skipping: {e.event_type}")
                 continue
 
-            # 2. PRODUCT METRICS
             cache_key = (identity, e.product_id)
-            
             if cache_key not in metrics_cache:
                 metrics_cache[cache_key] = {
                     'impressions': 0, 'views': 0, 'clicks': 0,
@@ -253,7 +197,6 @@ def save_events_to_db(events_data: List[EventItem]):
             elif e.event_type in ("add_to_wishlist", "wishlist"):
                 counts['wishlist'] += 1
 
-            # 3. WISHLIST TABLE
             if e.event_type in ("add_to_wishlist", "wishlist"):
                 db.add(WishlistDB(
                     user_id=e.user_id,
@@ -261,23 +204,15 @@ def save_events_to_db(events_data: List[EventItem]):
                     product_id=e.product_id
                 ))
 
-        # ============================================================
-        # BULK UPSERT METRICS
-        # ============================================================
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         if metrics_cache:
             for (identity, product_id), counts in metrics_cache.items():
                 if any(v > 0 for v in counts.values()):
-                    
                     new_trending = calculate_trending_score(
-                        counts['views'],
-                        counts['clicks'],
-                        counts['carts'],
-                        counts['wishlist'],
-                        counts['purchases']
+                        counts['views'], counts['clicks'], counts['carts'],
+                        counts['wishlist'], counts['purchases']
                     )
-                    
                     stmt = pg_insert(ProductMetricsDB).values(
                         visitor_id=identity,
                         product_id=product_id,
@@ -290,7 +225,6 @@ def save_events_to_db(events_data: List[EventItem]):
                         trending_score=new_trending,
                         last_seen=datetime.utcnow()
                     )
-                    
                     stmt = stmt.on_conflict_do_update(
                         index_elements=['visitor_id', 'product_id'],
                         set_={
@@ -305,7 +239,6 @@ def save_events_to_db(events_data: List[EventItem]):
                     )
                     db.execute(stmt)
 
-            # Recalculate trending_score using text() wrapper
             for (identity, product_id), _ in metrics_cache.items():
                 db.execute(
                     text("""
@@ -316,9 +249,6 @@ def save_events_to_db(events_data: List[EventItem]):
                     {"vid": identity, "pid": product_id}
                 )
 
-        # ============================================================
-        # ORDERS + ORDER ITEMS
-        # ============================================================
         if purchased_products:
             order = OrderDB(
                 visitor_id=events_data[0].visitor_id,
@@ -329,20 +259,14 @@ def save_events_to_db(events_data: List[EventItem]):
             db.flush()
 
             for pid in purchased_products:
-                db.add(OrderItemDB(
-                    order_id=order.id,
-                    product_id=pid,
-                    quantity=1
-                ))
+                db.add(OrderItemDB(order_id=order.id, product_id=pid, quantity=1))
 
-            # CO-OCCURRENCE
             for i in range(len(purchased_products)):
                 for j in range(i + 1, len(purchased_products)):
                     existing = db.query(ProductCooccurrenceDB).filter_by(
                         product_id=purchased_products[i],
                         related_product_id=purchased_products[j]
                     ).first()
-
                     if existing:
                         existing.score += 1
                     else:
@@ -352,38 +276,29 @@ def save_events_to_db(events_data: List[EventItem]):
                             score=1
                         ))
 
-        # Save all events
         db.add_all(db_events)
         db.commit()
 
-        # Logging
         impressions_count = sum(1 for e in events_data if e.event_type == "impression")
         real_actions = len(events_data) - impressions_count
 
         if real_actions > 0:
-            logger.info(f"✅ Processed {real_actions} real events + {impressions_count} impressions = {len(events_data)} total")
+            logger.info(f"Processed {real_actions} real events + {impressions_count} impressions = {len(events_data)} total")
         else:
-            logger.info(f"⏭️  Batch of {impressions_count} impressions only")
+            logger.info(f"Batch of {impressions_count} impressions only")
 
     except Exception as err:
         db.rollback()
-        logger.error(f"❌ ERROR saving events: {err}")
-
+        logger.error(f"ERROR saving events: {err}")
     finally:
         db.close()
 
-
-# ============================================================
-# 🌐 API ENDPOINTS
-# ============================================================
 
 @router.post("/track")
 async def track_events(payload: TrackingPayload, background_tasks: BackgroundTasks):
     if not payload.events:
         return {"status": "skipped"}
-
     background_tasks.add_task(save_events_to_db, payload.events)
-
     return {
         "status": "ok",
         "message": f"{len(payload.events)} events received"
@@ -395,5 +310,4 @@ async def health():
     return {"status": "running"}
 
 
-# Include router in app
 app.include_router(router)
