@@ -1,50 +1,26 @@
 """
 =====================================================================================
-📊 STATS ROUTER — Top Products APIs
+📊 STATS ROUTER — Personal Top Products APIs (Per User)
 =====================================================================================
-This router exposes 6 endpoints for getting top products by engagement metrics.
+6 endpoints that return products specific to each user.
+
+LOGIC:
+  - visitor_id is REQUIRED (always sent by frontend)
+  - user_id is OPTIONAL (only if user is logged in)
+  - If user_id provided → query by user_id (cross-device)
+  - If only visitor_id → query by visitor_id (browser-specific)
 
 ENDPOINTS:
-  GET /products/view          → Most viewed products
-  GET /products/click         → Most clicked products
-  GET /products/add-to-cart   → Most added to cart
-  GET /products/wishlist      → Most wished products
-  GET /products/purchase      → Most purchased (best sellers)
-  GET /products/trending      → Hot products (combined trending_score)
+  GET /products/view?visitor_id=...&user_id=...
+  GET /products/click?visitor_id=...&user_id=...
+  GET /products/add-to-cart?visitor_id=...&user_id=...
+  GET /products/wishlist?visitor_id=...&user_id=...
+  GET /products/purchase?visitor_id=...&user_id=...
+  GET /products/trending?visitor_id=...&user_id=...
 
-QUERY PARAMETERS (all endpoints):
-  page: int (default=1)  → Page number (1-indexed)
-  size: int (default=10) → Results per page (max 100)
-
-EXAMPLE:
-  GET /products/view?page=1&size=10
-  GET /products/trending?page=2&size=20
-
-RESPONSE FORMAT:
-  {
-    "results": [
-      {
-        "product_id": "6725",
-        "name": "Waterpik...",
-        "price": 79.99,
-        "image": "https://...",
-        "url": "/waterpik-...",
-        "trending_score": 19,
-        "stats_views": 0,
-        "stats_clicks": 0,
-        "stats_carts": 3,
-        "stats_wishlist": 1,
-        "stats_purchases": 0
-      },
-      ...
-    ],
-    "total": 60,
-    "page": 1,
-    "size": 10,
-    "metric": "view",
-    "took_ms": 45.2,
-    "cached": false
-  }
+OPTIONAL PARAMS:
+  page: int (default=1)
+  size: int (default=10, max=100)
 =====================================================================================
 """
 
@@ -55,111 +31,125 @@ router = APIRouter(prefix="/products", tags=["Stats"])
 
 
 # =========================================================================
-# 1️⃣ MOST VIEWED PRODUCTS
+# 1️⃣ MOST VIEWED PRODUCTS (per user)
 # =========================================================================
 @router.get("/view")
-async def most_viewed_products(
-    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
-    size: int = Query(10, ge=1, le=100, description="Results per page (max 100)")
+async def user_viewed_products(
+    visitor_id: str = Query(..., description="Browser UUID (required)"),
+    user_id: str = Query(None, description="Customer ID (if logged in)"),
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100)
 ):
-    """
-    Returns products sorted by view count (most viewed first).
-    
-    USE CASE: 
-      - "Most Viewed" homepage section
-      - "Popular Right Now" carousel
-    """
-    return await get_top_products_by_metric("view", page=page, size=size)
+    """Returns products THIS user viewed."""
+    return await get_top_products_by_metric(
+        metric="view",
+        visitor_id=visitor_id,
+        user_id=user_id,
+        page=page,
+        size=size
+    )
 
 
 # =========================================================================
-# 2️⃣ MOST CLICKED PRODUCTS
+# 2️⃣ MOST CLICKED PRODUCTS (per user)
 # =========================================================================
 @router.get("/click")
-async def most_clicked_products(
-    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
-    size: int = Query(10, ge=1, le=100, description="Results per page (max 100)")
+async def user_clicked_products(
+    visitor_id: str = Query(..., description="Browser UUID (required)"),
+    user_id: str = Query(None, description="Customer ID (if logged in)"),
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100)
 ):
-    """
-    Returns products sorted by click count (most clicked first).
-    
-    USE CASE:
-      - "Trending Searches" section
-      - High interest products
-    """
-    return await get_top_products_by_metric("click", page=page, size=size)
+    """Returns products THIS user clicked."""
+    return await get_top_products_by_metric(
+        metric="click",
+        visitor_id=visitor_id,
+        user_id=user_id,
+        page=page,
+        size=size
+    )
 
 
 # =========================================================================
-# 3️⃣ MOST ADDED TO CART
+# 3️⃣ MOST ADDED TO CART (per user)
 # =========================================================================
 @router.get("/add-to-cart")
-async def most_carted_products(
-    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
-    size: int = Query(10, ge=1, le=100, description="Results per page (max 100)")
+async def user_carted_products(
+    visitor_id: str = Query(..., description="Browser UUID (required)"),
+    user_id: str = Query(None, description="Customer ID (if logged in)"),
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100)
 ):
-    """
-    Returns products sorted by cart additions (most added first).
-    
-    USE CASE:
-      - "Almost Sold Out" section
-      - High intent products
-    """
-    return await get_top_products_by_metric("add-to-cart", page=page, size=size)
+    """Returns products THIS user added to cart."""
+    return await get_top_products_by_metric(
+        metric="add-to-cart",
+        visitor_id=visitor_id,
+        user_id=user_id,
+        page=page,
+        size=size
+    )
 
 
 # =========================================================================
-# 4️⃣ MOST WISHED PRODUCTS
+# 4️⃣ MOST WISHED PRODUCTS (per user)
 # =========================================================================
 @router.get("/wishlist")
-async def most_wished_products(
-    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
-    size: int = Query(10, ge=1, le=100, description="Results per page (max 100)")
+async def user_wishlisted_products(
+    visitor_id: str = Query(..., description="Browser UUID (required)"),
+    user_id: str = Query(None, description="Customer ID (if logged in)"),
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100)
 ):
-    """
-    Returns products sorted by wishlist count (most wished first).
-    
-    USE CASE:
-      - "Customer Favorites" section
-      - "Save for Later" inspiration
-    """
-    return await get_top_products_by_metric("wishlist", page=page, size=size)
+    """Returns products THIS user wishlisted."""
+    return await get_top_products_by_metric(
+        metric="wishlist",
+        visitor_id=visitor_id,
+        user_id=user_id,
+        page=page,
+        size=size
+    )
 
 
 # =========================================================================
-# 5️⃣ MOST PURCHASED PRODUCTS (BEST SELLERS)
+# 5️⃣ MOST PURCHASED PRODUCTS (per user)
 # =========================================================================
 @router.get("/purchase")
-async def most_purchased_products(
-    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
-    size: int = Query(10, ge=1, le=100, description="Results per page (max 100)")
+async def user_purchased_products(
+    visitor_id: str = Query(..., description="Browser UUID (required)"),
+    user_id: str = Query(None, description="Customer ID (if logged in)"),
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100)
 ):
-    """
-    Returns products sorted by purchase count (best sellers first).
-    
-    USE CASE:
-      - "Best Sellers" homepage section
-      - "Top Sellers" badge products
-    """
-    return await get_top_products_by_metric("purchase", page=page, size=size)
+    """Returns products THIS user purchased."""
+    return await get_top_products_by_metric(
+        metric="purchase",
+        visitor_id=visitor_id,
+        user_id=user_id,
+        page=page,
+        size=size
+    )
 
 
 # =========================================================================
-# 6️⃣ TRENDING PRODUCTS (COMBINED SCORE)
+# 6️⃣ TRENDING PRODUCTS (per user)
 # =========================================================================
 @router.get("/trending")
-async def trending_products(
-    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
-    size: int = Query(10, ge=1, le=100, description="Results per page (max 100)")
+async def user_trending_products(
+    visitor_id: str = Query(..., description="Browser UUID (required)"),
+    user_id: str = Query(None, description="Customer ID (if logged in)"),
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100)
 ):
     """
-    Returns products sorted by combined trending score.
+    Returns THIS user's trending products (combined score).
     
-    Formula: 1 + (views×1) + (clicks×2) + (wishlist×3) + (carts×5) + (purchases×10)
-    
-    USE CASE:
-      - "Hot Products" section
-      - "What's Trending" carousel
-      - Smart popular products mixing all signals
+    Score Formula:
+      trending_score = 1 + (views×1) + (clicks×2) + (wishlist×3) + (carts×5) + (purchases×10)
     """
-    return await get_top_products_by_metric("trending", page=page, size=size)
+    return await get_top_products_by_metric(
+        metric="trending",
+        visitor_id=visitor_id,
+        user_id=user_id,
+        page=page,
+        size=size
+    )
