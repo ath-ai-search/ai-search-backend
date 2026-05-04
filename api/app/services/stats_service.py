@@ -2,7 +2,7 @@
 =====================================================================================
 📊 STATS SERVICE — Top Products by Engagement Metrics
 =====================================================================================
-This service powers 6 APIs that return top products sorted by different metrics:
+Powers 6 APIs that return top products sorted by different metrics:
 
   1. /products/view          → Most viewed products
   2. /products/click         → Most clicked products
@@ -11,12 +11,10 @@ This service powers 6 APIs that return top products sorted by different metrics:
   5. /products/purchase      → Most purchased (best sellers)
   6. /products/trending      → Hot products (combined trending_score)
 
-HOW IT WORKS:
-  1. Query OpenSearch products index
-  2. Filter products with engagement (stat > 0)
-  3. Sort by the specified stat field DESC
-  4. Cache results in Redis for 5 minutes (avoid hitting OpenSearch repeatedly)
-  5. Return paginated, formatted results
+USES SHARED CONFIG:
+  - os_client     → OpenSearch client (from config.py)
+  - redis_client  → Redis client (from config.py)
+  - INDEX_NAME    → Products index name (from config.py)
 
 PERFORMANCE:
   - First call: ~50-100ms (OpenSearch query)
@@ -25,15 +23,12 @@ PERFORMANCE:
 =====================================================================================
 """
 
-import os
 import time
 import json
 import logging
-from typing import Optional
 
-import redis
-from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
-import boto3
+# 🆕 Import everything from existing config (uses correct endpoint automatically)
+from app.config import os_client, redis_client, INDEX_NAME
 
 # =========================================================================
 # ⚙️ CONFIG
@@ -41,52 +36,7 @@ import boto3
 
 logger = logging.getLogger("StatsService")
 
-# OpenSearch config (matches your existing config)
-OPENSEARCH_HOST = os.getenv(
-    "OPENSEARCH_HOST",
-    "ud6wzyczsjqz2nc3fmw9.us-west-2.aoss.amazonaws.com"
-)
-OPENSEARCH_REGION = os.getenv("OPENSEARCH_REGION", "us-west-2")
-OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "products")
-
-# Redis config
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 CACHE_TTL = 300  # 5 minutes
-
-# =========================================================================
-# 🔌 OPENSEARCH CLIENT (AWS Sig V4 auth)
-# =========================================================================
-
-credentials = boto3.Session().get_credentials()
-auth = AWSV4SignerAuth(credentials, OPENSEARCH_REGION, 'aoss')
-
-os_client = OpenSearch(
-    hosts=[{'host': OPENSEARCH_HOST, 'port': 443}],
-    http_auth=auth,
-    use_ssl=True,
-    verify_certs=True,
-    connection_class=RequestsHttpConnection,
-    timeout=30
-)
-
-# =========================================================================
-# 🔌 REDIS CLIENT (with graceful fallback)
-# =========================================================================
-
-try:
-    redis_client = redis.Redis(
-        host=REDIS_HOST,
-        port=REDIS_PORT,
-        decode_responses=True,
-        socket_connect_timeout=2
-    )
-    redis_client.ping()
-    REDIS_AVAILABLE = True
-    logger.info("✅ Redis connected for stats caching")
-except Exception as e:
-    REDIS_AVAILABLE = False
-    logger.warning(f"⚠️  Redis not available — caching disabled: {e}")
 
 # =========================================================================
 # 🗺️ METRIC FIELD MAPPING
@@ -118,17 +68,6 @@ async def get_top_products_by_metric(
         metric: One of 'view', 'click', 'add-to-cart', 'wishlist', 'purchase', 'trending'
         page: Page number (1-indexed)
         size: Number of results per page
-    
-    Returns:
-        {
-            "results": [...products...],
-            "total": int,
-            "page": int,
-            "size": int,
-            "took_ms": float,
-            "metric": str,
-            "cached": bool
-        }
     """
     start_time = time.time()
     
@@ -142,7 +81,7 @@ async def get_top_products_by_metric(
     
     # Validate pagination
     page = max(1, page)
-    size = max(1, min(size, 100))  # Cap at 100 results
+    size = max(1, min(size, 100))  # Cap at 100
     
     sort_field = METRIC_FIELDS[metric]
     
@@ -151,17 +90,16 @@ async def get_top_products_by_metric(
     # =====================================================================
     cache_key = f"stats:{metric}:{page}:{size}"
     
-    if REDIS_AVAILABLE:
-        try:
-            cached = redis_client.get(cache_key)
-            if cached:
-                result = json.loads(cached)
-                result["cached"] = True
-                result["took_ms"] = round((time.time() - start_time) * 1000, 2)
-                logger.info(f"⚡ STATS_CACHE_HIT | metric={metric} | page={page} | took={result['took_ms']}ms")
-                return result
-        except Exception as e:
-            logger.warning(f"Cache read failed: {e}")
+    try:
+        cached = await redis_client.get(cache_key)
+        if cached:
+            result = json.loads(cached)
+            result["cached"] = True
+            result["took_ms"] = round((time.time() - start_time) * 1000, 2)
+            logger.info(f"⚡ STATS_CACHE_HIT | metric={metric} | page={page} | took={result['took_ms']}ms")
+            return result
+    except Exception as e:
+        logger.warning(f"Cache read failed: {e}")
     
     # =====================================================================
     # 2. QUERY OPENSEARCH
@@ -208,7 +146,7 @@ async def get_top_products_by_metric(
     
     try:
         response = os_client.search(
-            index=OPENSEARCH_INDEX,
+            index=INDEX_NAME,
             body=query_body
         )
     except Exception as e:
@@ -268,15 +206,14 @@ async def get_top_products_by_metric(
     # =====================================================================
     # 4. SAVE TO REDIS CACHE
     # =====================================================================
-    if REDIS_AVAILABLE:
-        try:
-            redis_client.setex(
-                cache_key,
-                CACHE_TTL,
-                json.dumps(result)
-            )
-        except Exception as e:
-            logger.warning(f"Cache write failed: {e}")
+    try:
+        await redis_client.setex(
+            cache_key,
+            CACHE_TTL,
+            json.dumps(result)
+        )
+    except Exception as e:
+        logger.warning(f"Cache write failed: {e}")
     
     logger.info(f"✅ STATS | metric={metric} | page={page} | results={len(results)} | took={took_ms}ms")
     
@@ -287,18 +224,12 @@ async def get_top_products_by_metric(
 # 🔥 CACHE INVALIDATION (use after pipeline.py runs)
 # =========================================================================
 
-def invalidate_stats_cache():
-    """
-    Clear all stats cache entries. Call this after pipeline.py finishes
-    re-indexing OpenSearch with fresh tracking data.
-    """
-    if not REDIS_AVAILABLE:
-        return False
-    
+async def invalidate_stats_cache():
+    """Clear all stats cache entries. Call after pipeline.py runs."""
     try:
-        keys = redis_client.keys("stats:*")
+        keys = await redis_client.keys("stats:*")
         if keys:
-            redis_client.delete(*keys)
+            await redis_client.delete(*keys)
             logger.info(f"🗑️  Invalidated {len(keys)} stats cache entries")
         return True
     except Exception as e:
