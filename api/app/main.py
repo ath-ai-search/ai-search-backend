@@ -29,6 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import similar
 from app.routers import search
 from app.routers import tracking  # 👈 ADD THIS LINE
+from app.routers import stats
 # Import services we call directly from top-level routes
 from app.services.autocomplete import execute_autocomplete
 from app.services.widget_service import get_mega_menu_widget
@@ -61,6 +62,7 @@ app.include_router(search.router, prefix="/search", tags=["Search"])
 # 👈 ADD THIS NEW LINE BELOW:
 app.include_router(tracking.router)
 app.include_router(similar.router)
+app.include_router(stats.router)
 
 
 # =========================================================================
