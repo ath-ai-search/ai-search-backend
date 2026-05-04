@@ -259,7 +259,7 @@ def save_events_to_db(events_data):
             db.flush()
 
             for pid in purchased_products:
-            db.add(OrderItemDB(order_id=order.order_id, product_id=pid, quantity=1))
+             db.add(OrderItemDB(order_id=order.order_id, product_id=pid, quantity=1))
 
             for i in range(len(purchased_products)):
                 for j in range(i + 1, len(purchased_products)):
