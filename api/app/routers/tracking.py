@@ -61,7 +61,7 @@ class OrderDB(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     visitor_id = Column(String(100))
     user_id = Column(String(100))
-    session_id = Column(String(100))
+    # session_id = Column(String(100))
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
