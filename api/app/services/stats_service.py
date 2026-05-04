@@ -169,9 +169,14 @@ async def get_top_products_by_metric(
     for hit in hits:
         source = hit.get("_source", {})
         
-        # Get first image (images is comma-separated string)
+        # Get first image (handles both list and comma-separated string formats)
         images = source.get("images", "")
-        first_image = images.split(",")[0].strip() if images else ""
+        if isinstance(images, list):
+            first_image = images[0] if images else ""
+        elif isinstance(images, str):
+            first_image = images.split(",")[0].strip() if images else ""
+        else:
+            first_image = ""
         
         results.append({
             "product_id": source.get("product_id"),
