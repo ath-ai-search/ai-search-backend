@@ -253,7 +253,7 @@ def save_events_to_db(events_data):
             order = OrderDB(
                 visitor_id=events_data[0].visitor_id,
                 user_id=events_data[0].user_id,
-                session_id=events_data[0].session_id
+                # session_id=events_data[0].session_id
             )
             db.add(order)
             db.flush()
