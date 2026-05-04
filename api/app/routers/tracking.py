@@ -1,4 +1,3 @@
-
 """
 ===============================================================================
 FILE: tracking.py
@@ -65,7 +64,7 @@ Base = declarative_base()
 # ============================================================
 
 class EventDB(Base):
-    __tablename__ = "events"
+    _tablename_ = "events"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     event_type = Column(String(50), index=True)
     product_id = Column(String(255), index=True)
@@ -80,7 +79,7 @@ class EventDB(Base):
 
 
 class OrderDB(Base):
-    __tablename__ = "orders"
+    _tablename_ = "orders"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     visitor_id = Column(String(100))
     user_id = Column(String(100))
@@ -89,7 +88,7 @@ class OrderDB(Base):
 
 
 class OrderItemDB(Base):
-    __tablename__ = "order_items"
+    _tablename_ = "order_items"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     order_id = Column(BigInteger)
     product_id = Column(String(255))
@@ -97,7 +96,7 @@ class OrderItemDB(Base):
 
 
 class ProductCooccurrenceDB(Base):
-    __tablename__ = "product_cooccurrence"
+    _tablename_ = "product_cooccurrence"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     product_id = Column(String(255), index=True)
     related_product_id = Column(String(255), index=True)
@@ -105,7 +104,7 @@ class ProductCooccurrenceDB(Base):
 
 
 class ProductMetricsDB(Base):
-    __tablename__ = "product_metrics"
+    _tablename_ = "product_metrics"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     visitor_id = Column(String(100), nullable=False, index=True)
     product_id = Column(String(255), nullable=False, index=True)
@@ -119,25 +118,13 @@ class ProductMetricsDB(Base):
     last_seen = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
     
-    __table_args__ = (
+    _table_args_ = (
         UniqueConstraint('visitor_id', 'product_id', name='uq_visitor_product'),
     )
 
 
-class UserProductScoreDB(Base):
-    __tablename__ = "user_product_scores"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
-    user_id = Column(String(100), index=True)
-    product_id = Column(String(255), index=True)
-    score = Column(Float, default=0)
-
-    __table_args__ = (
-        UniqueConstraint('user_id', 'product_id', name='uq_user_product'),
-    )
-
-
 class WishlistDB(Base):
-    __tablename__ = "wishlist"
+    _tablename_ = "wishlist"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     user_id = Column(String(100), index=True)
     visitor_id = Column(String(100), index=True)
@@ -214,18 +201,6 @@ def save_events_to_db(events_data: List[EventItem]):
         db_events = []
         purchased_products = []
         metrics_cache = {}
-        ups_cache = {}
-
-        weight_map = {
-            "search": 0.5,
-            "impression": 0,
-            "view": 1,
-            "click": 2,
-            "add_to_cart": 5,
-            "purchase": 10,
-            "add_to_wishlist": 6,
-            "wishlist": 6
-        }
 
         for e in events_data:
             
@@ -278,16 +253,7 @@ def save_events_to_db(events_data: List[EventItem]):
             elif e.event_type in ("add_to_wishlist", "wishlist"):
                 counts['wishlist'] += 1
 
-            # 3. USER PRODUCT SCORE
-            if e.user_id and e.product_id:
-                ups_key = (e.user_id, e.product_id)
-
-                if ups_key not in ups_cache:
-                    ups_cache[ups_key] = 0
-
-                ups_cache[ups_key] += weight_map.get(e.event_type, 0)
-
-            # 4. WISHLIST TABLE
+            # 3. WISHLIST TABLE
             if e.event_type in ("add_to_wishlist", "wishlist"):
                 db.add(WishlistDB(
                     user_id=e.user_id,
@@ -296,7 +262,7 @@ def save_events_to_db(events_data: List[EventItem]):
                 ))
 
         # ============================================================
-        # 4.5 BULK UPSERT METRICS
+        # BULK UPSERT METRICS
         # ============================================================
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -328,18 +294,18 @@ def save_events_to_db(events_data: List[EventItem]):
                     stmt = stmt.on_conflict_do_update(
                         index_elements=['visitor_id', 'product_id'],
                         set_={
-                            'impressions': ProductMetricsDB.__table__.c.impressions + counts['impressions'],
-                            'views': ProductMetricsDB.__table__.c.views + counts['views'],
-                            'clicks': ProductMetricsDB.__table__.c.clicks + counts['clicks'],
-                            'carts': ProductMetricsDB.__table__.c.carts + counts['carts'],
-                            'purchases': ProductMetricsDB.__table__.c.purchases + counts['purchases'],
-                            'wishlist': ProductMetricsDB.__table__.c.wishlist + counts['wishlist'],
+                            'impressions': ProductMetricsDB._table_.c.impressions + counts['impressions'],
+                            'views': ProductMetricsDB._table_.c.views + counts['views'],
+                            'clicks': ProductMetricsDB._table_.c.clicks + counts['clicks'],
+                            'carts': ProductMetricsDB._table_.c.carts + counts['carts'],
+                            'purchases': ProductMetricsDB._table_.c.purchases + counts['purchases'],
+                            'wishlist': ProductMetricsDB._table_.c.wishlist + counts['wishlist'],
                             'last_seen': datetime.utcnow(),
                         }
                     )
                     db.execute(stmt)
 
-            # 🆕 Recalculate trending_score using text() wrapper (FIXED!)
+            # Recalculate trending_score using text() wrapper
             for (identity, product_id), _ in metrics_cache.items():
                 db.execute(
                     text("""
@@ -351,26 +317,7 @@ def save_events_to_db(events_data: List[EventItem]):
                 )
 
         # ============================================================
-        # 4.6 BULK UPSERT USER SCORES
-        # ============================================================
-        if ups_cache:
-            for (user_id, product_id), score_delta in ups_cache.items():
-                if score_delta > 0:
-                    stmt = pg_insert(UserProductScoreDB).values(
-                        user_id=user_id,
-                        product_id=product_id,
-                        score=score_delta
-                    )
-                    stmt = stmt.on_conflict_do_update(
-                        index_elements=['user_id', 'product_id'],
-                        set_={
-                            'score': UserProductScoreDB.__table__.c.score + score_delta
-                        }
-                    )
-                    db.execute(stmt)
-
-        # ============================================================
-        # 5. ORDERS + ORDER ITEMS
+        # ORDERS + ORDER ITEMS
         # ============================================================
         if purchased_products:
             order = OrderDB(
@@ -388,7 +335,7 @@ def save_events_to_db(events_data: List[EventItem]):
                     quantity=1
                 ))
 
-            # 6. CO-OCCURRENCE
+            # CO-OCCURRENCE
             for i in range(len(purchased_products)):
                 for j in range(i + 1, len(purchased_products)):
                     existing = db.query(ProductCooccurrenceDB).filter_by(
