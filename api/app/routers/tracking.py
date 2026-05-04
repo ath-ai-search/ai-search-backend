@@ -58,9 +58,10 @@ class EventDB(Base):
 
 class OrderDB(Base):
     __tablename__ = "orders"
-    order_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    order_id = Column(String(50), primary_key=True)
     visitor_id = Column(String(100))
     user_id = Column(String(100))
+    total_amount = Column(Float)
     # session_id = Column(String(100))
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -250,31 +251,23 @@ def save_events_to_db(events_data):
                 )
 
         if purchased_products:
+            import uuid
+            order_id_str = str(uuid.uuid4())[:50]  # Generate unique order_id
+            
             order = OrderDB(
+                order_id=order_id_str,
                 visitor_id=events_data[0].visitor_id,
-                user_id=events_data[0].user_id,
-                # session_id=events_data[0].session_id
+                user_id=events_data[0].user_id
             )
             db.add(order)
             db.flush()
 
             for pid in purchased_products:
-             db.add(OrderItemDB(order_id=order.order_id, product_id=pid, quantity=1))
-
-            for i in range(len(purchased_products)):
-                for j in range(i + 1, len(purchased_products)):
-                    existing = db.query(ProductCooccurrenceDB).filter_by(
-                        product_id=purchased_products[i],
-                        related_product_id=purchased_products[j]
-                    ).first()
-                    if existing:
-                        existing.score += 1
-                    else:
-                        db.add(ProductCooccurrenceDB(
-                            product_id=purchased_products[i],
-                            related_product_id=purchased_products[j],
-                            score=1
-                        ))
+                db.add(OrderItemDB(
+                    order_id=order_id_str,
+                    product_id=pid,
+                    quantity=1
+                ))
 
         db.add_all(db_events)
         db.commit()
