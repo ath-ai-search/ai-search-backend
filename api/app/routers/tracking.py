@@ -42,7 +42,7 @@ Base = declarative_base()
 
 
 class EventDB(Base):
-    _tablename_ = "events"
+    __tablename__ = "events"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     event_type = Column(String(50), index=True)
     product_id = Column(String(255), index=True)
@@ -57,7 +57,7 @@ class EventDB(Base):
 
 
 class OrderDB(Base):
-    _tablename_ = "orders"
+    __tablename__ = "orders"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     visitor_id = Column(String(100))
     user_id = Column(String(100))
@@ -66,7 +66,7 @@ class OrderDB(Base):
 
 
 class OrderItemDB(Base):
-    _tablename_ = "order_items"
+    __tablename__ = "order_items"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     order_id = Column(BigInteger)
     product_id = Column(String(255))
@@ -74,7 +74,7 @@ class OrderItemDB(Base):
 
 
 class ProductCooccurrenceDB(Base):
-    _tablename_ = "product_cooccurrence"
+    __tablename__ = "product_cooccurrence"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     product_id = Column(String(255), index=True)
     related_product_id = Column(String(255), index=True)
@@ -82,7 +82,7 @@ class ProductCooccurrenceDB(Base):
 
 
 class ProductMetricsDB(Base):
-    _tablename_ = "product_metrics"
+    __tablename__ = "product_metrics"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     visitor_id = Column(String(100), nullable=False, index=True)
     product_id = Column(String(255), nullable=False, index=True)
@@ -95,13 +95,13 @@ class ProductMetricsDB(Base):
     trending_score = Column(Numeric, default=0)
     last_seen = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
-    _table_args_ = (
+    __table_args__ = (
         UniqueConstraint('visitor_id', 'product_id', name='uq_visitor_product'),
     )
 
 
 class WishlistDB(Base):
-    _tablename_ = "wishlist"
+    __tablename__ = "wishlist"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     user_id = Column(String(100), index=True)
     visitor_id = Column(String(100), index=True)
@@ -228,12 +228,12 @@ def save_events_to_db(events_data):
                     stmt = stmt.on_conflict_do_update(
                         index_elements=['visitor_id', 'product_id'],
                         set_={
-                            'impressions': ProductMetricsDB._table_.c.impressions + counts['impressions'],
-                            'views': ProductMetricsDB._table_.c.views + counts['views'],
-                            'clicks': ProductMetricsDB._table_.c.clicks + counts['clicks'],
-                            'carts': ProductMetricsDB._table_.c.carts + counts['carts'],
-                            'purchases': ProductMetricsDB._table_.c.purchases + counts['purchases'],
-                            'wishlist': ProductMetricsDB._table_.c.wishlist + counts['wishlist'],
+                            'impressions': ProductMetricsDB.__table__.c.impressions + counts['impressions'],
+                            'views': ProductMetricsDB.__table__.c.views + counts['views'],
+                            'clicks': ProductMetricsDB.__table__.c.clicks + counts['clicks'],
+                            'carts': ProductMetricsDB.__table__.c.carts + counts['carts'],
+                            'purchases': ProductMetricsDB.__table__.c.purchases + counts['purchases'],
+                            'wishlist': ProductMetricsDB.__table__.c.wishlist + counts['wishlist'],
                             'last_seen': datetime.utcnow(),
                         }
                     )
