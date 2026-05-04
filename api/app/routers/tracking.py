@@ -173,7 +173,7 @@ def save_events_to_db(events_data):
             if e.event_type == "impression":
                 continue
             if not identity:
-                logger.warning(f"Event has no identity, skipping: {e.event_type}")
+                logger.warning(f"❌ Event has no identity, skipping: {e.event_type}")
                 continue
 
             cache_key = (identity, e.product_id)
@@ -276,13 +276,13 @@ def save_events_to_db(events_data):
         real_actions = len(events_data) - impressions_count
 
         if real_actions > 0:
-            logger.info(f"Processed {real_actions} real events + {impressions_count} impressions = {len(events_data)} total")
+            logger.info(f"✅ Processed {real_actions} real events + {impressions_count} impressions = {len(events_data)} total")
         else:
-            logger.info(f"Batch of {impressions_count} impressions only")
+            logger.info(f"✅ Batch of {impressions_count} impressions only")
 
     except Exception as err:
         db.rollback()
-        logger.error(f"ERROR saving events: {err}")
+        logger.error(f"❌ ERROR saving events: {err}")
     finally:
         db.close()
 
