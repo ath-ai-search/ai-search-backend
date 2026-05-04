@@ -58,7 +58,7 @@ class EventDB(Base):
 
 class OrderDB(Base):
     __tablename__ = "orders"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    order_id = Column(BigInteger, primary_key=True, autoincrement=True)
     visitor_id = Column(String(100))
     user_id = Column(String(100))
     # session_id = Column(String(100))
@@ -259,7 +259,7 @@ def save_events_to_db(events_data):
             db.flush()
 
             for pid in purchased_products:
-                db.add(OrderItemDB(order_id=order.id, product_id=pid, quantity=1))
+            db.add(OrderItemDB(order_id=order.order_id, product_id=pid, quantity=1))
 
             for i in range(len(purchased_products)):
                 for j in range(i + 1, len(purchased_products)):
