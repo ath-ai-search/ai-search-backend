@@ -3,19 +3,6 @@
 FILE: tracking.py
 PURPOSE: E-commerce Event Tracking & Analytics Engine (Per-User)
 ===============================================================================
-🆕 PERSONALIZED TRACKING:
-   - product_metrics now stores PER-USER counts (not global)
-   - Uses visitor_id as primary identifier
-   - If user logged in: stores user_id in visitor_id field
-   - If anonymous: stores UUID in visitor_id field
-
-What this file does:
-1. RAW EVENTS: Saves every action to events table
-2. PRODUCT METRICS: Updates per-user counters in product_metrics
-3. USER SCORES: Updates user_product_scores
-4. ORDERS: Creates order records on purchase
-5. CO-OCCURRENCE: Tracks products bought together
-===============================================================================
 """
 import os
 import logging
@@ -27,7 +14,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from sqlalchemy import (
     create_engine, Column, BigInteger, String,
-    Float, Integer, DateTime, Text, UniqueConstraint, Numeric
+    Float, Integer, DateTime, Text, UniqueConstraint, Numeric, text
 )
 from sqlalchemy.orm import sessionmaker, declarative_base
 
@@ -81,7 +68,7 @@ class EventDB(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     event_type = Column(String(50), index=True)
     product_id = Column(String(255), index=True)
-    visitor_id = Column(String(100), index=True)  # 🆕 NEW
+    visitor_id = Column(String(100), index=True)
     user_id = Column(String(100))
     session_id = Column(String(100), index=True)
     query = Column(Text)
@@ -94,7 +81,7 @@ class EventDB(Base):
 class OrderDB(Base):
     __tablename__ = "orders"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    visitor_id = Column(String(100))  # 🆕 NEW
+    visitor_id = Column(String(100))
     user_id = Column(String(100))
     session_id = Column(String(100))
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -117,13 +104,9 @@ class ProductCooccurrenceDB(Base):
 
 
 class ProductMetricsDB(Base):
-    """
-    🆕 MODIFIED: Now stores PER-USER counts
-    Primary key changed from product_id to (visitor_id, product_id)
-    """
     __tablename__ = "product_metrics"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    visitor_id = Column(String(100), nullable=False, index=True)  # 🆕 NEW
+    visitor_id = Column(String(100), nullable=False, index=True)
     product_id = Column(String(255), nullable=False, index=True)
     impressions = Column(Integer, default=0)
     views = Column(Integer, default=0)
@@ -131,7 +114,7 @@ class ProductMetricsDB(Base):
     carts = Column(Integer, default=0)
     purchases = Column(Integer, default=0)
     wishlist = Column(Integer, default=0)
-    trending_score = Column(Numeric, default=0)  # 🆕 NEW
+    trending_score = Column(Numeric, default=0)
     last_seen = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
     
@@ -156,7 +139,7 @@ class WishlistDB(Base):
     __tablename__ = "wishlist"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     user_id = Column(String(100), index=True)
-    visitor_id = Column(String(100), index=True)  # 🆕 NEW
+    visitor_id = Column(String(100), index=True)
     product_id = Column(String(255), index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -169,8 +152,8 @@ Base.metadata.create_all(bind=engine)
 
 class EventItem(BaseModel):
     event_type: str
-    visitor_id: Optional[str] = None  # 🆕 NEW: from JS
-    user_id: Optional[str] = None      # If logged in
+    visitor_id: Optional[str] = None
+    user_id: Optional[str] = None
     session_id: Optional[str] = None
     product_id: Optional[str] = None
     query: Optional[str] = None
@@ -194,9 +177,8 @@ class TrackingPayload(BaseModel):
 def get_identity(event: EventItem) -> Optional[str]:
     """
     Returns the ID to use for tracking:
-    - If user is logged in (user_id present): use user_id
-    - If user is anonymous (only visitor_id): use visitor_id
-    - If neither: returns None (skip tracking)
+    - If user logged in (user_id present): use user_id
+    - Otherwise: use visitor_id
     """
     if event.user_id and event.user_id.strip() and event.user_id != "null":
         return event.user_id.strip()
@@ -211,7 +193,6 @@ def get_identity(event: EventItem) -> Optional[str]:
 # ============================================================
 
 def calculate_trending_score(views, clicks, carts, wishlist, purchases):
-    """Same formula as pipeline.py"""
     return 1.0 + (
         views * 1 +
         clicks * 2 +
@@ -231,9 +212,6 @@ def save_events_to_db(events_data: List[EventItem]):
     try:
         db_events = []
         purchased_products = []
-
-        # Cache metrics + user scores within this batch
-        # 🆕 Key changed from product_id to (identity, product_id)
         metrics_cache = {}
         ups_cache = {}
 
@@ -250,10 +228,9 @@ def save_events_to_db(events_data: List[EventItem]):
 
         for e in events_data:
             
-            # 🆕 Determine identity (user_id if logged in, else visitor_id)
             identity = get_identity(e)
 
-            # 1. RAW EVENT — save every event to events table
+            # 1. RAW EVENT
             db_events.append(EventDB(
                 event_type=e.event_type,
                 product_id=e.product_id,
@@ -266,21 +243,17 @@ def save_events_to_db(events_data: List[EventItem]):
                 source=e.source
             ))
 
-            # Skip if no product_id
             if not e.product_id:
                 continue
 
-            # Skip impression events
             if e.event_type == "impression":
                 continue
             
-            # 🆕 Skip if no identity (no visitor_id AND no user_id)
             if not identity:
                 logger.warning(f"⚠️  Event has no visitor_id or user_id, skipping metrics: {e.event_type}")
                 continue
 
-            # 2. PRODUCT METRICS — accumulate per-identity counts
-            # 🆕 Key is now (identity, product_id)
+            # 2. PRODUCT METRICS
             cache_key = (identity, e.product_id)
             
             if cache_key not in metrics_cache:
@@ -304,7 +277,7 @@ def save_events_to_db(events_data: List[EventItem]):
             elif e.event_type in ("add_to_wishlist", "wishlist"):
                 counts['wishlist'] += 1
 
-            # 3. USER PRODUCT SCORE (only for logged in users)
+            # 3. USER PRODUCT SCORE
             if e.user_id and e.product_id:
                 ups_key = (e.user_id, e.product_id)
 
@@ -322,7 +295,7 @@ def save_events_to_db(events_data: List[EventItem]):
                 ))
 
         # ============================================================
-        # 4.5 BULK UPSERT METRICS — write per-visitor counts
+        # 4.5 BULK UPSERT METRICS
         # ============================================================
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -330,7 +303,6 @@ def save_events_to_db(events_data: List[EventItem]):
             for (identity, product_id), counts in metrics_cache.items():
                 if any(v > 0 for v in counts.values()):
                     
-                    # Calculate trending_score for this row
                     new_trending = calculate_trending_score(
                         counts['views'],
                         counts['clicks'],
@@ -352,7 +324,6 @@ def save_events_to_db(events_data: List[EventItem]):
                         last_seen=datetime.utcnow()
                     )
                     
-                    # 🆕 Conflict on (visitor_id, product_id) instead of just product_id
                     stmt = stmt.on_conflict_do_update(
                         index_elements=['visitor_id', 'product_id'],
                         set_={
@@ -363,25 +334,23 @@ def save_events_to_db(events_data: List[EventItem]):
                             'purchases': ProductMetricsDB.__table__.c.purchases + counts['purchases'],
                             'wishlist': ProductMetricsDB.__table__.c.wishlist + counts['wishlist'],
                             'last_seen': datetime.utcnow(),
-                            # Trending score will be recalculated by trigger or we update separately
                         }
                     )
                     db.execute(stmt)
 
-            # 🆕 Recalculate trending_score for all updated rows
-            # (Using SQL to compute from final values after upsert)
+            # 🆕 Recalculate trending_score using text() wrapper (FIXED!)
             for (identity, product_id), _ in metrics_cache.items():
                 db.execute(
-                    """
-                    UPDATE product_metrics 
-                    SET trending_score = 1.0 + (views * 1) + (clicks * 2) + (wishlist * 3) + (carts * 5) + (purchases * 10)
-                    WHERE visitor_id = :vid AND product_id = :pid
-                    """,
+                    text("""
+                        UPDATE product_metrics 
+                        SET trending_score = 1.0 + (views * 1) + (clicks * 2) + (wishlist * 3) + (carts * 5) + (purchases * 10)
+                        WHERE visitor_id = :vid AND product_id = :pid
+                    """),
                     {"vid": identity, "pid": product_id}
                 )
 
         # ============================================================
-        # 4.6 BULK UPSERT USER SCORES (only for logged in users)
+        # 4.6 BULK UPSERT USER SCORES
         # ============================================================
         if ups_cache:
             for (user_id, product_id), score_delta in ups_cache.items():
