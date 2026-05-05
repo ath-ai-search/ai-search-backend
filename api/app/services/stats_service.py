@@ -229,11 +229,11 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             # Using teammate's formula: (views*0.4 + clicks*0.2 + carts*0.35 + purchases*2.0)
             cur.execute("""
                 SELECT product_id, 
-                       SUM((views * 0.4) + (clicks * 0.2) + (carts * 0.35) + (purchases * 2.0)) as global_score 
+                       SUM((views * 0.4) + (clicks * 0.2) + (carts * 0.35) + (purchases * 2.0)) as score 
                 FROM product_metrics 
                 GROUP BY product_id 
                 HAVING SUM(views + clicks + carts + purchases) > 0 
-                ORDER BY global_score DESC 
+                ORDER BY score DESC 
                 LIMIT %s OFFSET %s
             """, (size, offset))
             db_rows = cur.fetchall()
