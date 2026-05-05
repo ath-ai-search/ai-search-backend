@@ -157,7 +157,9 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
 
             for hit in os_rec_res.get("hits", {}).get("hits", []):
                 prod = parse_os_product(hit.get("_source", {}))
-                prod["recommendation_reason"] = f"Based on your recent interest in {prod['category']}"
+                # Check if category is a list, and if so, just grab the first one to look clean!
+                display_cat = prod['category'][0] if isinstance(prod['category'], list) else prod['category']
+                prod["recommendation_reason"] = f"Based on your recent interest in {display_cat}"
                 results.append(prod)
             
             # Step E: Sort the final results so the most recent category is at the front of the slider!
