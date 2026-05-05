@@ -214,25 +214,40 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             db_rows = cur.fetchall()
 
         # =====================================================================
-        # 🌍 API 3: TRENDING (Global Popularity - All Users)
+        # 🔥 API 3: TRENDING (GLOBAL Popularity - FIXED!)
+        # Uses ALL events: views, clicks, wishlist, carts, purchases
+        # Formula: 1.0 + views*1 + clicks*2 + wishlist*3 + carts*5 + purchases*10
         # =====================================================================
         elif metric == "trending":
-            # 1. Total count of products that have ANY global activity
+            # 1. Total count of products with ANY activity (including wishlist!)
             cur.execute("""
                 SELECT COUNT(DISTINCT product_id) as t 
                 FROM product_metrics 
-                WHERE views > 0 OR clicks > 0 OR carts > 0 OR purchases > 0
+                WHERE views > 0 OR clicks > 0 OR carts > 0 OR purchases > 0 OR wishlist > 0
             """)
             total = cur.fetchone()["t"]
 
-            # 2. GLOBAL CALCULATION: Sum metrics from ALL visitors for each product
-            # Using teammate's formula: (views*0.4 + clicks*0.2 + carts*0.35 + purchases*2.0)
+            # 2. ✅ FIXED: GLOBAL trending using SAME formula as stored trending_score
+            # Aggregates from ALL users to find globally popular products
             cur.execute("""
-                SELECT product_id, 
-                       SUM((views * 0.4) + (clicks * 0.2) + (carts * 0.35) + (purchases * 2.0)) as score 
+                SELECT 
+                    product_id, 
+                    SUM(
+                        1.0 + 
+                        (views * 1) + 
+                        (clicks * 2) + 
+                        (wishlist * 3) + 
+                        (carts * 5) + 
+                        (purchases * 10)
+                    ) as score,
+                    SUM(views) as total_views,
+                    SUM(clicks) as total_clicks,
+                    SUM(wishlist) as total_wishlist,
+                    SUM(carts) as total_carts,
+                    SUM(purchases) as total_purchases
                 FROM product_metrics 
                 GROUP BY product_id 
-                HAVING SUM(views + clicks + carts + purchases) > 0 
+                HAVING SUM(views + clicks + carts + purchases + wishlist) > 0 
                 ORDER BY score DESC 
                 LIMIT %s OFFSET %s
             """, (size, offset))
@@ -243,7 +258,23 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
         # Fetch OpenSearch Details for Pick-Up and Trending
         if metric in ["pick-up", "trending"] and db_rows:
             pids = [r["product_id"] for r in db_rows]
-            score_map = {r["product_id"]: float(r["score"]) for r in db_rows}
+            
+            # Build a comprehensive score map
+            score_map = {}
+            for r in db_rows:
+                product_data = {"score": float(r["score"])}
+                
+                # For trending, include all event totals
+                if metric == "trending":
+                    product_data.update({
+                        "total_views": int(r.get("total_views", 0) or 0),
+                        "total_clicks": int(r.get("total_clicks", 0) or 0),
+                        "total_wishlist": int(r.get("total_wishlist", 0) or 0),
+                        "total_carts": int(r.get("total_carts", 0) or 0),
+                        "total_purchases": int(r.get("total_purchases", 0) or 0),
+                    })
+                
+                score_map[r["product_id"]] = product_data
             
             os_res = os_client.search(
                 index=INDEX_NAME,
@@ -255,7 +286,7 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             for pid in pids:
                 if pid in prod_map:
                     prod = prod_map[pid].copy()
-                    prod["score"] = score_map[pid]
+                    prod.update(score_map[pid])
                     results.append(prod)
 
     except Exception as e:
