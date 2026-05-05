@@ -179,30 +179,41 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
         # =====================================================================
         elif metric == "pick-up":
             if not identity: return {"error": "visitor_id required"}
-            cur.execute("SELECT COUNT(*) as t FROM product_metrics WHERE visitor_id = %s AND (carts + wishlist) > 0", (identity,))
+            
+            cur.execute("""
+                SELECT COUNT(*) as t 
+                FROM product_metrics 
+                WHERE visitor_id = %s AND (carts + wishlist) > 0
+            """, (identity,))
             total = cur.fetchone()["t"]
 
             cur.execute("""
                 SELECT product_id, (carts + wishlist) as score 
                 FROM product_metrics 
                 WHERE visitor_id = %s AND (carts + wishlist) > 0 
-                ORDER BY score DESC LIMIT %s OFFSET %s
+                ORDER BY last_seen DESC LIMIT %s OFFSET %s
             """, (identity, size, offset))
             db_rows = cur.fetchall()
 
         # =====================================================================
-        # 🌍 API 3: TRENDING (Global Purchases & Engagement)
+        # 🌍 API 3: TRENDING (Global Popularity with Teammate's Formula)
         # =====================================================================
         elif metric == "trending":
-            # Global query, no visitor_id filtering
-            cur.execute("SELECT COUNT(DISTINCT product_id) as t FROM product_metrics WHERE trending_score > 0 OR purchases > 0")
+            # Global query, no visitor_id filtering needed
+            cur.execute("""
+                SELECT COUNT(DISTINCT product_id) as t 
+                FROM product_metrics 
+                WHERE (views > 0 OR carts > 0 OR purchases > 0)
+            """)
             total = cur.fetchone()["t"]
 
+            # Using your teammate's exact math formula!
             cur.execute("""
-                SELECT product_id, SUM(purchases * 10 + trending_score) as score 
+                SELECT product_id, 
+                       SUM((views * 0.4) + (carts * 0.35) + (purchases * 2.0)) as score 
                 FROM product_metrics 
                 GROUP BY product_id 
-                HAVING SUM(purchases * 10 + trending_score) > 0 
+                HAVING SUM((views * 0.4) + (carts * 0.35) + (purchases * 2.0)) > 0 
                 ORDER BY score DESC LIMIT %s OFFSET %s
             """, (size, offset))
             db_rows = cur.fetchall()
