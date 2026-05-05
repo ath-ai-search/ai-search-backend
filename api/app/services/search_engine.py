@@ -18,6 +18,54 @@ from app.utils.brand_mapper import get_smart_brand
 from app.utils.pagination import build_pagination_html
 from app.utils.cache import cache_get, cache_set
 from app.nlp.semantic_matrix import extract_semantic_matrix
+import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
+# 🆕 Database config for trending boost
+DB_CONFIG_TRENDING = {
+    "host":     os.getenv("DB_HOST", "localhost"),
+    "port":     os.getenv("DB_PORT", "5432"),
+    "database": os.getenv("DB_NAME", "venue_ai"),
+    "user":     os.getenv("DB_USER", "postgres"),
+    "password": os.getenv("DB_PASSWORD", "shubham16"),
+}
+
+
+def get_trending_scores(product_ids: list) -> dict:
+    """🆕 Fetch trending scores from PostgreSQL for given products."""
+    if not product_ids:
+        return {}
+    
+    try:
+        conn = psycopg2.connect(**DB_CONFIG_TRENDING)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Get aggregated trending score for each product
+        cur.execute("""
+            SELECT 
+                product_id, 
+                SUM(
+                    1.0 + 
+                    (views * 1) + 
+                    (clicks * 2) + 
+                    (wishlist * 3) + 
+                    (carts * 5) + 
+                    (purchases * 10)
+                ) as score
+            FROM product_metrics 
+            WHERE product_id = ANY(%s)
+            GROUP BY product_id
+        """, (product_ids,))
+        
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        
+        return {row["product_id"]: float(row["score"]) for row in rows}
+    except Exception as e:
+        logger.error(f"❌ Trending fetch failed: {e}")
+        return {}
 
 from app.core.constants import (
     MAX_OS_WINDOW, DEFAULT_PAGE_SIZE, SMALL_PAGE_SIZE,
@@ -257,10 +305,36 @@ async def execute_search(request: SearchRequest) -> dict:
             "primary_image": primary_image,
             "rating": source.get("rating") if source.get("rating", 0) > 0 else DEMO_RATING_BASE + (_pid_hash % DEMO_RATING_RANGE) / 10.0,
             "sales_count": source.get("sales_count") if source.get("sales_count", 0) > 0 else (_pid_hash % DEMO_SALES_RANGE) + DEMO_SALES_BASE,
-            "score": round(SCORE_DISPLAY_MIN + (normalized_score * SCORE_DISPLAY_RANGE), 2)
+            "score": round(SCORE_DISPLAY_MIN + (normalized_score * SCORE_DISPLAY_RANGE), 2),
+            "trending_score": 0  # 🆕 Will be populated below
         })
     
-    if request.sort not in ["price_asc", "price_desc"]: results.sort(key=lambda x: x["score"], reverse=True)
+    # 🆕 TRENDING BOOST: Re-rank with popularity from PostgreSQL
+    if request.sort not in ["price_asc", "price_desc"] and results:
+        # Get product IDs from current results
+        product_ids = [r["id"] for r in results if r.get("id")]
+        
+        # Fetch trending scores from PostgreSQL
+        trending_scores = get_trending_scores(product_ids)
+        
+        # Calculate combined score: relevance + trending
+        for r in results:
+            base_score = r.get("score", 0)
+            trending = trending_scores.get(r["id"], 0)
+            
+            # Combined formula: 70% relevance + 30% trending (normalized)
+            # Trending log to prevent extreme dominance
+            import math
+            trending_boost = math.log1p(trending) * 0.3  # log scaled
+            r["combined_score"] = base_score + trending_boost
+            r["trending_score"] = round(trending, 1)  # for debugging
+        
+        # Sort by combined score (relevance + popularity)
+        results.sort(key=lambda x: x["combined_score"], reverse=True)
+        
+        # Clean up internal field (keep trending_score for transparency)
+        for r in results:
+            r.pop("combined_score", None)
     
     # =====================================================================
     # 🚀 STEP 16: PARSER - PERFECT SORTING
