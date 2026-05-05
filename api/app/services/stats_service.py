@@ -121,10 +121,16 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             # Step C: Find user's favorite categories based on engagement score
             cat_scores = {}
             for hit in os_cat_res.get("hits", {}).get("hits", []):
-                cat = hit.get("_source", {}).get("category")
+                cat_data = hit.get("_source", {}).get("category")
                 pid = hit.get("_source", {}).get("product_id")
-                if cat and pid in history_scores:
-                    cat_scores[cat] = cat_scores.get(cat, 0) + history_scores[pid]
+                
+                if cat_data and pid in history_scores:
+                    # Handle both strings and lists from OpenSearch safely
+                    categories = cat_data if isinstance(cat_data, list) else [cat_data]
+                    
+                    for cat in categories:
+                        if cat:  # Ignore empty strings
+                            cat_scores[cat] = cat_scores.get(cat, 0) + history_scores[pid]
 
             # Get the top 3 categories
             top_cats = sorted(cat_scores.keys(), key=lambda k: cat_scores[k], reverse=True)[:3]
