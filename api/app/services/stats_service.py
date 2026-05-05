@@ -105,9 +105,17 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             """, (identity,))
             history = cur.fetchall()
 
-            # If they have no history, fallback to trending
+            # If they have no history, return empty results so the UI stays hidden
             if not history:
-                return await get_top_products_by_metric("trending", visitor_id, user_id, page, size)
+                return {
+                    "results": [], 
+                    "total": 0, 
+                    "page": page, 
+                    "size": size, 
+                    "metric": metric, 
+                    "took_ms": 0, 
+                    "cached": False
+                }
 
             history_pids = [r["product_id"] for r in history]
 
@@ -137,7 +145,15 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     break
 
             if not recent_categories:
-                return await get_top_products_by_metric("trending", visitor_id, user_id, page, size)
+                return {
+                    "results": [], 
+                    "total": 0, 
+                    "page": page, 
+                    "size": size, 
+                    "metric": metric, 
+                    "took_ms": 0, 
+                    "cached": False
+                }
 
             # Step D: Ask OpenSearch for NEW products in these recent categories
             os_rec_res = os_client.search(
@@ -162,14 +178,16 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 prod["recommendation_reason"] = f"Based on your recent interest in {display_cat}"
                 results.append(prod)
             
-            # Step E: Sort the final results so the most recent category is at the front of the slider!
+            # Step E: Strict Sorting. Rank 0 (the NEWEST category) gets top priority.
             def get_category_rank(prod_cat):
                 for i, rc in enumerate(recent_categories):
-                    if rc == prod_cat or (isinstance(prod_cat, list) and rc in prod_cat):
+                    if isinstance(prod_cat, list):
+                        if rc in prod_cat: return i
+                    elif rc == prod_cat:
                         return i
                 return 999
-
-            results.sort(key=lambda p: get_category_rank(p.get("category")))
+                # Sort strictly by the newest interest first so old items move to the back
+                results.sort(key=lambda p: get_category_rank(p.get("category")))
             
             total = os_rec_res.get("hits", {}).get("total", {}).get("value", len(results))
             db_rows = []
