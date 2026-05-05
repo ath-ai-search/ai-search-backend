@@ -254,10 +254,13 @@ def save_events_to_db(events_data):
             import uuid
             order_id_str = str(uuid.uuid4())[:50]  # Generate unique order_id
             
+            # Find the actual purchase event to get the correct user
+            purchase_event = next((e for e in events_data if e.event_type == "purchase"), events_data[0])
+            
             order = OrderDB(
                 order_id=order_id_str,
-                visitor_id=events_data[0].visitor_id,
-                user_id=events_data[0].user_id
+                visitor_id=purchase_event.visitor_id,
+                user_id=purchase_event.user_id
             )
             db.add(order)
             db.flush()
