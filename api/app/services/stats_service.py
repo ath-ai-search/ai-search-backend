@@ -90,18 +90,18 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # =====================================================================
-        # 🔥 API 1: RECOMMENDATIONS (Category-Based Content Filtering)
+# =====================================================================
+        # 🔥 API 1: RECOMMENDATIONS (Category-Based with Recency Bias)
         # =====================================================================
         if metric == "recommendations":
             if not identity: return {"error": "visitor_id required"}
             
-            # Step A: Get what the user viewed/clicked
+            # Step A: Get exactly what the user viewed/clicked, sorted by NEWEST first
             cur.execute("""
-                SELECT product_id, (views + clicks) as score 
+                SELECT product_id 
                 FROM product_metrics 
                 WHERE visitor_id = %s AND (views + clicks) > 0 
-                ORDER BY score DESC LIMIT 20
+                ORDER BY last_seen DESC LIMIT 20
             """, (identity,))
             history = cur.fetchall()
 
@@ -110,7 +110,6 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 return await get_top_products_by_metric("trending", visitor_id, user_id, page, size)
 
             history_pids = [r["product_id"] for r in history]
-            history_scores = {r["product_id"]: float(r["score"]) for r in history}
 
             # Step B: Get Categories of these items from OpenSearch
             os_cat_res = os_client.search(
@@ -118,27 +117,29 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 body={"size": 20, "_source": ["category", "product_id"], "query": {"terms": {"product_id": history_pids}}}
             )
 
-            # Step C: Find user's favorite categories based on engagement score
-            cat_scores = {}
+            # Step C: Extract categories in the EXACT order they were viewed
+            pid_to_cat = {}
             for hit in os_cat_res.get("hits", {}).get("hits", []):
                 cat_data = hit.get("_source", {}).get("category")
                 pid = hit.get("_source", {}).get("product_id")
-                
-                if cat_data and pid in history_scores:
-                    # Handle both strings and lists from OpenSearch safely
-                    categories = cat_data if isinstance(cat_data, list) else [cat_data]
-                    
-                    for cat in categories:
-                        if cat:  # Ignore empty strings
-                            cat_scores[cat] = cat_scores.get(cat, 0) + history_scores[pid]
+                if cat_data:
+                    pid_to_cat[pid] = cat_data if isinstance(cat_data, list) else [cat_data]
 
-            # Get the top 3 categories
-            top_cats = sorted(cat_scores.keys(), key=lambda k: cat_scores[k], reverse=True)[:3]
+            recent_categories = []
+            for pid in history_pids:
+                cats = pid_to_cat.get(pid, [])
+                for cat in cats:
+                    if cat and cat not in recent_categories:
+                        recent_categories.append(cat)
+                        if len(recent_categories) >= 3: # Keep the 3 most recent unique categories
+                            break
+                if len(recent_categories) >= 3:
+                    break
 
-            if not top_cats:
+            if not recent_categories:
                 return await get_top_products_by_metric("trending", visitor_id, user_id, page, size)
 
-            # Step D: Ask OpenSearch for NEW products in these categories
+            # Step D: Ask OpenSearch for NEW products in these recent categories
             os_rec_res = os_client.search(
                 index=INDEX_NAME,
                 body={
@@ -146,7 +147,7 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     "from": offset,
                     "query": {
                         "bool": {
-                            "should": [{"match": {"category": c}} for c in top_cats],
+                            "should": [{"match": {"category": c}} for c in recent_categories],
                             "must_not": [{"terms": {"product_id": history_pids}}],
                             "minimum_should_match": 1
                         }
@@ -156,11 +157,20 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
 
             for hit in os_rec_res.get("hits", {}).get("hits", []):
                 prod = parse_os_product(hit.get("_source", {}))
-                prod["recommendation_reason"] = f"Based on your interest in {prod['category']}"
+                prod["recommendation_reason"] = f"Based on your recent interest in {prod['category']}"
                 results.append(prod)
             
+            # Step E: Sort the final results so the most recent category is at the front of the slider!
+            def get_category_rank(prod_cat):
+                for i, rc in enumerate(recent_categories):
+                    if rc == prod_cat or (isinstance(prod_cat, list) and rc in prod_cat):
+                        return i
+                return 999
+
+            results.sort(key=lambda p: get_category_rank(p.get("category")))
+            
             total = os_rec_res.get("hits", {}).get("total", {}).get("value", len(results))
-            db_rows = [] # Not used for this branch
+            db_rows = []
 
         # =====================================================================
         # 🛒 API 2: PICK-UP (Personal Carts & Wishlists)
