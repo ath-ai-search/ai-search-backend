@@ -214,25 +214,27 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             db_rows = cur.fetchall()
 
         # =====================================================================
-        # 🌍 API 3: TRENDING (Global Popularity with Teammate's Formula)
+        # 🌍 API 3: TRENDING (Global Popularity - All Users)
         # =====================================================================
         elif metric == "trending":
-            # Global query, no visitor_id filtering needed
+            # 1. Total count of products that have ANY global activity
             cur.execute("""
                 SELECT COUNT(DISTINCT product_id) as t 
                 FROM product_metrics 
-                WHERE (views > 0 OR carts > 0 OR purchases > 0)
+                WHERE views > 0 OR clicks > 0 OR carts > 0 OR purchases > 0
             """)
             total = cur.fetchone()["t"]
 
-            # Using your teammate's exact math formula!
+            # 2. GLOBAL CALCULATION: Sum metrics from ALL visitors for each product
+            # Using teammate's formula: (views*0.4 + clicks*0.2 + carts*0.35 + purchases*2.0)
             cur.execute("""
                 SELECT product_id, 
-                       SUM((views * 0.4) + (carts * 0.35) + (purchases * 2.0)) as score 
+                       SUM((views * 0.4) + (clicks * 0.2) + (carts * 0.35) + (purchases * 2.0)) as global_score 
                 FROM product_metrics 
                 GROUP BY product_id 
-                HAVING SUM((views * 0.4) + (carts * 0.35) + (purchases * 2.0)) > 0 
-                ORDER BY score DESC LIMIT %s OFFSET %s
+                HAVING SUM(views + clicks + carts + purchases) > 0 
+                ORDER BY global_score DESC 
+                LIMIT %s OFFSET %s
             """, (size, offset))
             db_rows = cur.fetchall()
 
