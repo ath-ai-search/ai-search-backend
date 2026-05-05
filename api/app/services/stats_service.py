@@ -1,17 +1,11 @@
 """
 =====================================================================================
-📊 STATS SERVICE — Personal Top Products (Per Visitor)
+📊 STATS SERVICE — Advanced Recommendation Engine
 =====================================================================================
-Queries product_metrics table (now per-user) to return personalized products.
-
-LOGIC:
-  - If user_id provided → query by user_id
-  - If only visitor_id → query by visitor_id
-  - Both work because we store either user_id or visitor_id in same column
-
-Powers 6 APIs:
-  /products/view, /products/click, /products/add-to-cart,
-  /products/wishlist, /products/purchase, /products/trending
+Powers the 3 consolidated APIs:
+  1. /recommendations -> Category-based filtering (views + clicks)
+  2. /pick-up         -> Personal intent (carts + wishlists)
+  3. /trending        -> Global popularity (purchases + trending score)
 =====================================================================================
 """
 
@@ -19,21 +13,13 @@ import os
 import time
 import json
 import logging
-
 import psycopg2
 from psycopg2.extras import RealDictCursor
-
 from app.config import os_client, redis_client, INDEX_NAME
 
-# =========================================================================
-# ⚙️ CONFIG
-# =========================================================================
-
 logger = logging.getLogger("StatsService")
+CACHE_TTL = 300  
 
-CACHE_TTL = 300  # 5 minutes
-
-# Database config
 DB_CONFIG = {
     "host":     os.getenv("DB_HOST", "localhost"),
     "port":     os.getenv("DB_PORT", "5432"),
@@ -45,86 +31,45 @@ DB_CONFIG = {
 def get_db_connection():
     return psycopg2.connect(**DB_CONFIG)
 
-# =========================================================================
-# 🗺️ METRIC FIELD MAPPING — Maps API names to database column names
-# =========================================================================
-
-METRIC_FIELDS = {
-    "view":         "views",
-    "click":        "clicks",
-    "add-to-cart":  "carts",
-    "wishlist":     "wishlist",
-    "purchase":     "purchases",
-    "trending":     "trending_score",
-}
-
-# =========================================================================
-# 🆕 HELPER: Determine which ID to use for query
-# =========================================================================
-
 def get_query_identity(visitor_id: str, user_id: str = None) -> str:
-    """
-    Returns the ID to use for querying:
-    - If user_id provided (logged in): use user_id
-    - Otherwise: use visitor_id
-    
-    This matches what tracking.py stored in the database.
-    """
+    """Returns the ID to use for querying."""
     if user_id and user_id.strip() and user_id != "null":
         return user_id.strip()
     return visitor_id.strip() if visitor_id else None
 
-# =========================================================================
-# 🎯 MAIN FUNCTION — Get Top Products for Visitor
-# =========================================================================
+def parse_os_product(src):
+    """Helper to parse OpenSearch product source into a clean dictionary."""
+    images = src.get("images", "")
+    if isinstance(images, list): 
+        first_image = images[0] if images else ""
+    elif isinstance(images, str): 
+        first_image = images.split(",")[0].strip() if images else ""
+    else: 
+        first_image = ""
+    
+    return {
+        "product_id": src.get("product_id"),
+        "name": src.get("name", ""),
+        "price": src.get("price", 0),
+        "sale_price": src.get("sale_price", 0),
+        "image": first_image,
+        "url": src.get("url", ""),
+        "category": src.get("category", ""),
+        "brand": src.get("brand", ""),
+        "in_stock": src.get("in_stock", True),
+    }
 
-async def get_top_products_by_metric(
-    metric: str,
-    visitor_id: str,
-    user_id: str = None,
-    page: int = 1,
-    size: int = 10
-) -> dict:
-    """
-    Get top products for this visitor/user sorted by metric.
-    
-    Args:
-        metric: 'view', 'click', 'add-to-cart', 'wishlist', 'purchase', 'trending'
-        visitor_id: Browser UUID (always present)
-        user_id: BigCommerce customer ID (only if logged in)
-        page: Page number (1-indexed)
-        size: Results per page
-    """
+async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str = None, page: int = 1, size: int = 10) -> dict:
     start_time = time.time()
-    
-    # Validate metric
-    if metric not in METRIC_FIELDS:
-        return {
-            "error": f"Invalid metric. Must be one of: {list(METRIC_FIELDS.keys())}",
-            "results": [],
-            "total": 0
-        }
-    
-    # 🆕 Determine identity (matches tracking.py logic)
     identity = get_query_identity(visitor_id, user_id)
-    
-    if not identity:
-        return {
-            "error": "visitor_id or user_id is required",
-            "results": [],
-            "total": 0
-        }
-    
-    # Validate pagination
-    page = max(1, page)
-    size = max(1, min(size, 100))
-    
-    sort_column = METRIC_FIELDS[metric]
-    
+    offset = (page - 1) * size
+
     # =====================================================================
-    # 1. CHECK REDIS CACHE
+    # 1. CACHE CHECK (Global vs Personal)
     # =====================================================================
-    cache_key = f"stats:{identity}:{metric}:{page}:{size}"
+    # If it's trending, we cache it globally. Otherwise, cache per user.
+    cache_identity = "global" if metric == "trending" else identity
+    cache_key = f"stats:{cache_identity}:{metric}:{page}:{size}"
     
     try:
         cached = await redis_client.get(cache_key)
@@ -132,168 +77,162 @@ async def get_top_products_by_metric(
             result = json.loads(cached)
             result["cached"] = True
             result["took_ms"] = round((time.time() - start_time) * 1000, 2)
-            logger.info(f"⚡ STATS_CACHE_HIT | id={identity[:12]}... | metric={metric} | took={result['took_ms']}ms")
+            logger.info(f"⚡ CACHE_HIT | metric={metric}")
             return result
-    except Exception as e:
-        logger.warning(f"Cache read failed: {e}")
-    
-    # =====================================================================
-    # 2. QUERY POSTGRESQL — Get product IDs for this identity
-    # =====================================================================
-    offset = (page - 1) * size
-    threshold = 1 if metric == "trending" else 0
-    
-    query = f"""
-        SELECT product_id, {sort_column} as score, last_seen
-        FROM product_metrics
-        WHERE visitor_id = %s AND {sort_column} > {threshold}
-        ORDER BY {sort_column} DESC, last_seen DESC
-        LIMIT %s OFFSET %s
-    """
-    
-    count_query = f"""
-        SELECT COUNT(*) as total
-        FROM product_metrics
-        WHERE visitor_id = %s AND {sort_column} > {threshold}
-    """
-    
+    except Exception:
+        pass
+
     conn = None
+    results = []
+    total = 0
+
     try:
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        
-        cur.execute(count_query, (identity,))
-        total = cur.fetchone()["total"]
-        
-        cur.execute(query, (identity, size, offset))
-        rows = cur.fetchall()
-        
-        cur.close()
-        
-    except Exception as e:
-        logger.error(f"❌ PostgreSQL query failed: {e}")
-        if conn:
-            conn.close()
-        return {
-            "error": "Failed to fetch data",
-            "results": [],
-            "total": 0,
-            "page": page,
-            "size": size
-        }
-    finally:
-        if conn:
-            conn.close()
-    
-    # If no data for this identity
-    if not rows:
-        return {
-            "results": [],
-            "total": 0,
-            "page": page,
-            "size": size,
-            "metric": metric,
-            "identity": identity,
-            "took_ms": round((time.time() - start_time) * 1000, 2),
-            "cached": False,
-            "message": "No history found for this user"
-        }
-    
-    # =====================================================================
-    # 3. FETCH PRODUCT DETAILS FROM OPENSEARCH
-    # =====================================================================
-    product_ids = [row["product_id"] for row in rows]
-    score_map = {row["product_id"]: float(row["score"]) for row in rows}
-    
-    try:
-        os_response = os_client.search(
-            index=INDEX_NAME,
-            body={
-                "size": len(product_ids),
-                "_source": [
-                    "product_id", "name", "price", "sale_price",
-                    "images", "url", "category", "brand", "in_stock"
-                ],
-                "query": {
-                    "terms": {"product_id": product_ids}
+
+        # =====================================================================
+        # 🔥 API 1: RECOMMENDATIONS (Category-Based Content Filtering)
+        # =====================================================================
+        if metric == "recommendations":
+            if not identity: return {"error": "visitor_id required"}
+            
+            # Step A: Get what the user viewed/clicked
+            cur.execute("""
+                SELECT product_id, (views + clicks) as score 
+                FROM product_metrics 
+                WHERE visitor_id = %s AND (views + clicks) > 0 
+                ORDER BY score DESC LIMIT 20
+            """, (identity,))
+            history = cur.fetchall()
+
+            # If they have no history, fallback to trending
+            if not history:
+                return await get_top_products_by_metric("trending", visitor_id, user_id, page, size)
+
+            history_pids = [r["product_id"] for r in history]
+            history_scores = {r["product_id"]: float(r["score"]) for r in history}
+
+            # Step B: Get Categories of these items from OpenSearch
+            os_cat_res = os_client.search(
+                index=INDEX_NAME,
+                body={"size": 20, "_source": ["category", "product_id"], "query": {"terms": {"product_id": history_pids}}}
+            )
+
+            # Step C: Find user's favorite categories based on engagement score
+            cat_scores = {}
+            for hit in os_cat_res.get("hits", {}).get("hits", []):
+                cat = hit.get("_source", {}).get("category")
+                pid = hit.get("_source", {}).get("product_id")
+                if cat and pid in history_scores:
+                    cat_scores[cat] = cat_scores.get(cat, 0) + history_scores[pid]
+
+            # Get the top 3 categories
+            top_cats = sorted(cat_scores.keys(), key=lambda k: cat_scores[k], reverse=True)[:3]
+
+            if not top_cats:
+                return await get_top_products_by_metric("trending", visitor_id, user_id, page, size)
+
+            # Step D: Ask OpenSearch for NEW products in these categories
+            os_rec_res = os_client.search(
+                index=INDEX_NAME,
+                body={
+                    "size": size, 
+                    "from": offset,
+                    "query": {
+                        "bool": {
+                            "should": [{"match": {"category": c}} for c in top_cats],
+                            "must_not": [{"terms": {"product_id": history_pids}}],
+                            "minimum_should_match": 1
+                        }
+                    }
                 }
-            }
-        )
-        
-        product_map = {}
-        for hit in os_response.get("hits", {}).get("hits", []):
-            source = hit.get("_source", {})
-            pid = source.get("product_id")
+            )
+
+            for hit in os_rec_res.get("hits", {}).get("hits", []):
+                prod = parse_os_product(hit.get("_source", {}))
+                prod["recommendation_reason"] = f"Based on your interest in {prod['category']}"
+                results.append(prod)
             
-            # Get first image (handles list or string)
-            images = source.get("images", "")
-            if isinstance(images, list):
-                first_image = images[0] if images else ""
-            elif isinstance(images, str):
-                first_image = images.split(",")[0].strip() if images else ""
-            else:
-                first_image = ""
+            total = os_rec_res.get("hits", {}).get("total", {}).get("value", len(results))
+            db_rows = [] # Not used for this branch
+
+        # =====================================================================
+        # 🛒 API 2: PICK-UP (Personal Carts & Wishlists)
+        # =====================================================================
+        elif metric == "pick-up":
+            if not identity: return {"error": "visitor_id required"}
+            cur.execute("SELECT COUNT(*) as t FROM product_metrics WHERE visitor_id = %s AND (carts + wishlist) > 0", (identity,))
+            total = cur.fetchone()["t"]
+
+            cur.execute("""
+                SELECT product_id, (carts + wishlist) as score 
+                FROM product_metrics 
+                WHERE visitor_id = %s AND (carts + wishlist) > 0 
+                ORDER BY score DESC LIMIT %s OFFSET %s
+            """, (identity, size, offset))
+            db_rows = cur.fetchall()
+
+        # =====================================================================
+        # 🌍 API 3: TRENDING (Global Purchases & Engagement)
+        # =====================================================================
+        elif metric == "trending":
+            # Global query, no visitor_id filtering
+            cur.execute("SELECT COUNT(DISTINCT product_id) as t FROM product_metrics WHERE trending_score > 0 OR purchases > 0")
+            total = cur.fetchone()["t"]
+
+            cur.execute("""
+                SELECT product_id, SUM(purchases * 10 + trending_score) as score 
+                FROM product_metrics 
+                GROUP BY product_id 
+                HAVING SUM(purchases * 10 + trending_score) > 0 
+                ORDER BY score DESC LIMIT %s OFFSET %s
+            """, (size, offset))
+            db_rows = cur.fetchall()
+
+        cur.close()
+
+        # Fetch OpenSearch Details for Pick-Up and Trending
+        if metric in ["pick-up", "trending"] and db_rows:
+            pids = [r["product_id"] for r in db_rows]
+            score_map = {r["product_id"]: float(r["score"]) for r in db_rows}
             
-            product_map[pid] = {
-                "product_id": pid,
-                "name": source.get("name", ""),
-                "price": source.get("price", 0),
-                "sale_price": source.get("sale_price", 0),
-                "image": first_image,
-                "url": source.get("url", ""),
-                "category": source.get("category", ""),
-                "brand": source.get("brand", ""),
-                "in_stock": source.get("in_stock", True),
-            }
-        
+            os_res = os_client.search(
+                index=INDEX_NAME,
+                body={"size": len(pids), "query": {"terms": {"product_id": pids}}}
+            )
+            
+            prod_map = {h["_source"]["product_id"]: parse_os_product(h["_source"]) for h in os_res.get("hits", {}).get("hits", [])}
+            
+            for pid in pids:
+                if pid in prod_map:
+                    prod = prod_map[pid].copy()
+                    prod["score"] = score_map[pid]
+                    results.append(prod)
+
     except Exception as e:
-        logger.error(f"❌ OpenSearch query failed: {e}")
-        return {
-            "error": "Failed to fetch product details",
-            "results": [],
-            "total": 0,
-            "page": page,
-            "size": size
-        }
-    
-    # =====================================================================
-    # 4. BUILD RESULTS (preserving PostgreSQL order)
-    # =====================================================================
-    results = []
-    for pid in product_ids:
-        if pid in product_map:
-            product = product_map[pid].copy()
-            product[f"user_{sort_column}"] = score_map[pid]
-            results.append(product)
-    
+        logger.error(f"❌ Query failed: {e}")
+        return {"error": "Failed to fetch data", "results": []}
+    finally:
+        if conn: conn.close()
+
+    # Finalize Response
     took_ms = round((time.time() - start_time) * 1000, 2)
-    
-    result = {
-        "results": results,
-        "total": total,
-        "page": page,
+    response = {
+        "results": results, 
+        "total": total, 
+        "page": page, 
         "size": size,
-        "metric": metric,
-        "identity": identity,
-        "took_ms": took_ms,
+        "metric": metric, 
+        "took_ms": took_ms, 
         "cached": False
     }
-    
-    # =====================================================================
-    # 5. SAVE TO REDIS CACHE
-    # =====================================================================
+
     try:
-        await redis_client.setex(
-            cache_key,
-            CACHE_TTL,
-            json.dumps(result)
-        )
-    except Exception as e:
-        logger.warning(f"Cache write failed: {e}")
-    
-    logger.info(f"✅ STATS | id={identity[:12]}... | metric={metric} | results={len(results)} | took={took_ms}ms")
-    
-    return result
+        await redis_client.setex(cache_key, CACHE_TTL, json.dumps(response))
+    except Exception:
+        pass
+        
+    return response
 
 
 # =========================================================================
