@@ -105,17 +105,59 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             """, (identity,))
             history = cur.fetchall()
 
-            # If they have no history, return empty results so the UI stays hidden
+            # 🔥 COLD START FALLBACK: If it is a brand new user, show dynamic SALE items!
             if not history:
-                return {
-                    "results": [], 
-                    "total": 0, 
-                    "page": page, 
-                    "size": size, 
-                    "metric": metric, 
-                    "took_ms": 0, 
+                # 1. Fetch 100 items that are strictly ON SALE
+                os_rec_res = os_client.search(
+                    index=INDEX_NAME,
+                    body={
+                        "size": 100, 
+                        "query": {
+                            "bool": {
+                                "must": [{"match_all": {}}],
+                                "filter": [{"range": {"sale_price": {"gt": 0}}}]
+                            }
+                        }
+                    }
+                )
+                
+                cold_results = []
+                for hit in os_rec_res.get("hits", {}).get("hits", []):
+                    prod = parse_os_product(hit.get("_source", {}))
+                    prod["recommendation_reason"] = "Trending Deals Just For You"
+                    cold_results.append(prod)
+                    
+                # 2. Dynamically group them by whatever categories OpenSearch found
+                grouped = {}
+                for p in cold_results:
+                    c = p.get("category", ["Uncategorized"])
+                    c_name = c[0] if isinstance(c, list) and c else c if isinstance(c, str) else "Uncategorized"
+                    if c_name not in grouped: 
+                        grouped[c_name] = []
+                    grouped[c_name].append(p)
+                    
+                # 3. Interleave them perfectly (Round-Robin)
+                mixed = []
+                while any(grouped.values()):
+                    for c_name in list(grouped.keys()):
+                        if grouped[c_name]: 
+                            mixed.append(grouped[c_name].pop(0))
+                
+                # 4. Chop to the requested UI size and return immediately
+                final_results = mixed[:size]
+                
+                response = {
+                    "results": final_results, 
+                    "total": len(final_results), 
+                    "page": page, "size": size, "metric": metric, 
+                    "took_ms": round((time.time() - start_time) * 1000, 2), 
                     "cached": False
                 }
+                try: 
+                    await redis_client.setex(cache_key, CACHE_TTL, json.dumps(response))
+                except: pass
+                
+                return response
 
             history_pids = [r["product_id"] for r in history]
 
