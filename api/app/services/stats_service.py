@@ -18,7 +18,7 @@ from psycopg2.extras import RealDictCursor
 from app.config import os_client, redis_client, INDEX_NAME
 
 logger = logging.getLogger("StatsService")
-CACHE_TTL = 300  
+CACHE_TTL = 5  
 
 DB_CONFIG = {
     "host":     os.getenv("DB_HOST", "localhost"),
