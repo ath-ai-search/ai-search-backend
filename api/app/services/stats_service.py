@@ -96,12 +96,13 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
         if metric == "recommendations":
             if not identity: return {"error": "visitor_id required"}
             
-            # Step A: Get exactly what the user viewed/clicked, sorted by NEWEST first
+            # Step A: Get exactly what the user viewed/clicked.
+            # 🔥 Prioritize CLICKS so views don't overwrite them, then use the strict timeline!
             cur.execute("""
                 SELECT product_id 
                 FROM product_metrics 
                 WHERE visitor_id = %s AND (views + clicks) > 0 
-                ORDER BY last_seen DESC LIMIT 100
+                ORDER BY clicks DESC, last_seen DESC LIMIT 100
             """, (identity,))
             history = cur.fetchall()
 
@@ -162,9 +163,10 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             history_pids = [r["product_id"] for r in history]
 
             # Step B: Get Categories of these items from OpenSearch
+            # 🔥 INCREASED size to 100 so it doesn't randomly drop your timeline history!
             os_cat_res = os_client.search(
                 index=INDEX_NAME,
-                body={"size": 20, "_source": ["category", "product_id"], "query": {"terms": {"product_id": history_pids}}}
+                body={"size": 100, "_source": ["category", "product_id"], "query": {"terms": {"product_id": history_pids}}}
             )
 
             # Step C: Extract categories in the EXACT order they were viewed
@@ -181,9 +183,9 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 for cat in cats:
                     if cat and cat not in recent_categories:
                         recent_categories.append(cat)
-                        if len(recent_categories) >= 5: # 🔥 INCREASE TO 5 CATEGORIES
+                        if len(recent_categories) >= 12: # 🔥 INCREASED TO 12 to guarantee iPhones, Shoes, and Dresses all get included!
                             break
-                if len(recent_categories) >= 5:
+                if len(recent_categories) >= 12:
                     break
 
             if not recent_categories:
@@ -205,7 +207,8 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     "from": offset,
                     "query": {
                         "bool": {
-                            "should": [{"match": {"category": c}} for c in recent_categories],
+                            # 🔥 CHANGED to match_phrase: Guarantees a PERFECT category match, no weird random items!
+                            "should": [{"match_phrase": {"category": c}} for c in recent_categories],
                             "must_not": [{"terms": {"product_id": history_pids}}],
                             "minimum_should_match": 1,
                             "filter": [
@@ -232,7 +235,8 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 placed = False
                 p_cat = p.get("category")
                 for rc in recent_categories:
-                    if rc == p_cat or (isinstance(p_cat, list) and rc in p_cat):
+                    # 🔥 Robust matching guarantees the product perfectly slots into Box 1, Box 2, etc.
+                    if rc == p_cat or (isinstance(p_cat, list) and rc in p_cat) or (isinstance(p_cat, str) and rc in p_cat) or (isinstance(p_cat, list) and any(rc in c for c in p_cat)):
                         grouped_prods[rc].append(p)
                         placed = True
                         break
