@@ -203,12 +203,12 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             os_rec_res = os_client.search(
                 index=INDEX_NAME,
                 body={
-                    "size": 60,  # 🔥 FETCH 60 ITEMS for maximum variety
+                    "size": 150,  # 🔥 INCREASED TO 150 to guarantee it finds items for ALL 4 timeline boxes!
                     "from": offset,
                     "query": {
                         "bool": {
-                            # 🔥 CHANGED to match_phrase: Guarantees a PERFECT category match, no weird random items!
-                            "should": [{"match_phrase": {"category": c}} for c in recent_categories],
+                            # 🔥 FIXED: Using "match" with "AND" perfectly reads commas and & symbols without breaking!
+                            "should": [{"match": {"category": {"query": c, "operator": "and"}}} for c in recent_categories],
                             "must_not": [{"terms": {"product_id": history_pids}}],
                             "minimum_should_match": 1,
                             "filter": [
