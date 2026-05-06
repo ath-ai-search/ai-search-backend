@@ -155,11 +155,11 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     "cached": False
                 }
 
-            # Step D: Ask OpenSearch for NEW products in these recent categories
+            # Step D: Ask OpenSearch for a HUGE pool of products to guarantee variety
             os_rec_res = os_client.search(
                 index=INDEX_NAME,
                 body={
-                    "size": size, 
+                    "size": 40,  # 🔥 FETCH 40 ITEMS SO WE GET IPHONES, DRESSES, AND SHOES!
                     "from": offset,
                     "query": {
                         "bool": {
@@ -203,6 +203,9 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             
             # Save the perfectly mixed list back to results
             results = mixed_results + leftovers
+            
+            # 🔥 CHOP THE LIST TO MATCH WHAT THE UI ASKED FOR (e.g., 12 items)
+            results = results[:size]
             
             total = os_rec_res.get("hits", {}).get("total", {}).get("value", len(results))
             db_rows = []
