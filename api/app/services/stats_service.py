@@ -263,11 +263,12 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             db_rows = []
 
         # =====================================================================
-        # 🛒 API 2: PICK-UP (Personal Carts & Wishlists)
+        # 🛒 API 2: PICK-UP (Carts/Wishlists + Dynamic Sale Padding)
         # =====================================================================
         elif metric == "pick-up":
             if not identity: return {"error": "visitor_id required"}
             
+            # Count how many items the user actually has in cart/wishlist
             cur.execute("""
                 SELECT COUNT(*) as t 
                 FROM product_metrics 
@@ -276,12 +277,71 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             total = cur.fetchone()["t"]
 
             cur.execute("""
-                SELECT product_id, (carts + wishlist) as score 
+                SELECT product_id 
                 FROM product_metrics 
                 WHERE visitor_id = %s AND (carts + wishlist) > 0 
-                ORDER BY last_seen DESC LIMIT 100 OFFSET %s
-            """, (identity, offset))
-            db_rows = cur.fetchall()
+                ORDER BY last_seen DESC LIMIT %s OFFSET %s
+            """, (identity, size, offset))
+            user_history = cur.fetchall()
+
+            user_pids = [r["product_id"] for r in user_history]
+            user_results = []
+
+            # 1. Fetch the EXACT items they added to cart/wishlist
+            if user_pids:
+                os_res = os_client.search(
+                    index=INDEX_NAME,
+                    body={"size": len(user_pids), "query": {"terms": {"product_id": user_pids}}}
+                )
+                prod_map = {h["_source"]["product_id"]: parse_os_product(h["_source"]) for h in os_res.get("hits", {}).get("hits", [])}
+                for pid in user_pids:
+                    if pid in prod_map:
+                        prod = prod_map[pid].copy()
+                        prod["recommendation_reason"] = "Saved in Cart/Wishlist"
+                        user_results.append(prod)
+
+            # 2. Figure out how many empty spaces we need to fill!
+            padding_needed = size - len(user_results)
+            dynamic_results = []
+
+            if padding_needed > 0:
+                # Tell OpenSearch NOT to fetch items already in their cart
+                must_not = [{"terms": {"product_id": user_pids}}] if user_pids else []
+                os_pad_res = os_client.search(
+                    index=INDEX_NAME,
+                    body={
+                        "size": padding_needed,
+                        "query": {
+                            "bool": {
+                                "must": [{"match_all": {}}],
+                                "must_not": must_not,
+                                "filter": [{"range": {"sale_price": {"gt": 0}}}] # strictly SALE items
+                            }
+                        }
+                    }
+                )
+                for hit in os_pad_res.get("hits", {}).get("hits", []):
+                    prod = parse_os_product(hit.get("_source", {}))
+                    prod["recommendation_reason"] = "Trending Deals Just For You"
+                    dynamic_results.append(prod)
+
+            # 3. Combine them together and return instantly!
+            final_results = user_results + dynamic_results
+
+            response = {
+                "results": final_results,
+                "total": max(total, len(final_results)),
+                "page": page,
+                "size": size,
+                "metric": metric,
+                "took_ms": round((time.time() - start_time) * 1000, 2),
+                "cached": False
+            }
+            try:
+                await redis_client.setex(cache_key, CACHE_TTL, json.dumps(response))
+            except:
+                pass
+            return response
 
         # =====================================================================
         # 🎯 API 4: RECOMMENDATION GRIDS (Exact items Viewed AND Clicked)
@@ -347,8 +407,8 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
 
         cur.close()
 
-        # Fetch OpenSearch Details for Pick-Up, Trending, and Recommendation Grids
-        if metric in ["pick-up", "trending", "recommendation-grids"] and db_rows:
+        # Fetch OpenSearch Details for Trending and Recommendation Grids
+        if metric in ["trending", "recommendation-grids"] and db_rows:
             pids = [r["product_id"] for r in db_rows]
             
             # Build a comprehensive score map
