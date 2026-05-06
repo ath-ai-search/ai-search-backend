@@ -284,6 +284,28 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             db_rows = cur.fetchall()
 
         # =====================================================================
+        # 🎯 API 4: RECOMMENDATION GRIDS (Exact items Viewed AND Clicked)
+        # =====================================================================
+        elif metric == "recommendation-grids":
+            if not identity: return {"error": "visitor_id required"}
+            
+            # User must have BOTH viewed AND clicked the exact item
+            cur.execute("""
+                SELECT COUNT(*) as t 
+                FROM product_metrics 
+                WHERE visitor_id = %s AND views > 0 AND clicks > 0
+            """, (identity,))
+            total = cur.fetchone()["t"]
+
+            cur.execute("""
+                SELECT product_id, (views + clicks) as score 
+                FROM product_metrics 
+                WHERE visitor_id = %s AND views > 0 AND clicks > 0 
+                ORDER BY last_seen DESC LIMIT 100 OFFSET %s
+            """, (identity, offset))
+            db_rows = cur.fetchall()
+
+        # =====================================================================
         # 🔥 API 3: TRENDING (GLOBAL Popularity - FIXED!)
         # Uses ALL events: views, clicks, wishlist, carts, purchases
         # Formula: 1.0 + views*1 + clicks*2 + wishlist*3 + carts*5 + purchases*10
@@ -325,8 +347,8 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
 
         cur.close()
 
-        # Fetch OpenSearch Details for Pick-Up and Trending
-        if metric in ["pick-up", "trending"] and db_rows:
+        # Fetch OpenSearch Details for Pick-Up, Trending, and Recommendation Grids
+        if metric in ["pick-up", "trending", "recommendation-grids"] and db_rows:
             pids = [r["product_id"] for r in db_rows]
             
             # Build a comprehensive score map
@@ -346,19 +368,28 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 
                 score_map[r["product_id"]] = product_data
             
-            # 🔥 STRICT SALE RULE: Force Trending and Pick-Up to ONLY show Sale items
+            # 🔥 STRICT SALE RULE for Trending/Pick-up. 
+            # But for Recommendation Grids, show the EXACT product whether it is on sale or not!
+            bool_query = {
+                "must": [{"terms": {"product_id": pids}}]
+            }
+            if metric != "recommendation-grids":
+                bool_query["filter"] = [{"range": {"sale_price": {"gt": 0}}}]
+
             os_res = os_client.search(
                 index=INDEX_NAME,
                 body={
                     "size": len(pids), 
                     "query": {
-                        "bool": {
-                            "must": [{"terms": {"product_id": pids}}],
-                            "filter": [{"range": {"sale_price": {"gt": 0}}}] # Must be on sale!
-                        }
+                        "bool": bool_query
                     }
                 }
             )
+            
+            # Set a custom reason tag for the UI
+            for hit in os_res.get("hits", {}).get("hits", []):
+                if metric == "recommendation-grids":
+                    hit["_source"]["recommendation_reason"] = "Recently Viewed by You"
             
             prod_map = {h["_source"]["product_id"]: parse_os_product(h["_source"]) for h in os_res.get("hits", {}).get("hits", [])}
             

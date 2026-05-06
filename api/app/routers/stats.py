@@ -56,3 +56,16 @@ async def global_trending_products(
     """Trending: Returns GLOBAL trending products across all users based on purchases."""
     # We pass empty strings for identity because this API calculates globally for everyone
     return await get_top_products_by_metric("trending", visitor_id="", user_id="", page=page, size=size)
+
+# =========================================================================
+# 4️⃣ RECOMMENDATION GRIDS (Exact Products Viewed AND Clicked)
+# =========================================================================
+@router.get("/recommendation-grids")
+async def recommendation_grids(
+    visitor_id: str = Query(..., description="Browser UUID (required)"),
+    user_id: str = Query(None, description="Customer ID (if logged in)"),
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100)
+):
+    """Recommendation Grids: Returns the EXACT products the user has both viewed AND clicked."""
+    return await get_top_products_by_metric("recommendation-grids", visitor_id, user_id, page, size)
