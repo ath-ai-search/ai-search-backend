@@ -6,7 +6,6 @@ PURPOSE: E-commerce Event Tracking & Analytics Engine (Per-User)
 """
 import os
 import logging
-from app.services.stats_service import invalidate_user_cache
 from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, BackgroundTasks
@@ -296,15 +295,8 @@ async def track_events(payload: TrackingPayload, background_tasks: BackgroundTas
     if not payload.events:
         return {"status": "skipped"}
     
-    # 1. Save events to database
+    # 1. Just save the events to the database. Do NOT touch the cache.
     background_tasks.add_task(save_events_to_db, payload.events)
-    
-    # 2. THE PERFECT BALANCE: Kill the cache ONLY for this specific user!
-    # This gives them instant UI updates, while everyone else stays cached.
-    first_event = payload.events[0]
-    identity = get_identity(first_event)
-    if identity:
-        background_tasks.add_task(invalidate_user_cache, identity)
 
     return {
         "status": "ok",
