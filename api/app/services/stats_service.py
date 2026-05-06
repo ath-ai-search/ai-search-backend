@@ -101,7 +101,7 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 SELECT product_id 
                 FROM product_metrics 
                 WHERE visitor_id = %s AND (views + clicks) > 0 
-                ORDER BY last_seen DESC LIMIT 20
+                ORDER BY last_seen DESC LIMIT 100
             """, (identity,))
             history = cur.fetchall()
 
@@ -164,7 +164,7 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             # Step B: Get Categories of these items from OpenSearch
             os_cat_res = os_client.search(
                 index=INDEX_NAME,
-                body={"size": 20, "_source": ["category", "product_id"], "query": {"terms": {"product_id": history_pids}}}
+                body={"size": 100, "_source": ["category", "product_id"], "query": {"terms": {"product_id": history_pids}}}
             )
 
             # Step C: Extract categories in the EXACT order they were viewed
