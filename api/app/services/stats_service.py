@@ -199,21 +199,18 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     "cached": False
                 }
 
-            # Step D: Ask OpenSearch ONLY for items that are ON SALE across their categories
+            # Step D: Ask OpenSearch for items in their categories (SALE OR UNSALE)
             os_rec_res = os_client.search(
                 index=INDEX_NAME,
                 body={
-                    "size": 150,  # 🔥 INCREASED TO 150 to guarantee it finds items for ALL 4 timeline boxes!
+                    "size": 150,  
                     "from": offset,
                     "query": {
                         "bool": {
-                            # 🔥 FIXED: Using "match" with "AND" perfectly reads commas and & symbols without breaking!
                             "should": [{"match": {"category": {"query": c, "operator": "and"}}} for c in recent_categories],
-                            "must_not": [{"terms": {"product_id": history_pids}}],
-                            "minimum_should_match": 1,
-                            "filter": [
-                                {"range": {"sale_price": {"gt": 0}}}  # 🔥 STRICT RULE: Only items ON SALE!
-                            ]
+                            "minimum_should_match": 1
+                            # 🔥 REMOVED "must_not" so the EXACT product you clicked will show up!
+                            # 🔥 REMOVED "sale_price" filter so it shows SALE OR UNSALE!
                         }
                     }
                 }
@@ -243,10 +240,10 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 if not placed:
                     leftovers.append(p)
 
-            # 🔥 THE SALE FIX: Sort each category's bucket so SALE items go to the front!
+            # 🔥 PERFECT MATCH FIX: Put the EXACT item the user clicked at the very front of Box 1, Box 2, etc.
             for rc in recent_categories:
                 grouped_prods[rc].sort(
-                    key=lambda x: 1 if float(x.get("sale_price") or 0) > 0 else 0, 
+                    key=lambda x: 1 if x.get("product_id") in history_pids else 0, 
                     reverse=True
                 )
 
