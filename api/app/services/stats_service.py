@@ -194,6 +194,13 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 if not placed:
                     leftovers.append(p)
 
+            # 🔥 THE SALE FIX: Sort each category's bucket so SALE items go to the front!
+            for rc in recent_categories:
+                grouped_prods[rc].sort(
+                    key=lambda x: 1 if float(x.get("sale_price") or 0) > 0 else 0, 
+                    reverse=True
+                )
+
             # Interleave them: 1 from Cat A, 1 from Cat B, 1 from Cat C...
             mixed_results = []
             while any(grouped_prods.values()):
