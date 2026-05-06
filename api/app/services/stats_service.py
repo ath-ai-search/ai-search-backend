@@ -279,8 +279,8 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 SELECT product_id, (carts + wishlist) as score 
                 FROM product_metrics 
                 WHERE visitor_id = %s AND (carts + wishlist) > 0 
-                ORDER BY last_seen DESC LIMIT %s OFFSET %s
-            """, (identity, size, offset))
+                ORDER BY last_seen DESC LIMIT 100 OFFSET %s
+            """, (identity, offset))
             db_rows = cur.fetchall()
 
         # =====================================================================
@@ -319,8 +319,8 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 GROUP BY product_id 
                 HAVING SUM(views + clicks + carts + purchases + wishlist) > 0 
                 ORDER BY score DESC 
-                LIMIT %s OFFSET %s
-            """, (size, offset))
+                LIMIT 100 OFFSET %s
+            """, (offset,))
             db_rows = cur.fetchall()
 
         cur.close()
@@ -346,9 +346,18 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 
                 score_map[r["product_id"]] = product_data
             
+            # 🔥 STRICT SALE RULE: Force Trending and Pick-Up to ONLY show Sale items
             os_res = os_client.search(
                 index=INDEX_NAME,
-                body={"size": len(pids), "query": {"terms": {"product_id": pids}}}
+                body={
+                    "size": len(pids), 
+                    "query": {
+                        "bool": {
+                            "must": [{"terms": {"product_id": pids}}],
+                            "filter": [{"range": {"sale_price": {"gt": 0}}}] # Must be on sale!
+                        }
+                    }
+                }
             )
             
             prod_map = {h["_source"]["product_id"]: parse_os_product(h["_source"]) for h in os_res.get("hits", {}).get("hits", [])}
@@ -358,6 +367,9 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     prod = prod_map[pid].copy()
                     prod.update(score_map[pid])
                     results.append(prod)
+                    
+            # Chop the final list to match the UI's requested size (12)
+            results = results[:size]
 
     except Exception as e:
         logger.error(f"❌ Query failed: {e}")
