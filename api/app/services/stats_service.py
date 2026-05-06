@@ -178,16 +178,31 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 prod["recommendation_reason"] = f"Based on your recent interest in {display_cat}"
                 results.append(prod)
             
-            # Step E: Strict Sorting. Rank 0 (the NEWEST category) gets top priority.
-            def get_category_rank(prod_cat):
-                for i, rc in enumerate(recent_categories):
-                    if isinstance(prod_cat, list):
-                        if rc in prod_cat: return i
-                    elif rc == prod_cat:
-                        return i
-                return 999
-                # Sort strictly by the newest interest first so old items move to the back
-                results.sort(key=lambda p: get_category_rank(p.get("category")))
+            # Step E: MIX THE PRODUCTS (Round-Robin Blend)
+            # This guarantees the slider shows a perfect mix of their recent interests!
+            grouped_prods = {rc: [] for rc in recent_categories}
+            leftovers = []
+            
+            for p in results:
+                placed = False
+                p_cat = p.get("category")
+                for rc in recent_categories:
+                    if rc == p_cat or (isinstance(p_cat, list) and rc in p_cat):
+                        grouped_prods[rc].append(p)
+                        placed = True
+                        break
+                if not placed:
+                    leftovers.append(p)
+
+            # Interleave them: 1 from Cat A, 1 from Cat B, 1 from Cat C...
+            mixed_results = []
+            while any(grouped_prods.values()):
+                for rc in recent_categories:
+                    if grouped_prods[rc]:
+                        mixed_results.append(grouped_prods[rc].pop(0))
+            
+            # Save the perfectly mixed list back to results
+            results = mixed_results + leftovers
             
             total = os_rec_res.get("hits", {}).get("total", {}).get("value", len(results))
             db_rows = []
