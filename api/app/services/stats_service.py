@@ -139,9 +139,9 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 for cat in cats:
                     if cat and cat not in recent_categories:
                         recent_categories.append(cat)
-                        if len(recent_categories) >= 3: # Keep the 3 most recent unique categories
+                        if len(recent_categories) >= 5: # 🔥 INCREASE TO 5 CATEGORIES
                             break
-                if len(recent_categories) >= 3:
+                if len(recent_categories) >= 5:
                     break
 
             if not recent_categories:
@@ -155,17 +155,20 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     "cached": False
                 }
 
-            # Step D: Ask OpenSearch for a HUGE pool of products to guarantee variety
+            # Step D: Ask OpenSearch ONLY for items that are ON SALE across their categories
             os_rec_res = os_client.search(
                 index=INDEX_NAME,
                 body={
-                    "size": 40,  # 🔥 FETCH 40 ITEMS SO WE GET IPHONES, DRESSES, AND SHOES!
+                    "size": 60,  # 🔥 FETCH 60 ITEMS for maximum variety
                     "from": offset,
                     "query": {
                         "bool": {
                             "should": [{"match": {"category": c}} for c in recent_categories],
                             "must_not": [{"terms": {"product_id": history_pids}}],
-                            "minimum_should_match": 1
+                            "minimum_should_match": 1,
+                            "filter": [
+                                {"range": {"sale_price": {"gt": 0}}}  # 🔥 STRICT RULE: Only items ON SALE!
+                            ]
                         }
                     }
                 }
