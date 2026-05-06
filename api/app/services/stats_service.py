@@ -199,7 +199,11 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     "cached": False
                 }
 
-            # Step D: Ask OpenSearch for items in their categories (SALE OR UNSALE)
+            # Step D: FORCE OpenSearch to fetch your EXACT items, plus category fallbacks
+            should_clauses = [{"terms": {"product_id": history_pids, "boost": 1000}}]
+            for c in recent_categories:
+                should_clauses.append({"match": {"category": {"query": c, "operator": "and"}}})
+
             os_rec_res = os_client.search(
                 index=INDEX_NAME,
                 body={
@@ -207,10 +211,8 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     "from": offset,
                     "query": {
                         "bool": {
-                            "should": [{"match": {"category": {"query": c, "operator": "and"}}} for c in recent_categories],
+                            "should": should_clauses,
                             "minimum_should_match": 1
-                            # 🔥 REMOVED "must_not" so the EXACT product you clicked will show up!
-                            # 🔥 REMOVED "sale_price" filter so it shows SALE OR UNSALE!
                         }
                     }
                 }
@@ -218,47 +220,41 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
 
             for hit in os_rec_res.get("hits", {}).get("hits", []):
                 prod = parse_os_product(hit.get("_source", {}))
-                # Check if category is a list, and if so, just grab the first one to look clean!
                 display_cat = prod['category'][0] if isinstance(prod['category'], list) else prod['category']
                 prod["recommendation_reason"] = f"Based on your recent interest in {display_cat}"
                 results.append(prod)
             
-            # Step E: MIX THE PRODUCTS (Round-Robin Blend)
-            # This guarantees the slider shows a perfect mix of their recent interests!
+            # Step E: PERFECT TIMELINE MIX (Exact Items FIRST, then Dynamic Fallbacks)
+            mixed_results = []
+            seen_pids = set()
+
+            # 1. Put the EXACT clicked items into Box 1, Box 2, etc. in strict Timeline order!
+            exact_prods = {p["product_id"]: p for p in results if p["product_id"] in history_pids}
+            for pid in history_pids:
+                if pid in exact_prods and pid not in seen_pids:
+                    mixed_results.append(exact_prods[pid])
+                    seen_pids.add(pid)
+
+            # 2. Fill the remaining boxes with Dynamic Category Fallbacks
             grouped_prods = {rc: [] for rc in recent_categories}
-            leftovers = []
-            
             for p in results:
-                placed = False
+                if p["product_id"] in seen_pids:
+                    continue
                 p_cat = p.get("category")
                 for rc in recent_categories:
-                    # 🔥 Robust matching guarantees the product perfectly slots into Box 1, Box 2, etc.
-                    if rc == p_cat or (isinstance(p_cat, list) and rc in p_cat) or (isinstance(p_cat, str) and rc in p_cat) or (isinstance(p_cat, list) and any(rc in c for c in p_cat)):
+                    if rc == p_cat or (isinstance(p_cat, list) and rc in p_cat) or (isinstance(p_cat, str) and rc in p_cat):
                         grouped_prods[rc].append(p)
-                        placed = True
                         break
-                if not placed:
-                    leftovers.append(p)
-
-            # 🔥 PERFECT MATCH FIX: Put the EXACT item the user clicked at the very front of Box 1, Box 2, etc.
-            for rc in recent_categories:
-                grouped_prods[rc].sort(
-                    key=lambda x: 1 if x.get("product_id") in history_pids else 0, 
-                    reverse=True
-                )
-
-            # Interleave them: 1 from Cat A, 1 from Cat B, 1 from Cat C...
-            mixed_results = []
+            
             while any(grouped_prods.values()):
                 for rc in recent_categories:
                     if grouped_prods[rc]:
-                        mixed_results.append(grouped_prods[rc].pop(0))
+                        fallback_item = grouped_prods[rc].pop(0)
+                        mixed_results.append(fallback_item)
+                        seen_pids.add(fallback_item["product_id"])
             
-            # Save the perfectly mixed list back to results
-            results = mixed_results + leftovers
-            
-            # 🔥 CHOP THE LIST TO MATCH WHAT THE UI ASKED FOR (e.g., 12 items)
-            results = results[:size]
+            # 🔥 CHOP THE LIST TO MATCH WHAT THE UI ASKED FOR (exactly 4 boxes)
+            results = mixed_results[:size]
             
             total = os_rec_res.get("hits", {}).get("total", {}).get("value", len(results))
             db_rows = []
