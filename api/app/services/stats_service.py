@@ -97,12 +97,12 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             if not identity: return {"error": "visitor_id required"}
             
             # Step A: Get exactly what the user viewed/clicked.
-            # 🔥 Prioritize CLICKS so views don't overwrite them, then use the strict timeline!
+            # 🔥 STRICT TIMELINE: The newest thing you clicked is ALWAYS Box 1.
             cur.execute("""
                 SELECT product_id 
                 FROM product_metrics 
                 WHERE visitor_id = %s AND (views + clicks) > 0 
-                ORDER BY clicks DESC, last_seen DESC LIMIT 100
+                ORDER BY last_seen DESC LIMIT 100
             """, (identity,))
             history = cur.fetchall()
 
