@@ -96,12 +96,12 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
         if metric == "recommendations":
             if not identity: return {"error": "visitor_id required"}
             
-            # Step A: Get exactly what the user viewed/clicked, sorted by NEWEST first
+            # Step A: Get history, prioritizing items they actually CLICKED or SAVED over just views!
             cur.execute("""
                 SELECT product_id 
                 FROM product_metrics 
                 WHERE visitor_id = %s AND (views + clicks) > 0 
-                ORDER BY last_seen DESC LIMIT 100
+                ORDER BY (clicks*2 + carts*5 + wishlist*3) DESC, last_seen DESC LIMIT 100
             """, (identity,))
             history = cur.fetchall()
 
@@ -181,9 +181,9 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 for cat in cats:
                     if cat and cat not in recent_categories:
                         recent_categories.append(cat)
-                        if len(recent_categories) >= 5: # 🔥 INCREASE TO 5 CATEGORIES
+                        if len(recent_categories) >= 12: # 🔥 INCREASED TO 12 to ensure iPhones, Shoes, and Dresses all fit!
                             break
-                if len(recent_categories) >= 5:
+                if len(recent_categories) >= 12:
                     break
 
             if not recent_categories:
