@@ -139,9 +139,9 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 for cat in cats:
                     if cat and cat not in recent_categories:
                         recent_categories.append(cat)
-                        if len(recent_categories) >= 5: # 🔥 INCREASE TO 5: Now it remembers Shoes, Dresses, iPhones, etc.
+                        if len(recent_categories) >= 3: # Keep the 3 most recent unique categories
                             break
-                if len(recent_categories) >= 5:
+                if len(recent_categories) >= 3:
                     break
 
             if not recent_categories:
@@ -159,7 +159,7 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             os_rec_res = os_client.search(
                 index=INDEX_NAME,
                 body={
-                    "size": 100,  # 🔥 FETCH 100 ITEMS: Prevents rare items (iPhones) from getting drowned out by common ones (Dresses)
+                    "size": 40,  # 🔥 FETCH 40 ITEMS SO WE GET IPHONES, DRESSES, AND SHOES!
                     "from": offset,
                     "query": {
                         "bool": {
