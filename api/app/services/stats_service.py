@@ -13,6 +13,7 @@ import os
 import time
 import json
 import logging
+import random  # 🔥 ADD THIS LINE AT THE TOP
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from app.config import os_client, redis_client, INDEX_NAME
@@ -322,12 +323,16 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             dynamic_results = []
 
             if padding_needed > 0:
+                # 🔥 REFRESH LOGIC: Pick a random start point for variety
+                random_offset = random.randint(0, 40)
+
                 # Tell OpenSearch NOT to fetch items already in their cart
                 must_not = [{"terms": {"product_id": user_pids}}] if user_pids else []
                 os_pad_res = os_client.search(
                     index=INDEX_NAME,
                     body={
                         "size": padding_needed,
+                        "from": random_offset,          # 🔥 Use the random offset
                         "from": 0,                      # 🔥 BATCH 1: Grab the very top luxurious items
                         "sort": [{"price": "desc"}],    # 🔥 LUXURIOUS: Sort by Highest Price!
                         "query": {
@@ -428,12 +433,16 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             dynamic_results = []
 
             if padding_needed > 0:
+                # 🔥 REFRESH LOGIC: Pick a different random range so it never matches Pick-Up
+                random_offset = random.randint(60, 100)
+
                 # Tell OpenSearch NOT to fetch items already in their history
                 must_not = [{"terms": {"product_id": user_pids}}] if user_pids else []
                 os_pad_res = os_client.search(
                     index=INDEX_NAME,
                     body={
                         "size": padding_needed,
+                        "from": random_offset,          # 🔥 Use the higher random offset
                         "from": 20,                     # 🔥 BATCH 2: Skip the first 20 so it NEVER overlaps with Pick-Up!
                         "sort": [{"price": "desc"}],    # 🔥 LUXURIOUS: Sort by Highest Price!
                         "query": {
