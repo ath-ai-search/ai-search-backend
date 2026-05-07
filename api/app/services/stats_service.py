@@ -13,7 +13,6 @@ import os
 import time
 import json
 import logging
-import random  # 🔥 ADD THIS LINE AT THE TOP
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from app.config import os_client, redis_client, INDEX_NAME
@@ -40,18 +39,19 @@ def get_query_identity(visitor_id: str, user_id: str = None) -> str:
 
 def parse_os_product(src):
     """Helper to parse OpenSearch product source into a clean dictionary."""
-    # 🔥 FIX: Prioritize 'primary_image' or 'image' BEFORE looking at the 'images' gallery array!
-    first_image = src.get("primary_image") or src.get("image") or ""
+    # 1. Grab image data from whichever field your database uses
+    raw_img_data = src.get("images") or src.get("image") or src.get("primary_image") or ""
     
-    # If there is no primary image, ONLY THEN look at the gallery array
-    if not first_image:
-        raw_img_data = src.get("images") or ""
+    first_image = ""
+    
+    # 2. If it's a list, grab STRICTLY the first item
+    if isinstance(raw_img_data, list) and len(raw_img_data) > 0:
+        first_image = str(raw_img_data[0])
         
-        if isinstance(raw_img_data, list) and len(raw_img_data) > 0:
-            first_image = str(raw_img_data[0])
-        elif isinstance(raw_img_data, str) and raw_img_data:
-            cleaned = raw_img_data.strip("[]'\" ")
-            first_image = cleaned.split(",")[0].strip("[]'\" ")
+    # 3. If it's a string, clean up brackets/quotes and split by comma to force ONLY the first image
+    elif isinstance(raw_img_data, str) and raw_img_data:
+        cleaned = raw_img_data.strip("[]'\" ")
+        first_image = cleaned.split(",")[0].strip("[]'\" ")
     
     return {
         "product_id": src.get("product_id"),
@@ -322,9 +322,6 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             dynamic_results = []
 
             if padding_needed > 0:
-                # 🔥 REFRESH LOGIC: Pick a random start point for variety
-                random_offset = random.randint(0, 40)
-
                 # Tell OpenSearch NOT to fetch items already in their cart
                 must_not = [{"terms": {"product_id": user_pids}}] if user_pids else []
                 os_pad_res = os_client.search(
@@ -386,16 +383,15 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             cur.execute("""
                 SELECT COUNT(*) as t 
                 FROM product_metrics 
-                WHERE visitor_id = %s AND (views + clicks) > 0 AND (carts + wishlist) = 0
+                WHERE visitor_id = %s AND (views + clicks) > 0
             """, (identity,))
             total = cur.fetchone()["t"]
 
             # 🔥 RELAXED RULE: Fetch exactly what the user viewed or clicked (with variant images)
-            # 🔥 EXCLUDE items already in cart/wishlist (those belong to pick-up API)
             cur.execute("""
                 SELECT product_id, variant_image 
                 FROM product_metrics 
-                WHERE visitor_id = %s AND (views + clicks) > 0 AND (carts + wishlist) = 0
+                WHERE visitor_id = %s AND (views + clicks) > 0 
                 ORDER BY last_seen DESC LIMIT %s OFFSET %s
             """, (identity, size, offset))
             user_history = cur.fetchall()
@@ -415,7 +411,15 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     if pid in prod_map:
                         prod = prod_map[pid].copy()
                         
-                        # ✅ Use first image from OpenSearch directly (parse_os_product already handles this)
+                        # 🔥 STRICT OVERRIDE: Protect against "null", "undefined", and gallery mistakes!
+                        var_img = variant_map.get(pid)
+                        
+                        # Only override if it is a real string, longer than 10 characters, and doesn't contain "null"
+                        if var_img and isinstance(var_img, str) and len(var_img) > 10:
+                            if "null" not in var_img.lower() and "undefined" not in var_img.lower():
+                                prod["image"] = var_img
+                                prod["primary_image"] = var_img
+                            
                         prod["recommendation_reason"] = "Recently Viewed by You"
                         user_results.append(prod)
 
@@ -424,15 +428,8 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             dynamic_results = []
 
             if padding_needed > 0:
-                # 🔥 Also exclude whatever is already in the user's cart/wishlist (those show in pick-up)
-                cur.execute("""
-                    SELECT product_id FROM product_metrics 
-                    WHERE visitor_id = %s AND (carts + wishlist) > 0
-                """, (identity,))
-                cart_pids = [r["product_id"] for r in cur.fetchall()]
-
-                all_excluded_pids = list(set(user_pids + cart_pids))
-                must_not = [{"terms": {"product_id": all_excluded_pids}}] if all_excluded_pids else []
+                # Tell OpenSearch NOT to fetch items already in their history
+                must_not = [{"terms": {"product_id": user_pids}}] if user_pids else []
                 os_pad_res = os_client.search(
                     index=INDEX_NAME,
                     body={
