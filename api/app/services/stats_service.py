@@ -366,18 +366,19 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
         elif metric == "recommendation-grids":
             if not identity: return {"error": "visitor_id required"}
             
+            # 🔥 RELAXED RULE: Works if they just VIEWED or CLICKED!
             cur.execute("""
                 SELECT COUNT(*) as t 
                 FROM product_metrics 
-                WHERE visitor_id = %s AND views > 0 AND clicks > 0
+                WHERE visitor_id = %s AND (views + clicks) > 0
             """, (identity,))
             total = cur.fetchone()["t"]
 
-            # 🔥 1. Fetch exactly what the user viewed and clicked (with variant images)
+            # 🔥 RELAXED RULE: Fetch exactly what the user viewed or clicked (with variant images)
             cur.execute("""
                 SELECT product_id, variant_image 
                 FROM product_metrics 
-                WHERE visitor_id = %s AND views > 0 AND clicks > 0 
+                WHERE visitor_id = %s AND (views + clicks) > 0 
                 ORDER BY last_seen DESC LIMIT %s OFFSET %s
             """, (identity, size, offset))
             user_history = cur.fetchall()
@@ -397,10 +398,14 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     if pid in prod_map:
                         prod = prod_map[pid].copy()
                         
-                        # 🔥 OVERRIDE: Show the exact color clicked!
-                        if variant_map.get(pid):
-                            prod["image"] = variant_map[pid]
-                            prod["primary_image"] = variant_map[pid]
+                        # 🔥 STRICT OVERRIDE: Protect against "null", "undefined", and gallery mistakes!
+                        var_img = variant_map.get(pid)
+                        
+                        # Only override if it is a real string, longer than 10 characters, and doesn't contain "null"
+                        if var_img and isinstance(var_img, str) and len(var_img) > 10:
+                            if "null" not in var_img.lower() and "undefined" not in var_img.lower():
+                                prod["image"] = var_img
+                                prod["primary_image"] = var_img
                             
                         prod["recommendation_reason"] = "Recently Viewed by You"
                         user_results.append(prod)
