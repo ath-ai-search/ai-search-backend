@@ -41,7 +41,7 @@ def get_query_identity(visitor_id: str, user_id: str = None) -> str:
 def parse_os_product(src):
     """Helper to parse OpenSearch product source into a clean dictionary."""
     # 1. Grab image data from whichever field your database uses
-    raw_img_data = src.get("images") or src.get("image") or src.get("primary_image") or ""
+    raw_img_data = src.get("images") or ""
     
     first_image = ""
     
