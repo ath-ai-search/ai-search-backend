@@ -479,44 +479,40 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             return response
 
         # =====================================================================
-        # 🔥 API 3: TRENDING (GLOBAL Popularity - FIXED!)
-        # Uses ALL events: views, clicks, wishlist, carts, purchases
-        # Formula: 1.0 + views*1 + clicks*2 + wishlist*3 + carts*5 + purchases*10
+        # 🔥 API 3: TRENDING (Reads directly from OpenSearch trending_score)
+        # Uses pre-computed values in OpenSearch (kept fresh by sync_trending cron)
         # =====================================================================
         elif metric == "trending":
-            # 1. Total count of products with ANY activity (including wishlist!)
-            cur.execute("""
-                SELECT COUNT(DISTINCT product_id) as t 
-                FROM product_metrics 
-                WHERE views > 0 OR clicks > 0 OR carts > 0 OR purchases > 0 OR wishlist > 0
-            """)
-            total = cur.fetchone()["t"]
+            # Query OpenSearch directly, sorted by trending_score field
+            os_res = os_client.search(
+                index=INDEX_NAME,
+                body={
+                    "from": offset,
+                    "size": size,
+                    "query": {
+                        "bool": {
+                            "must": [{"range": {"trending_score": {"gt": 1}}}],
+                            "filter": [{"term": {"in_stock": True}}]
+                        }
+                    },
+                    "sort": [{"trending_score": "desc"}]
+                }
+            )
 
-            # 2. ✅ FIXED: GLOBAL trending using SAME formula as stored trending_score
-            # Aggregates from ALL users to find globally popular products
-            cur.execute("""
-                SELECT 
-                    product_id, 
-                    SUM(
-                        1.0 + 
-                        (views * 1) + 
-                        (clicks * 2) + 
-                        (wishlist * 3) + 
-                        (carts * 5) + 
-                        (purchases * 10)
-                    ) as score,
-                    SUM(views) as total_views,
-                    SUM(clicks) as total_clicks,
-                    SUM(wishlist) as total_wishlist,
-                    SUM(carts) as total_carts,
-                    SUM(purchases) as total_purchases
-                FROM product_metrics 
-                GROUP BY product_id 
-                HAVING SUM(views + clicks + carts + purchases + wishlist) > 0 
-                ORDER BY score DESC 
-                LIMIT 100 OFFSET %s
-            """, (offset,))
-            db_rows = cur.fetchall()
+            for hit in os_res.get("hits", {}).get("hits", []):
+                src = hit.get("_source", {})
+                prod = parse_os_product(src)
+                prod["score"] = float(src.get("trending_score", 0))
+                prod["total_views"] = int(src.get("stats_views", 0) or 0)
+                prod["total_clicks"] = int(src.get("stats_clicks", 0) or 0)
+                prod["total_carts"] = int(src.get("stats_carts", 0) or 0)
+                prod["total_wishlist"] = int(src.get("stats_wishlist", 0) or 0)
+                prod["total_purchases"] = int(src.get("stats_purchases", 0) or 0)
+                prod["recommendation_reason"] = "Trending Now"
+                results.append(prod)
+
+            total = os_res.get("hits", {}).get("total", {}).get("value", len(results))
+            db_rows = []  # 🔥 skip the Postgres-fetch block below
 
         cur.close()
 
