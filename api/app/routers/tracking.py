@@ -293,23 +293,22 @@ def save_events_to_db(events_data):
 
 @router.post("/track")
 async def track_events(payload: TrackingPayload, background_tasks: BackgroundTasks):
-    if not payload.events:
-        return {"status": "skipped"}
-    
-    # 1. Save events to database
-    background_tasks.add_task(save_events_to_db, payload.events)
-    
-    # 2. THE PERFECT BALANCE: Kill the cache ONLY for this specific user!
-    # This gives them instant UI updates, while everyone else stays cached.
-    first_event = payload.events[0]
-    identity = get_identity(first_event)
-    if identity:
-        background_tasks.add_task(invalidate_user_cache, identity)
+        if not payload.events:
+            return {"status": "skipped"}
+        
+        # 1. Save events to database
+        background_tasks.add_task(save_events_to_db, payload.events)
+        
+        # 2. 🔥 THE FIX: Tell the server to forget old recommendations instantly
+        first_event = payload.events[0]
+        identity = get_identity(first_event)
+        if identity:
+            background_tasks.add_task(invalidate_user_cache, identity)
 
-    return {
-        "status": "ok",
-        "message": f"{len(payload.events)} events received"
-    }
+        return {
+            "status": "ok",
+            "message": f"{len(payload.events)} events received and cache cleared"
+        }
 
 @router.get("/health")
 async def health():

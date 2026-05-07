@@ -40,18 +40,19 @@ def get_query_identity(visitor_id: str, user_id: str = None) -> str:
 
 def parse_os_product(src):
     """Helper to parse OpenSearch product source into a clean dictionary."""
-    # 🔥 FIX: Prioritize 'primary_image' or 'image' BEFORE looking at the 'images' gallery array!
-    first_image = src.get("primary_image") or src.get("image") or ""
+    # 1. Grab image data from whichever field your database uses
+    raw_img_data = src.get("images") or ""
     
-    # If there is no primary image, ONLY THEN look at the gallery array
-    if not first_image:
-        raw_img_data = src.get("images") or ""
+    first_image = ""
+    
+    # 2. If it's a list, grab STRICTLY the first item
+    if isinstance(raw_img_data, list) and len(raw_img_data) > 0:
+        first_image = str(raw_img_data[0])
         
-        if isinstance(raw_img_data, list) and len(raw_img_data) > 0:
-            first_image = str(raw_img_data[0])
-        elif isinstance(raw_img_data, str) and raw_img_data:
-            cleaned = raw_img_data.strip("[]'\" ")
-            first_image = cleaned.split(",")[0].strip("[]'\" ")
+    # 3. If it's a string, clean up brackets/quotes and split by comma to force ONLY the first image
+    elif isinstance(raw_img_data, str) and raw_img_data:
+        cleaned = raw_img_data.strip("[]'\" ")
+        first_image = cleaned.split(",")[0].strip("[]'\" ")
     
     return {
         "product_id": src.get("product_id"),
