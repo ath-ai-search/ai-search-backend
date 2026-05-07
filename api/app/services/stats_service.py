@@ -328,6 +328,8 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     index=INDEX_NAME,
                     body={
                         "size": padding_needed,
+                        "from": 0,                      # 🔥 BATCH 1: Grab the very top luxurious items
+                        "sort": [{"price": "desc"}],    # 🔥 LUXURIOUS: Sort by Highest Price!
                         "query": {
                             "bool": {
                                 "must": [{"match_all": {}}],
@@ -421,6 +423,8 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     index=INDEX_NAME,
                     body={
                         "size": padding_needed,
+                        "from": 20,                     # 🔥 BATCH 2: Skip the first 20 so it NEVER overlaps with Pick-Up!
+                        "sort": [{"price": "desc"}],    # 🔥 LUXURIOUS: Sort by Highest Price!
                         "query": {
                             "bool": {
                                 "must": [{"match_all": {}}],
