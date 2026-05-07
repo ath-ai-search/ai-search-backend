@@ -64,16 +64,18 @@ def get_opensearch_client():
 
 
 def get_updated_metrics(minutes_ago: int = 5) -> dict:
-    """Find products with recent activity and aggregate all users' data."""
+    """🔥 INCREMENTAL SYNC: Find ONLY products with new or updated activity."""
     logger.info(f"📊 Fetching products updated in last {minutes_ago} minutes...")
     
     metrics_map = {}
+    # Find the exact timestamp from 5 minutes ago
     cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
     
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cursor = conn.cursor()
         
+        # 🔥 SMART FILTER: Only fetch products where `last_seen` is new!
         cursor.execute("""
             WITH recently_updated AS (
                 SELECT DISTINCT product_id 
@@ -199,9 +201,10 @@ def update_opensearch(metrics_map: dict) -> int:
 def main():
     start_time = datetime.now(timezone.utc)
     logger.info("=" * 60)
-    logger.info("🚀 SYNC TRENDING — Started")
+    logger.info("🚀 SYNC TRENDING — Started (INCREMENTAL MODE)")
     logger.info("=" * 60)
     
+    # 🔥 Only grabs new/updated data from the last 5 minutes
     metrics = get_updated_metrics(minutes_ago=SYNC_WINDOW_MINUTES)
     
     if not metrics:
@@ -216,7 +219,6 @@ def main():
     logger.info(f"   Products: {len(metrics)} processed, {updated} updated")
     logger.info(f"   Time: {elapsed:.2f} seconds")
     logger.info("=" * 60)
-
 
 if __name__ == "__main__":
  main()
