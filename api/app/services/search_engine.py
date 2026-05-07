@@ -282,19 +282,8 @@ async def execute_search(request: SearchRequest) -> dict:
         clean_cats = [c.strip() for c in re.sub(r"[\[\]'\"]", "", raw_cats).split(",") if c.strip()] if isinstance(raw_cats, str) else [str(c).strip() for c in raw_cats if c and str(c).strip()]
         if not clean_cats or clean_cats == ["None"]: clean_cats = ["Uncategorized"]
         
-        # 🔥 NEW BULLETPROOF IMAGE LOGIC FOR MAIN SEARCH
-        # Prioritize 'primary_image' first, as 'images' might just be secondary gallery photos!
-        first_image = source.get("primary_image") or source.get("image") or ""
-        
-        if not first_image:
-            raw_img_data = source.get("images") or ""
-            if isinstance(raw_img_data, list) and len(raw_img_data) > 0:
-                first_image = str(raw_img_data[0])
-            elif isinstance(raw_img_data, str) and raw_img_data:
-                cleaned = raw_img_data.strip("[]'\" ")
-                first_image = cleaned.split(",")[0].strip("[]'\" ")
-                
-        primary_image = first_image
+        images = source.get("images", [])
+        primary_image = images[0] if isinstance(images, list) and len(images) > 0 else None
         
         _pid = str(source.get("product_id", "123"))
         _pid_hash = int(hashlib.md5(_pid.encode()).hexdigest(), 16)

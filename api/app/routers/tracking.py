@@ -6,6 +6,7 @@ PURPOSE: E-commerce Event Tracking & Analytics Engine (Per-User)
 """
 import os
 import logging
+from app.services.stats_service import invalidate_user_cache
 from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, BackgroundTasks
@@ -94,7 +95,6 @@ class ProductMetricsDB(Base):
     purchases = Column(Integer, default=0)
     wishlist = Column(Integer, default=0)
     trending_score = Column(Numeric, default=0)
-    variant_image = Column(Text, nullable=True)  # 🔥 ADDED THE VARIANT IMAGE COLUMN
     last_seen = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
     __table_args__ = (
@@ -125,7 +125,6 @@ class EventItem(BaseModel):
     source: Optional[str] = None
     value: Optional[float] = None
     timestamp: Optional[str] = None
-    variant_image: Optional[str] = None  # 🔥 ALLOW FRONTEND TO SEND VARIANT IMAGE
 
     class Config:
         extra = "ignore"
@@ -182,15 +181,10 @@ def save_events_to_db(events_data):
             if cache_key not in metrics_cache:
                 metrics_cache[cache_key] = {
                     'impressions': 0, 'views': 0, 'clicks': 0,
-                    'carts': 0, 'purchases': 0, 'wishlist': 0,
-                    'variant_image': None  # 🔥 Prepare memory for the image
+                    'carts': 0, 'purchases': 0, 'wishlist': 0
                 }
 
             counts = metrics_cache[cache_key]
-            
-            # 🔥 If this event has a variant image, save it to the memory cache!
-            if getattr(e, 'variant_image', None):
-                counts['variant_image'] = e.variant_image
 
             if e.event_type == "view":
                 counts['impressions'] += 1
@@ -231,7 +225,6 @@ def save_events_to_db(events_data):
                         purchases=counts['purchases'],
                         wishlist=counts['wishlist'],
                         trending_score=new_trending,
-                        variant_image=counts['variant_image'],  # 🔥 SAVE IMAGE ON FIRST INSERT
                         last_seen=datetime.utcnow()
                     )
                     stmt = stmt.on_conflict_do_update(
@@ -243,8 +236,6 @@ def save_events_to_db(events_data):
                             'carts': ProductMetricsDB.__table__.c.carts + counts['carts'],
                             'purchases': ProductMetricsDB.__table__.c.purchases + counts['purchases'],
                             'wishlist': ProductMetricsDB.__table__.c.wishlist + counts['wishlist'],
-                            # 🔥 UPSERT OVERRIDE: Update the image if the user sent a new one!
-                            'variant_image': text("COALESCE(EXCLUDED.variant_image, product_metrics.variant_image)"),
                             'last_seen': datetime.utcnow(),
                         }
                     )
@@ -305,8 +296,15 @@ async def track_events(payload: TrackingPayload, background_tasks: BackgroundTas
     if not payload.events:
         return {"status": "skipped"}
     
-    # 1. Just save the events to the database. Do NOT touch the cache.
+    # 1. Save events to database
     background_tasks.add_task(save_events_to_db, payload.events)
+    
+    # 2. THE PERFECT BALANCE: Kill the cache ONLY for this specific user!
+    # This gives them instant UI updates, while everyone else stays cached.
+    first_event = payload.events[0]
+    identity = get_identity(first_event)
+    if identity:
+        background_tasks.add_task(invalidate_user_cache, identity)
 
     return {
         "status": "ok",
