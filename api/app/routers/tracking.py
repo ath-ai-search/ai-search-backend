@@ -115,7 +115,7 @@ Base.metadata.create_all(bind=engine)
 
 
 class EventItem(BaseModel):
-    event_type: str
+    event_type: Optional[str] = None # 🔥 Make optional to stop 422 errors!
     visitor_id: Optional[str] = None
     user_id: Optional[str] = None
     session_id: Optional[str] = None
@@ -131,7 +131,7 @@ class EventItem(BaseModel):
 
 
 class TrackingPayload(BaseModel):
-    events: List[EventItem]
+    events: Optional[List[EventItem]] = [] # 🔥 Default to empty list to stop 422 errors!
 
 
 def get_identity(event):
@@ -155,6 +155,10 @@ def save_events_to_db(events_data):
         metrics_cache = {}
 
         for e in events_data:
+            # 🔥 BACKEND SAFETY SHIELD: Quietly skip any empty garbage data from the frontend
+            if not getattr(e, "event_type", None):
+                continue
+                
             identity = get_identity(e)
 
             db_events.append(EventDB(
