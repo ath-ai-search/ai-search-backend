@@ -545,10 +545,14 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     prod = prod_map[pid].copy()
                     prod.update(score_map[pid])
                     
-                    # 🔥 OVERRIDE: ONLY overwrite if the variant image actually exists and is not empty!
-                    if score_map.get(pid, {}).get("variant_image"):
-                        prod["image"] = score_map[pid]["variant_image"]
-                        prod["primary_image"] = score_map[pid]["variant_image"]
+                    # 🔥 STRICT OVERRIDE: Protect against "null", "undefined", and gallery mistakes!
+                    var_img = score_map.get(pid, {}).get("variant_image")
+                    
+                    # Only override if it is a real string, longer than 10 characters, and doesn't contain "null"
+                    if var_img and isinstance(var_img, str) and len(var_img) > 10:
+                        if "null" not in var_img.lower() and "undefined" not in var_img.lower():
+                            prod["image"] = var_img
+                            prod["primary_image"] = var_img
                         
                     results.append(prod)
                     
