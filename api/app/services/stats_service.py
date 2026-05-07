@@ -332,15 +332,15 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     index=INDEX_NAME,
                     body={
                         "size": padding_needed,
-                        "from": random_offset,          # 🔥 FIXED: Actually using the random variable!
-                        "sort": [{"price": "desc"}],
+                        "from": random_offset,          
+                        "sort": [{"price": "desc"}], # 🔥 Sorts highest price first (Luxury)
                         "query": {
                             "bool": {
                                 "must": [{"match_all": {}}],
                                 "must_not": must_not,
                                 "filter": [
                                     {"range": {"sale_price": {"gt": 0}}},
-                                    {"range": {"price": {"gte": 40}}}, # 🔥 RELAXED to $40+ to guarantee results!
+                                    {"range": {"price": {"gte": 100}}}, # 🔥 STRICT LUXURY FILTER: $100+
                                     {"query_string": {
                                         "default_field": "category",
                                         "query": "Fashion OR Kitchen OR Clothing"
@@ -352,7 +352,7 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 )
                 for hit in os_pad_res.get("hits", {}).get("hits", []):
                     prod = parse_os_product(hit.get("_source", {}))
-                    prod["recommendation_reason"] = "Trending Deals Just For You"
+                    prod["recommendation_reason"] = "Luxury Deals Just For You"
                     dynamic_results.append(prod)
 
             # 3. Combine them together and return instantly!
@@ -437,15 +437,15 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     index=INDEX_NAME,
                     body={
                         "size": padding_needed,
-                        "from": random_offset,          # 🔥 FIXED: Actually using the random variable!
-                        "sort": [{"price": "desc"}],
+                        "from": random_offset,          
+                        "sort": [{"price": "desc"}], # 🔥 Sorts highest price first (Luxury)
                         "query": {
                             "bool": {
                                 "must": [{"match_all": {}}],
                                 "must_not": must_not,
                                 "filter": [
                                     {"range": {"sale_price": {"gt": 0}}},
-                                    {"range": {"price": {"gte": 40}}}, # 🔥 RELAXED to $40+ 
+                                    {"range": {"price": {"gte": 100}}}, # 🔥 STRICT LUXURY FILTER: $100+
                                     {"query_string": {
                                         "default_field": "category",
                                         "query": "Fashion OR Kitchen OR Clothing"
@@ -457,7 +457,7 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 )
                 for hit in os_pad_res.get("hits", {}).get("hits", []):
                     prod = parse_os_product(hit.get("_source", {}))
-                    prod["recommendation_reason"] = "Trending Deals Just For You"
+                    prod["recommendation_reason"] = "Luxury Deals Just For You"
                     dynamic_results.append(prod)
 
             # 4. Combine them together and return instantly!
