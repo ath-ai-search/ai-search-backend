@@ -334,7 +334,10 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                             "bool": {
                                 "must": [{"match_all": {}}],
                                 "must_not": must_not,
-                                "filter": [{"range": {"sale_price": {"gt": 0}}}] # strictly SALE items
+                                "filter": [
+                                    {"range": {"sale_price": {"gt": 0}}},
+                                    {"range": {"price": {"gte": 100}}} # 🔥 STRICT LUXURY FILTER ($100+)
+                                ]
                             }
                         }
                     }
@@ -429,7 +432,10 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                             "bool": {
                                 "must": [{"match_all": {}}],
                                 "must_not": must_not,
-                                "filter": [{"range": {"sale_price": {"gt": 0}}}] # strictly SALE items
+                                "filter": [
+                                    {"range": {"sale_price": {"gt": 0}}},
+                                    {"range": {"price": {"gte": 100}}} # 🔥 STRICT LUXURY FILTER ($100+)
+                                ]
                             }
                         }
                     }
