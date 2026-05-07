@@ -12,7 +12,7 @@ import os
 import logging
 import boto3
 import psycopg2
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from opensearchpy import OpenSearch, RequestsHttpConnection, helpers
 from requests_aws4auth import AWS4Auth
@@ -68,7 +68,7 @@ def get_updated_metrics(minutes_ago: int = 5) -> dict:
     logger.info(f"📊 Fetching products updated in last {minutes_ago} minutes...")
     
     metrics_map = {}
-    cutoff_time = datetime.utcnow() - timedelta(minutes=minutes_ago)
+    cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
     
     try:
         conn = psycopg2.connect(**DB_CONFIG)
@@ -132,12 +132,44 @@ def update_opensearch(metrics_map: dict) -> int:
     
     client = get_opensearch_client()
     
+    # 🔥 STEP 1: Find the REAL OpenSearch _id for these products
+    product_ids = list(metrics_map.keys())
+    
+    try:
+        res = client.search(
+            index=OPENSEARCH_INDEX,
+            body={
+                "size": len(product_ids),
+                "_source": ["product_id"],
+                "query": {"terms": {"product_id": product_ids}}
+            }
+        )
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch product IDs from OpenSearch: {e}")
+        return 0
+        
+    # Map the readable product_id to the random OpenSearch _id
+    real_id_map = {}
+    for hit in res.get("hits", {}).get("hits", []):
+        os_id = hit["_id"]
+        p_id = hit["_source"].get("product_id")
+        if p_id:
+            real_id_map[str(p_id)] = os_id
+            
+    # 🔥 STEP 2: Build the update actions using the correct internal ID
     actions = []
     for product_id, data in metrics_map.items():
+        os_id = real_id_map.get(str(product_id))
+        
+        # If the product doesn't exist in OpenSearch, skip it to prevent errors
+        if not os_id:
+            logger.warning(f"⚠️  Skipping {product_id} - not found in OpenSearch")
+            continue
+            
         actions.append({
             "_op_type": "update",
             "_index": OPENSEARCH_INDEX,
-            "_id": product_id,
+            "_id": os_id,             # 🔥 Use the REAL OpenSearch _id
             "doc": data,
             "doc_as_upsert": False
         })
@@ -151,6 +183,7 @@ def update_opensearch(metrics_map: dict) -> int:
                 success_count += 1
             else:
                 failed_count += 1
+                logger.error(f"❌ Update failed reason: {item}") # 🔥 Prints exact API rejection
         
         logger.info(f"✅ Updated {success_count} products in OpenSearch")
         if failed_count > 0:
@@ -164,7 +197,7 @@ def update_opensearch(metrics_map: dict) -> int:
 
 
 def main():
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
     logger.info("=" * 60)
     logger.info("🚀 SYNC TRENDING — Started")
     logger.info("=" * 60)
@@ -177,7 +210,7 @@ def main():
     
     updated = update_opensearch(metrics)
     
-    elapsed = (datetime.utcnow() - start_time).total_seconds()
+    elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
     logger.info("=" * 60)
     logger.info(f"✅ SYNC COMPLETE")
     logger.info(f"   Products: {len(metrics)} processed, {updated} updated")
