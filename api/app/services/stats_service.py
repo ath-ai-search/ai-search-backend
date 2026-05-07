@@ -424,7 +424,14 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     if pid in prod_map:
                         prod = prod_map[pid].copy()
                         
-                        # ✅ Use first image from OpenSearch directly (parse_os_product already handles this)
+                        # 🔥 USE THE EXACT IMAGE USER CLICKED (variant_image from tracking)
+                        # Same logic as pick-up API — show what they actually saw
+                        var_img = variant_map.get(pid)
+                        if var_img and isinstance(var_img, str) and len(var_img) > 10:
+                            if "null" not in var_img.lower() and "undefined" not in var_img.lower():
+                                prod["image"] = var_img
+                                prod["primary_image"] = var_img
+                        
                         prod["recommendation_reason"] = "Recently Viewed by You"
                         user_results.append(prod)
 
