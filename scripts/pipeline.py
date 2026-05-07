@@ -406,8 +406,17 @@ def transform_product(raw: dict, category_map: dict, brand_map: dict, metrics_ma
         inventory = raw.get("inventory_level", 0) or 0
         in_stock  = raw.get("availability") == "available" or inventory > 0
 
+        # 🔥 SORT by sort_order so images[0] = the main BigCommerce display image
+        raw_images = raw.get("images", [])
+        sorted_images = sorted(
+            raw_images,
+            key=lambda x: (
+                0 if (isinstance(x, dict) and x.get("is_thumbnail")) else 1,
+                x.get("sort_order", 9999) if isinstance(x, dict) else 9999
+            )
+        )
         images = []
-        for img in raw.get("images", [])[:5]:
+        for img in sorted_images[:5]:
             if isinstance(img, dict):
                 url = img.get("url_standard") or img.get("url_thumbnail", "")
                 if url:
