@@ -54,7 +54,7 @@ def parse_os_product(src):
         cleaned = raw_img_data.strip("[]'\" ")
         first_image = cleaned.split(",")[0].strip("[]'\" ")
     
-    # 🔥 SALE_PRICE CLEANUP: Only keep sale_price if it's a REAL discount
+    # 🔥 SALE_PRICE CLEANUP: Only keep sale_price if it's a REAL discount (≥ 1% off)
     try:
         price = float(src.get("price", 0) or 0)
     except (TypeError, ValueError):
@@ -63,8 +63,14 @@ def parse_os_product(src):
         sale_price = float(src.get("sale_price", 0) or 0)
     except (TypeError, ValueError):
         sale_price = 0.0
-    # If sale_price >= price OR is 0 → not a real discount, return 0
-    real_sale_price = sale_price if (sale_price > 0 and sale_price < price) else 0
+    
+    # Calculate actual discount %
+    real_sale_price = 0
+    if sale_price > 0 and price > 0 and sale_price < price:
+        discount_pct = ((price - sale_price) / price) * 100
+        # Only treat as a sale if discount is at least 1% (avoids "0% off" badges)
+        if discount_pct >= 1.0:
+            real_sale_price = sale_price
     
     return {
         "product_id": src.get("product_id"),
