@@ -550,8 +550,8 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             bool_query = {
                 "must": [{"terms": {"product_id": pids}}]
             }
-            if metric != "recommendation-grids":
-                bool_query["filter"] = [{"range": {"sale_price": {"gt": 0}}}]
+            # if metric != "recommendation-grids":
+            #     bool_query["filter"] = [{"range": {"sale_price": {"gt": 0}}}]
 
             os_res = os_client.search(
                 index=INDEX_NAME,
