@@ -282,8 +282,9 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             """, (identity,))
             total = cur.fetchone()["t"]
 
+            # 🔥 ADDED "variant_image" to the database query
             cur.execute("""
-                SELECT product_id 
+                SELECT product_id, variant_image 
                 FROM product_metrics 
                 WHERE visitor_id = %s AND (carts + wishlist) > 0 
                 ORDER BY last_seen DESC LIMIT %s OFFSET %s
@@ -291,6 +292,10 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             user_history = cur.fetchall()
 
             user_pids = [r["product_id"] for r in user_history]
+            
+            # 🔥 Create a memory map of the exact variant images the user clicked
+            variant_map = {r["product_id"]: r["variant_image"] for r in user_history if "variant_image" in r and r["variant_image"]}
+            
             user_results = []
 
             # 1. Fetch the EXACT items they added to cart/wishlist
@@ -303,6 +308,12 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 for pid in user_pids:
                     if pid in prod_map:
                         prod = prod_map[pid].copy()
+                        
+                        # 🔥 THE MAGIC OVERRIDE: If they saved a specific color/variant, overwrite the default image!
+                        if pid in variant_map:
+                            prod["image"] = variant_map[pid]
+                            prod["primary_image"] = variant_map[pid]
+                            
                         prod["recommendation_reason"] = "Saved in Cart/Wishlist"
                         user_results.append(prod)
 
@@ -363,8 +374,9 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             """, (identity,))
             total = cur.fetchone()["t"]
 
+            # 🔥 FETCH variant_image so Recently Viewed can also show the exact color clicked!
             cur.execute("""
-                SELECT product_id, (views + clicks) as score 
+                SELECT product_id, (views + clicks) as score, variant_image 
                 FROM product_metrics 
                 WHERE visitor_id = %s AND views > 0 AND clicks > 0 
                 ORDER BY last_seen DESC LIMIT 100 OFFSET %s
@@ -422,6 +434,10 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             for r in db_rows:
                 product_data = {"score": float(r["score"])}
                 
+                # 🔥 Save the variant image to memory if it exists
+                if "variant_image" in r and r["variant_image"]:
+                    product_data["variant_image"] = r["variant_image"]
+                
                 # For trending, include all event totals
                 if metric == "trending":
                     product_data.update({
@@ -463,6 +479,12 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 if pid in prod_map:
                     prod = prod_map[pid].copy()
                     prod.update(score_map[pid])
+                    
+                    # 🔥 OVERRIDE: If the user clicked a specific color, force the UI to show it!
+                    if "variant_image" in score_map.get(pid, {}):
+                        prod["image"] = score_map[pid]["variant_image"]
+                        prod["primary_image"] = score_map[pid]["variant_image"]
+                        
                     results.append(prod)
                     
             # Chop the final list to match the UI's requested size (12)
