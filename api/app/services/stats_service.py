@@ -361,12 +361,11 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             return response
 
         # =====================================================================
-        # 🎯 API 4: RECOMMENDATION GRIDS (Exact items Viewed AND Clicked)
+        # 🎯 API 4: RECOMMENDATION GRIDS (Recently Viewed + Dynamic Padding)
         # =====================================================================
         elif metric == "recommendation-grids":
             if not identity: return {"error": "visitor_id required"}
             
-            # User must have BOTH viewed AND clicked the exact item
             cur.execute("""
                 SELECT COUNT(*) as t 
                 FROM product_metrics 
@@ -374,14 +373,80 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             """, (identity,))
             total = cur.fetchone()["t"]
 
-            # 🔥 FETCH variant_image so Recently Viewed can also show the exact color clicked!
+            # 🔥 1. Fetch exactly what the user viewed and clicked (with variant images)
             cur.execute("""
-                SELECT product_id, (views + clicks) as score, variant_image 
+                SELECT product_id, variant_image 
                 FROM product_metrics 
                 WHERE visitor_id = %s AND views > 0 AND clicks > 0 
-                ORDER BY last_seen DESC LIMIT 100 OFFSET %s
-            """, (identity, offset))
-            db_rows = cur.fetchall()
+                ORDER BY last_seen DESC LIMIT %s OFFSET %s
+            """, (identity, size, offset))
+            user_history = cur.fetchall()
+
+            user_pids = [r["product_id"] for r in user_history]
+            variant_map = {r["product_id"]: r["variant_image"] for r in user_history if "variant_image" in r and r["variant_image"]}
+            user_results = []
+
+            # 2. Ask OpenSearch for these exact items
+            if user_pids:
+                os_res = os_client.search(
+                    index=INDEX_NAME,
+                    body={"size": len(user_pids), "query": {"terms": {"product_id": user_pids}}}
+                )
+                prod_map = {h["_source"]["product_id"]: parse_os_product(h["_source"]) for h in os_res.get("hits", {}).get("hits", [])}
+                for pid in user_pids:
+                    if pid in prod_map:
+                        prod = prod_map[pid].copy()
+                        
+                        # 🔥 OVERRIDE: Show the exact color clicked!
+                        if variant_map.get(pid):
+                            prod["image"] = variant_map[pid]
+                            prod["primary_image"] = variant_map[pid]
+                            
+                        prod["recommendation_reason"] = "Recently Viewed by You"
+                        user_results.append(prod)
+
+            # 3. Figure out how many empty spaces we need to fill!
+            padding_needed = size - len(user_results)
+            dynamic_results = []
+
+            if padding_needed > 0:
+                # Tell OpenSearch NOT to fetch items already in their history
+                must_not = [{"terms": {"product_id": user_pids}}] if user_pids else []
+                os_pad_res = os_client.search(
+                    index=INDEX_NAME,
+                    body={
+                        "size": padding_needed,
+                        "query": {
+                            "bool": {
+                                "must": [{"match_all": {}}],
+                                "must_not": must_not,
+                                "filter": [{"range": {"sale_price": {"gt": 0}}}] # strictly SALE items
+                            }
+                        }
+                    }
+                )
+                for hit in os_pad_res.get("hits", {}).get("hits", []):
+                    prod = parse_os_product(hit.get("_source", {}))
+                    prod["recommendation_reason"] = "Trending Deals Just For You"
+                    dynamic_results.append(prod)
+
+            # 4. Combine them together and return instantly!
+            final_results = user_results + dynamic_results
+
+            response = {
+                "results": final_results,
+                "total": max(total, len(final_results)),
+                "page": page,
+                "size": size,
+                "metric": metric,
+                "took_ms": round((time.time() - start_time) * 1000, 2),
+                "cached": False
+            }
+            try:
+                await redis_client.setex(cache_key, CACHE_TTL, json.dumps(response))
+            except:
+                pass
+            return response
 
         # =====================================================================
         # 🔥 API 3: TRENDING (GLOBAL Popularity - FIXED!)
