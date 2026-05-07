@@ -39,20 +39,27 @@ def get_query_identity(visitor_id: str, user_id: str = None) -> str:
 
 def parse_os_product(src):
     """Helper to parse OpenSearch product source into a clean dictionary."""
-    images = src.get("images", "")
-    if isinstance(images, list): 
-        first_image = images[0] if images else ""
-    elif isinstance(images, str): 
-        first_image = images.split(",")[0].strip() if images else ""
-    else: 
-        first_image = ""
+    # 1. Grab image data from whichever field your database uses
+    raw_img_data = src.get("images") or src.get("image") or src.get("primary_image") or ""
+    
+    first_image = ""
+    
+    # 2. If it's a list, grab STRICTLY the first item
+    if isinstance(raw_img_data, list) and len(raw_img_data) > 0:
+        first_image = str(raw_img_data[0])
+        
+    # 3. If it's a string, clean up brackets/quotes and split by comma to force ONLY the first image
+    elif isinstance(raw_img_data, str) and raw_img_data:
+        cleaned = raw_img_data.strip("[]'\" ")
+        first_image = cleaned.split(",")[0].strip("[]'\" ")
     
     return {
         "product_id": src.get("product_id"),
         "name": src.get("name", ""),
         "price": src.get("price", 0),
         "sale_price": src.get("sale_price", 0),
-        "image": first_image,
+        "image": first_image,          # 🔥 FORCES exactly the first image
+        "primary_image": first_image,  # 🔥 Blocks the UI from pulling a secondary image!
         "url": src.get("url", ""),
         "category": src.get("category", ""),
         "brand": src.get("brand", ""),
