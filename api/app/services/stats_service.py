@@ -332,7 +332,6 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     index=INDEX_NAME,
                     body={
                         "size": padding_needed,
-                        "from": random_offset,          # 🔥 Use the random offset
                         "from": 0,                      # 🔥 BATCH 1: Grab the very top luxurious items
                         "sort": [{"price": "desc"}],    # 🔥 LUXURIOUS: Sort by Highest Price!
                         "query": {
@@ -388,15 +387,16 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             cur.execute("""
                 SELECT COUNT(*) as t 
                 FROM product_metrics 
-                WHERE visitor_id = %s AND (views + clicks) > 0
+                WHERE visitor_id = %s AND (views + clicks) > 0 AND (carts + wishlist) = 0
             """, (identity,))
             total = cur.fetchone()["t"]
 
             # 🔥 RELAXED RULE: Fetch exactly what the user viewed or clicked (with variant images)
+            # 🔥 EXCLUDE items already in cart/wishlist (those belong to pick-up API)
             cur.execute("""
                 SELECT product_id, variant_image 
                 FROM product_metrics 
-                WHERE visitor_id = %s AND (views + clicks) > 0 
+                WHERE visitor_id = %s AND (views + clicks) > 0 AND (carts + wishlist) = 0
                 ORDER BY last_seen DESC LIMIT %s OFFSET %s
             """, (identity, size, offset))
             user_history = cur.fetchall()
@@ -416,15 +416,7 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     if pid in prod_map:
                         prod = prod_map[pid].copy()
                         
-                        # 🔥 STRICT OVERRIDE: Protect against "null", "undefined", and gallery mistakes!
-                        var_img = variant_map.get(pid)
-                        
-                        # Only override if it is a real string, longer than 10 characters, and doesn't contain "null"
-                        if var_img and isinstance(var_img, str) and len(var_img) > 10:
-                            if "null" not in var_img.lower() and "undefined" not in var_img.lower():
-                                prod["image"] = var_img
-                                prod["primary_image"] = var_img
-                            
+                        # ✅ Use first image from OpenSearch directly (parse_os_product already handles this)
                         prod["recommendation_reason"] = "Recently Viewed by You"
                         user_results.append(prod)
 
@@ -433,16 +425,19 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             dynamic_results = []
 
             if padding_needed > 0:
-                # 🔥 REFRESH LOGIC: Pick a different random range so it never matches Pick-Up
-                random_offset = random.randint(60, 100)
+                # 🔥 Also exclude whatever is already in the user's cart/wishlist (those show in pick-up)
+                cur.execute("""
+                    SELECT product_id FROM product_metrics 
+                    WHERE visitor_id = %s AND (carts + wishlist) > 0
+                """, (identity,))
+                cart_pids = [r["product_id"] for r in cur.fetchall()]
 
-                # Tell OpenSearch NOT to fetch items already in their history
-                must_not = [{"terms": {"product_id": user_pids}}] if user_pids else []
+                all_excluded_pids = list(set(user_pids + cart_pids))
+                must_not = [{"terms": {"product_id": all_excluded_pids}}] if all_excluded_pids else []
                 os_pad_res = os_client.search(
                     index=INDEX_NAME,
                     body={
                         "size": padding_needed,
-                        "from": random_offset,          # 🔥 Use the higher random offset
                         "from": 20,                     # 🔥 BATCH 2: Skip the first 20 so it NEVER overlaps with Pick-Up!
                         "sort": [{"price": "desc"}],    # 🔥 LUXURIOUS: Sort by Highest Price!
                         "query": {
