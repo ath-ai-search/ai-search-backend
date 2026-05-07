@@ -95,6 +95,7 @@ class ProductMetricsDB(Base):
     purchases = Column(Integer, default=0)
     wishlist = Column(Integer, default=0)
     trending_score = Column(Numeric, default=0)
+    variant_image = Column(Text, nullable=True) # 🔥 RESTORED IMAGE COLUMN
     last_seen = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
     __table_args__ = (
@@ -125,6 +126,7 @@ class EventItem(BaseModel):
     source: Optional[str] = None
     value: Optional[float] = None
     timestamp: Optional[str] = None
+    variant_image: Optional[str] = None # 🔥 RESTORED IMAGE PAYLOAD
 
     class Config:
         extra = "ignore"
@@ -185,10 +187,15 @@ def save_events_to_db(events_data):
             if cache_key not in metrics_cache:
                 metrics_cache[cache_key] = {
                     'impressions': 0, 'views': 0, 'clicks': 0,
-                    'carts': 0, 'purchases': 0, 'wishlist': 0
+                    'carts': 0, 'purchases': 0, 'wishlist': 0,
+                    'variant_image': None # 🔥 RESTORED IMAGE MEMORY
                 }
 
             counts = metrics_cache[cache_key]
+            
+            # 🔥 RESTORED: Save the image if it was sent
+            if getattr(e, 'variant_image', None):
+                counts['variant_image'] = e.variant_image
 
             if e.event_type == "view":
                 counts['impressions'] += 1
@@ -229,6 +236,7 @@ def save_events_to_db(events_data):
                         purchases=counts['purchases'],
                         wishlist=counts['wishlist'],
                         trending_score=new_trending,
+                        variant_image=counts['variant_image'], # 🔥 RESTORED: FIRST SAVE
                         last_seen=datetime.utcnow()
                     )
                     stmt = stmt.on_conflict_do_update(
@@ -240,6 +248,7 @@ def save_events_to_db(events_data):
                             'carts': ProductMetricsDB.__table__.c.carts + counts['carts'],
                             'purchases': ProductMetricsDB.__table__.c.purchases + counts['purchases'],
                             'wishlist': ProductMetricsDB.__table__.c.wishlist + counts['wishlist'],
+                            'variant_image': text("COALESCE(EXCLUDED.variant_image, product_metrics.variant_image)"), # 🔥 RESTORED: UPDATE
                             'last_seen': datetime.utcnow(),
                         }
                     )
