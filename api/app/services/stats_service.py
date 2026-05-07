@@ -309,8 +309,8 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     if pid in prod_map:
                         prod = prod_map[pid].copy()
                         
-                        # 🔥 THE MAGIC OVERRIDE: If they saved a specific color/variant, overwrite the default image!
-                        if pid in variant_map:
+                        # 🔥 THE MAGIC OVERRIDE: ONLY overwrite if the variant image actually exists and is not empty!
+                        if variant_map.get(pid):
                             prod["image"] = variant_map[pid]
                             prod["primary_image"] = variant_map[pid]
                             
@@ -480,8 +480,8 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     prod = prod_map[pid].copy()
                     prod.update(score_map[pid])
                     
-                    # 🔥 OVERRIDE: If the user clicked a specific color, force the UI to show it!
-                    if "variant_image" in score_map.get(pid, {}):
+                    # 🔥 OVERRIDE: ONLY overwrite if the variant image actually exists and is not empty!
+                    if score_map.get(pid, {}).get("variant_image"):
                         prod["image"] = score_map[pid]["variant_image"]
                         prod["primary_image"] = score_map[pid]["variant_image"]
                         
