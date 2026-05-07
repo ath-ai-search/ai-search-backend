@@ -54,11 +54,23 @@ def parse_os_product(src):
         cleaned = raw_img_data.strip("[]'\" ")
         first_image = cleaned.split(",")[0].strip("[]'\" ")
     
+    # 🔥 SALE_PRICE CLEANUP: Only keep sale_price if it's a REAL discount
+    try:
+        price = float(src.get("price", 0) or 0)
+    except (TypeError, ValueError):
+        price = 0.0
+    try:
+        sale_price = float(src.get("sale_price", 0) or 0)
+    except (TypeError, ValueError):
+        sale_price = 0.0
+    # If sale_price >= price OR is 0 → not a real discount, return 0
+    real_sale_price = sale_price if (sale_price > 0 and sale_price < price) else 0
+    
     return {
         "product_id": src.get("product_id"),
         "name": src.get("name", ""),
-        "price": src.get("price", 0),
-        "sale_price": src.get("sale_price", 0),
+        "price": price,
+        "sale_price": real_sale_price,
         "image": first_image,          # 🔥 FORCES exactly the first image
         "primary_image": first_image,  # 🔥 Blocks the UI from pulling a secondary image!
         "url": src.get("url", ""),
