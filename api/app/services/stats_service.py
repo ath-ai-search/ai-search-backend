@@ -323,8 +323,8 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             dynamic_results = []
 
             if padding_needed > 0:
-                # 🔥 REFRESH LOGIC: Pick a random start point for variety
-                random_offset = random.randint(0, 40)
+                # 🔥 SAFELY lowered random range to guarantee we find items!
+                random_offset = random.randint(0, 10)
 
                 # Tell OpenSearch NOT to fetch items already in their cart
                 must_not = [{"terms": {"product_id": user_pids}}] if user_pids else []
@@ -332,22 +332,18 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     index=INDEX_NAME,
                     body={
                         "size": padding_needed,
-                        "from": 0,                      # 🔥 BATCH 1: Grab the very top luxurious items
-                        "sort": [{"price": "desc"}],    # 🔥 LUXURIOUS: Sort by Highest Price!
+                        "from": random_offset,          # 🔥 FIXED: Actually using the random variable!
+                        "sort": [{"price": "desc"}],
                         "query": {
                             "bool": {
                                 "must": [{"match_all": {}}],
                                 "must_not": must_not,
                                 "filter": [
                                     {"range": {"sale_price": {"gt": 0}}},
-                                    {"range": {"price": {"gte": 100}}}, # 🔥 STRICT LUXURY FILTER ($100+)
-                                    {"bool": {
-                                        "should": [
-                                            {"match": {"category": "Fashion"}},
-                                            {"match": {"category": "Kitchen"}},
-                                            {"match": {"category": "Clothing"}}
-                                        ],
-                                        "minimum_should_match": 1
+                                    {"range": {"price": {"gte": 40}}}, # 🔥 RELAXED to $40+ to guarantee results!
+                                    {"query_string": {
+                                        "default_field": "category",
+                                        "query": "Fashion OR Kitchen OR Clothing"
                                     }}
                                 ]
                             }
@@ -434,26 +430,25 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
 
                 all_excluded_pids = list(set(user_pids + cart_pids))
                 must_not = [{"terms": {"product_id": all_excluded_pids}}] if all_excluded_pids else []
+                # 🔥 Start at 15 so it NEVER overlaps with Pick-Up!
+                random_offset = random.randint(15, 25) 
+                
                 os_pad_res = os_client.search(
                     index=INDEX_NAME,
                     body={
                         "size": padding_needed,
-                        "from": 20,                     # 🔥 BATCH 2: Skip the first 20 so it NEVER overlaps with Pick-Up!
-                        "sort": [{"price": "desc"}],    # 🔥 LUXURIOUS: Sort by Highest Price!
+                        "from": random_offset,          # 🔥 FIXED: Actually using the random variable!
+                        "sort": [{"price": "desc"}],
                         "query": {
                             "bool": {
                                 "must": [{"match_all": {}}],
                                 "must_not": must_not,
                                 "filter": [
                                     {"range": {"sale_price": {"gt": 0}}},
-                                    {"range": {"price": {"gte": 100}}}, # 🔥 STRICT LUXURY FILTER ($100+)
-                                    {"bool": {
-                                        "should": [
-                                            {"match": {"category": "Fashion"}},
-                                            {"match": {"category": "Kitchen"}},
-                                            {"match": {"category": "Clothing"}} # Added Clothing just in case your DB uses it!
-                                        ],
-                                        "minimum_should_match": 1
+                                    {"range": {"price": {"gte": 40}}}, # 🔥 RELAXED to $40+ 
+                                    {"query_string": {
+                                        "default_field": "category",
+                                        "query": "Fashion OR Kitchen OR Clothing"
                                     }}
                                 ]
                             }
