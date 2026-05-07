@@ -336,7 +336,15 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                                 "must_not": must_not,
                                 "filter": [
                                     {"range": {"sale_price": {"gt": 0}}},
-                                    {"range": {"price": {"gte": 100}}} # 🔥 STRICT LUXURY FILTER ($100+)
+                                    {"range": {"price": {"gte": 100}}}, # 🔥 STRICT LUXURY FILTER ($100+)
+                                    {"bool": {
+                                        "should": [
+                                            {"match": {"category": "Fashion"}},
+                                            {"match": {"category": "Kitchen"}},
+                                            {"match": {"category": "Clothing"}}
+                                        ],
+                                        "minimum_should_match": 1
+                                    }}
                                 ]
                             }
                         }
@@ -434,7 +442,15 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                                 "must_not": must_not,
                                 "filter": [
                                     {"range": {"sale_price": {"gt": 0}}},
-                                    {"range": {"price": {"gte": 100}}} # 🔥 STRICT LUXURY FILTER ($100+)
+                                    {"range": {"price": {"gte": 100}}}, # 🔥 STRICT LUXURY FILTER ($100+)
+                                    {"bool": {
+                                        "should": [
+                                            {"match": {"category": "Fashion"}},
+                                            {"match": {"category": "Kitchen"}},
+                                            {"match": {"category": "Clothing"}} # Added Clothing just in case your DB uses it!
+                                        ],
+                                        "minimum_should_match": 1
+                                    }}
                                 ]
                             }
                         }
