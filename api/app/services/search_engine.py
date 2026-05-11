@@ -169,6 +169,7 @@ async def execute_search(request: SearchRequest) -> dict:
     if request.sort == "price_asc": sort_query = [{"price": "asc"}]
     elif request.sort == "price_desc": sort_query = [{"price": "desc"}]
     elif request.sort == "on_sale": sort_query = [{"_score": "desc"}]
+    elif request.sort == "popularity": sort_query = [{"trending_score": "desc"}]
     
     semantic_shoulds = []
     if vector:

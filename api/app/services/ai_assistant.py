@@ -278,8 +278,14 @@ async def process_ai_assistant(
         # =====================================================================
         updated_request.filters = new_filters_obj
         
-        # If user wants sale, sort by on_sale
-        if new_filters_obj.on_sale:
+        # 🔥 EXTRACT SORT FROM AI (handles asc/desc/cheapest/newest/popular/rating)
+        ai_sort = parsed_intent.get("sort", "best_matches")
+        ALLOWED_SORTS = {"best_matches", "price_asc", "price_desc", "newest", "popularity", "rating", "on_sale"}
+        if isinstance(ai_sort, str) and ai_sort in ALLOWED_SORTS:
+            updated_request.sort = ai_sort
+        
+        # If user wants sale AND didn't pick another sort, default to on_sale ordering
+        if new_filters_obj.on_sale and updated_request.sort == "best_matches":
             updated_request.sort = "on_sale"
         
         # =====================================================================

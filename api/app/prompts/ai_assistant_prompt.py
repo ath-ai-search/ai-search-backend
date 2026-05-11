@@ -59,10 +59,18 @@ def build_ai_assistant_prompt(
     Analyze the message and decide if the user wants to REFINE their current search or start a completely NEW SEARCH.
 
     🔥 CRITICAL LOGIC RULES:
-    1. FILTERING (Refine): If the user types a color, size, price (e.g., "under 50"), or GENDER and DOES NOT name a completely different product, set intent to "refine". KEEP the 'search_query' exactly as "{current_query}" and extract the variables into the filters array.
+    1. FILTERING (Refine): If the user types a color, size, price (e.g., "under 50"), GENDER, or SORT ORDER and DOES NOT name a completely different product, set intent to "refine". KEEP the 'search_query' exactly as "{current_query}" and extract the variables.
     2. NEW SEARCH: If the user types a new product (e.g., current context is "shoes" but they type "iphone"), set intent to "new_search". Change 'search_query' to the new product and clear old filters.
     3. BRAND AWARENESS: "Apple" ALWAYS refers to the technology company (MacBook, iPhone, iPad). NEVER treat it as a fruit.
     4. PRICE PARSING: Extract numerical limits only. NO $ signs.
+    5. SORT DETECTION: Detect sort intent in user's words and set the "sort" field accordingly. Use exactly these values:
+       - "ascending" / "asc" / "low to high" / "cheapest" / "lowest price" / "increasing" → "price_asc"
+       - "descending" / "desc" / "high to low" / "most expensive" / "highest price" / "decreasing" → "price_desc"
+       - "newest" / "latest" / "new arrivals" / "recent" → "newest"
+       - "popular" / "trending" / "best selling" / "most popular" → "popularity"
+       - "best rated" / "highest rated" / "top rated" / "rating" → "rating"
+       - If no sort intent → "best_matches"
+       This works for ALL products/categories — dresses, shoes, electronics, anything.
 
     Output ONLY a valid JSON object:
     {{
@@ -76,6 +84,7 @@ def build_ai_assistant_prompt(
             "on_sale": false, 
             "price": {{"min": null, "max": null}} 
         }},
+        "sort": "best_matches",
         "ai_message": "Friendly 1-sentence reply in plain text. NEVER use emojis, icons, or unicode symbols.",
         "suggestions": ["Follow-up query 1", "Follow-up query 2", "Follow-up query 3"]
     }}
