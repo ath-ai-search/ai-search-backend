@@ -46,13 +46,13 @@ def build_ai_welcome_prompt(current_query: str) -> str:
     Generate a highly dynamic, conversational welcome message and 3-4 clickable suggestion chips.
     
     RULES:
-    1. If CURRENT SEARCH CONTEXT is empty (or ""), write a general, stylish welcome. E.g., "Welcome! Ready to explore some great fashion finds? ✨"
+    1. If CURRENT SEARCH CONTEXT is empty (or ""), write a general, stylish welcome. E.g., "Welcome! Ready to explore some great fashion finds?"
     2. If CURRENT SEARCH CONTEXT contains a product, acknowledge it and offer highly relevant refinements or complementary accessories specifically for that product! 
     3. The "suggestions" array MUST contain 3 to 4 realistic, clickable follow-up questions formatted as natural user requests.
     
     Output ONLY a valid JSON object matching this structure:
     {{
-        "ai_message": "Your conversational welcome text WITH 1 OR 2 RELEVANT EMOJIS! 🛍️",
+        "ai_message": "Your conversational welcome text in plain text only. NEVER use emojis or icons.",
         "suggestions": ["Suggestion 1", "Suggestion 2", "Suggestion 3"]
     }}
     """
@@ -64,7 +64,7 @@ def build_ai_welcome_prompt(current_query: str) -> str:
 # If OpenAI API is down or errors out, we use these defaults
 # so user ALWAYS sees a welcome message
 
-WELCOME_FALLBACK_MESSAGE = "Welcome to venue! Ready to explore some great finds? 🛍️"
+WELCOME_FALLBACK_MESSAGE = "Welcome to venue! Ready to explore some great finds?"
 
 WELCOME_FALLBACK_SUGGESTIONS = [
     "Show me dresses",
@@ -73,7 +73,7 @@ WELCOME_FALLBACK_SUGGESTIONS = [
 ]
 
 # Default welcome if AI returns malformed response
-WELCOME_DEFAULT_MESSAGE = "Welcome to venue! How can I help you today? ✨"
+WELCOME_DEFAULT_MESSAGE = "Welcome to venue! How can I help you today?"
 
 WELCOME_DEFAULT_SUGGESTIONS = [
     "Show me new arrivals",

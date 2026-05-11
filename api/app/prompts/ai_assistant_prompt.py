@@ -76,7 +76,7 @@ def build_ai_assistant_prompt(
             "on_sale": false, 
             "price": {{"min": null, "max": null}} 
         }},
-        "ai_message": "Friendly 1-sentence reply WITH FUN EMOJIS!",
+        "ai_message": "Friendly 1-sentence reply in plain text. NEVER use emojis, icons, or unicode symbols.",
         "suggestions": ["Follow-up query 1", "Follow-up query 2", "Follow-up query 3"]
     }}
     """
