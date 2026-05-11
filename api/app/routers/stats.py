@@ -23,7 +23,7 @@ async def user_recommendations(
     visitor_id: str = Query(..., description="Browser UUID (required)"),
     user_id: str = Query(None, description="Customer ID (if logged in)"),
     page: int = Query(1, ge=1),
-    size: int = Query(10, ge=1, le=100)
+    size: int = Query(20, ge=1, le=100)
 ):
     """Category-based Recommendations: Finds top categories from user views/clicks and returns matching items."""
     return await get_top_products_by_metric("recommendations", visitor_id, user_id, page, size)
@@ -37,7 +37,7 @@ async def user_pick_up(
     visitor_id: str = Query(..., description="Browser UUID (required)"),
     user_id: str = Query(None, description="Customer ID (if logged in)"),
     page: int = Query(1, ge=1),
-    size: int = Query(10, ge=1, le=100)
+    size: int = Query(20, ge=1, le=100)
 ):
     """Pick-Up: Returns products based on personal carts and wishlists."""
     return await get_top_products_by_metric("pick-up", visitor_id, user_id, page, size)
@@ -51,7 +51,7 @@ async def global_trending_products(
     visitor_id: str = Query(None, description="Ignored (Global API)"),
     user_id: str = Query(None, description="Ignored (Global API)"),
     page: int = Query(1, ge=1),
-    size: int = Query(10, ge=1, le=100)
+    size: int = Query(20, ge=1, le=100)
 ):
     """Trending: Returns GLOBAL trending products across all users based on purchases."""
     # We pass empty strings for identity because this API calculates globally for everyone
@@ -65,7 +65,7 @@ async def recommendation_grids(
     visitor_id: str = Query(..., description="Browser UUID (required)"),
     user_id: str = Query(None, description="Customer ID (if logged in)"),
     page: int = Query(1, ge=1),
-    size: int = Query(10, ge=1, le=100)
+    size: int = Query(20, ge=1, le=100)
 ):
     """Recommendation Grids: Returns the EXACT products the user has both viewed AND clicked."""
     return await get_top_products_by_metric("recommendation-grids", visitor_id, user_id, page, size)
