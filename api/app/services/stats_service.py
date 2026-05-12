@@ -509,6 +509,7 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
         # =====================================================================
         elif metric == "trending":
             # Query OpenSearch directly, sorted by trending_score field
+            # 🔥 SALE-ONLY: Only show products that are ON SALE (sale_price > 0)
             os_res = os_client.search(
                 index=INDEX_NAME,
                 body={
@@ -517,7 +518,10 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     "query": {
                         "bool": {
                             "must": [{"range": {"trending_score": {"gt": 1}}}],
-                            "filter": [{"term": {"in_stock": True}}]
+                            "filter": [
+                                {"term": {"in_stock": True}},
+                                {"range": {"sale_price": {"gt": 0}}}
+                            ]
                         }
                     },
                     "sort": [{"trending_score": "desc"}]
