@@ -615,12 +615,36 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
 
         # =====================================================================
         # 🏆 API 6: POPULAR CATEGORIES (Global)
-        # Aggregates trending_score per category. Returns top categories
-        # with a representative image from the highest-scoring product.
-        # Uses Python aggregation (works regardless of OpenSearch field mapping).
+        # Aggregates trending_score per category. Returns:
+        #   - SEO-friendly URLs (/parent/child/)
+        #   - UNIQUE image per category (no duplicates)
         # =====================================================================
         elif metric == "popularcat":
-            # Fetch up to 2000 top-trending products with their categories
+            import re as _re  # local import to avoid touching imports at top
+            
+            # Helper: slugify category name -> "Home & Kitchen" -> "home-kitchen"
+            def _slugify(text):
+                s = (text or "").lower()
+                s = _re.sub(r'[&]', '', s)            # remove &
+                s = _re.sub(r'[^a-z0-9\s-]', '', s)   # keep alphanumeric, space, hyphen
+                s = _re.sub(r'\s+', '-', s.strip())   # spaces -> hyphens
+                s = _re.sub(r'-+', '-', s)            # collapse multiple hyphens
+                return s.strip('-')
+            
+            # Helper: extract first valid image from product source
+            def _extract_image(src):
+                raw_img_data = src.get("images") or ""
+                img = ""
+                if isinstance(raw_img_data, list) and len(raw_img_data) > 0:
+                    img = str(raw_img_data[0])
+                elif isinstance(raw_img_data, str) and raw_img_data:
+                    cleaned = raw_img_data.strip("[]'\" ")
+                    img = cleaned.split(",")[0].strip("[]'\" ")
+                if img and len(img) > 10 and "null" not in img.lower() and "undefined" not in img.lower():
+                    return img
+                return ""
+            
+            # Fetch up to 2000 top trending products
             os_res = os_client.search(
                 index=INDEX_NAME,
                 body={
@@ -636,16 +660,15 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             )
             
             hits = os_res.get("hits", {}).get("hits", [])
-            logger.info(f"📊 popularcat: aggregating {len(hits)} trending products by category")
+            logger.info(f"📊 popularcat: aggregating {len(hits)} trending products")
             
-            # Aggregate by category in Python — no OpenSearch agg, works on any mapping
-            category_scores = {}    # {cat_name: total_score}
-            category_counts = {}    # {cat_name: count}
-            category_image = {}     # {cat_name: first valid image url}
+            # Aggregate by category, tracking ALL candidate products per category
+            category_scores = {}      # {cat_name: total_score}
+            category_counts = {}      # {cat_name: product_count}
+            category_candidates = {}  # {cat_name: [(score, image, cat_array), ...]} sorted by score desc
             
             for hit in hits:
                 src = hit.get("_source", {})
-                # Skip out-of-stock if explicitly false
                 if src.get("in_stock") is False:
                     continue
                 
@@ -656,22 +679,8 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 if not isinstance(cats, list):
                     continue
                 
-                # Extract this product's image (for image fallback per category)
-                raw_img_data = src.get("images") or ""
-                product_image = ""
-                if isinstance(raw_img_data, list) and len(raw_img_data) > 0:
-                    product_image = str(raw_img_data[0])
-                elif isinstance(raw_img_data, str) and raw_img_data:
-                    cleaned = raw_img_data.strip("[]'\" ")
-                    product_image = cleaned.split(",")[0].strip("[]'\" ")
+                product_image = _extract_image(src)
                 
-                has_valid_image = (
-                    product_image and len(product_image) > 10 
-                    and "null" not in product_image.lower() 
-                    and "undefined" not in product_image.lower()
-                )
-                
-                # Aggregate per category this product belongs to
                 for cat in cats:
                     if not cat:
                         continue
@@ -682,28 +691,61 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     category_scores[cat] = category_scores.get(cat, 0) + score
                     category_counts[cat] = category_counts.get(cat, 0) + 1
                     
-                    # 🔥 Assign first valid image found — fallback works automatically
-                    # since products are pre-sorted by trending_score desc
-                    if has_valid_image and cat not in category_image:
-                        category_image[cat] = product_image
+                    if cat not in category_candidates:
+                        category_candidates[cat] = []
+                    category_candidates[cat].append((score, product_image, cats))
             
-            # Sort categories by total score desc
+            # Sort categories by total score desc, then paginate
             sorted_cats = sorted(category_scores.items(), key=lambda x: x[1], reverse=True)
-            
-            # Apply pagination
             paginated = sorted_cats[offset:offset + size]
             
+            # 🔥 ASSIGN UNIQUE IMAGES — track which image URLs we've already used
+            used_images = set()
             results = []
+            
             for cat_name, score in paginated:
-                img_url = category_image.get(cat_name, "")
+                candidates = category_candidates.get(cat_name, [])
+                # Already-ordered by score (since hits were pre-sorted)
+                
+                # Try to find a candidate whose image hasn't been used yet
+                chosen_image = ""
+                chosen_cats = []
+                for cscore, cimg, ccats in candidates:
+                    if cimg and cimg not in used_images:
+                        chosen_image = cimg
+                        chosen_cats = ccats
+                        used_images.add(cimg)
+                        break
+                
+                # Fallback: if every image was already used for higher-ranked categories,
+                # use the highest-score image even if it's a duplicate (rare edge case)
+                if not chosen_image:
+                    for cscore, cimg, ccats in candidates:
+                        if cimg:
+                            chosen_image = cimg
+                            chosen_cats = ccats
+                            break
+                
+                # 🔥 BUILD HIERARCHICAL URL — /parent-slug/child-slug/
+                # Using the chosen product's full category array, find parent of this bucket
+                url = f"/{_slugify(cat_name)}/"
+                if chosen_cats:
+                    try:
+                        idx = chosen_cats.index(cat_name)
+                        if idx > 0:
+                            parent = chosen_cats[idx - 1]
+                            url = f"/{_slugify(parent)}/{_slugify(cat_name)}/"
+                    except ValueError:
+                        pass  # cat_name not in chosen_cats — use top-level slug
+                
                 results.append({
                     "category": cat_name,
                     "name": cat_name,
-                    "image": img_url,
-                    "primary_image": img_url,
+                    "image": chosen_image,
+                    "primary_image": chosen_image,
                     "score": round(score, 2),
                     "product_count": category_counts[cat_name],
-                    "url": f"/search?category={cat_name.replace(' ', '+').replace('&', '%26')}",
+                    "url": url,
                     "recommendation_reason": "Popular Category"
                 })
             
