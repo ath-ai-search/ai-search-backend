@@ -617,121 +617,99 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
         # 🏆 API 6: POPULAR CATEGORIES (Global)
         # Aggregates trending_score per category. Returns top categories
         # with a representative image from the highest-scoring product.
+        # Uses Python aggregation (works regardless of OpenSearch field mapping).
         # =====================================================================
         elif metric == "popularcat":
-            # Try aggregation on category.keyword first (works if mapping has keyword sub-field)
-            # Falls back to category (text) if needed
-            try:
-                os_res = os_client.search(
-                    index=INDEX_NAME,
-                    body={
-                        "size": 0,  # don't return docs, only aggregations
-                        "query": {
-                            "bool": {
-                                "must": [{"range": {"trending_score": {"gt": 1}}}],
-                                "filter": [{"term": {"in_stock": True}}]
-                            }
-                        },
-                        "aggs": {
-                            "by_category": {
-                                "terms": {
-                                    "field": "category.keyword",
-                                    "size": size + offset,
-                                    "order": {"total_score": "desc"}
-                                },
-                                "aggs": {
-                                    "total_score": {"sum": {"field": "trending_score"}},
-                                    "top_product": {
-                                        "top_hits": {
-                                            "size": 5,
-                                            "_source": ["images", "name", "product_id", "url"],
-                                            "sort": [{"trending_score": "desc"}]
-                                        }
-                                    }
-                                }
-                            }
+            # Fetch up to 2000 top-trending products with their categories
+            os_res = os_client.search(
+                index=INDEX_NAME,
+                body={
+                    "size": 2000,
+                    "_source": ["category", "trending_score", "images", "name", "product_id", "url", "in_stock"],
+                    "query": {
+                        "bool": {
+                            "must": [{"range": {"trending_score": {"gt": 1}}}]
                         }
-                    }
-                )
-            except Exception as e:
-                logger.warning(f"⚠️  popularcat: category.keyword failed ({e}), trying 'category' fallback")
-                os_res = os_client.search(
-                    index=INDEX_NAME,
-                    body={
-                        "size": 0,
-                        "query": {
-                            "bool": {
-                                "must": [{"range": {"trending_score": {"gt": 1}}}],
-                                "filter": [{"term": {"in_stock": True}}]
-                            }
-                        },
-                        "aggs": {
-                            "by_category": {
-                                "terms": {
-                                    "field": "category",
-                                    "size": size + offset,
-                                    "order": {"total_score": "desc"}
-                                },
-                                "aggs": {
-                                    "total_score": {"sum": {"field": "trending_score"}},
-                                    "top_product": {
-                                        "top_hits": {
-                                            "size": 5,
-                                            "_source": ["images", "name", "product_id", "url"],
-                                            "sort": [{"trending_score": "desc"}]
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                )
+                    },
+                    "sort": [{"trending_score": "desc"}]
+                }
+            )
             
-            # Parse aggregation buckets
-            buckets = os_res.get("aggregations", {}).get("by_category", {}).get("buckets", [])
+            hits = os_res.get("hits", {}).get("hits", [])
+            logger.info(f"📊 popularcat: aggregating {len(hits)} trending products by category")
+            
+            # Aggregate by category in Python — no OpenSearch agg, works on any mapping
+            category_scores = {}    # {cat_name: total_score}
+            category_counts = {}    # {cat_name: count}
+            category_image = {}     # {cat_name: first valid image url}
+            
+            for hit in hits:
+                src = hit.get("_source", {})
+                # Skip out-of-stock if explicitly false
+                if src.get("in_stock") is False:
+                    continue
+                
+                score = float(src.get("trending_score", 0) or 0)
+                cats = src.get("category", [])
+                if isinstance(cats, str):
+                    cats = [cats]
+                if not isinstance(cats, list):
+                    continue
+                
+                # Extract this product's image (for image fallback per category)
+                raw_img_data = src.get("images") or ""
+                product_image = ""
+                if isinstance(raw_img_data, list) and len(raw_img_data) > 0:
+                    product_image = str(raw_img_data[0])
+                elif isinstance(raw_img_data, str) and raw_img_data:
+                    cleaned = raw_img_data.strip("[]'\" ")
+                    product_image = cleaned.split(",")[0].strip("[]'\" ")
+                
+                has_valid_image = (
+                    product_image and len(product_image) > 10 
+                    and "null" not in product_image.lower() 
+                    and "undefined" not in product_image.lower()
+                )
+                
+                # Aggregate per category this product belongs to
+                for cat in cats:
+                    if not cat:
+                        continue
+                    cat = str(cat).strip()
+                    if not cat:
+                        continue
+                    
+                    category_scores[cat] = category_scores.get(cat, 0) + score
+                    category_counts[cat] = category_counts.get(cat, 0) + 1
+                    
+                    # 🔥 Assign first valid image found — fallback works automatically
+                    # since products are pre-sorted by trending_score desc
+                    if has_valid_image and cat not in category_image:
+                        category_image[cat] = product_image
+            
+            # Sort categories by total score desc
+            sorted_cats = sorted(category_scores.items(), key=lambda x: x[1], reverse=True)
+            
+            # Apply pagination
+            paginated = sorted_cats[offset:offset + size]
+            
             results = []
-            
-            # Apply pagination manually (OpenSearch agg doesn't support from/offset directly)
-            paginated = buckets[offset:offset + size]
-            
-            for b in paginated:
-                cat_name = b.get("key", "")
-                score = float(b.get("total_score", {}).get("value", 0))
-                product_count = b.get("doc_count", 0)
-                
-                # 🔥 Try top 5 products in this category until we find one with a valid image
-                category_image = ""
-                top_hits = b.get("top_product", {}).get("hits", {}).get("hits", [])
-                for hit in top_hits:
-                    src = hit.get("_source", {})
-                    raw_img_data = src.get("images") or ""
-                    candidate_image = ""
-                    
-                    if isinstance(raw_img_data, list) and len(raw_img_data) > 0:
-                        candidate_image = str(raw_img_data[0])
-                    elif isinstance(raw_img_data, str) and raw_img_data:
-                        cleaned = raw_img_data.strip("[]'\" ")
-                        candidate_image = cleaned.split(",")[0].strip("[]'\" ")
-                    
-                    # Accept only if it's a real URL
-                    if candidate_image and len(candidate_image) > 10 and "null" not in candidate_image.lower() and "undefined" not in candidate_image.lower():
-                        category_image = candidate_image
-                        break  # found one, stop searching
-                
+            for cat_name, score in paginated:
+                img_url = category_image.get(cat_name, "")
                 results.append({
                     "category": cat_name,
-                    "name": cat_name,  # alias for frontend convenience
-                    "image": category_image,
-                    "primary_image": category_image,
+                    "name": cat_name,
+                    "image": img_url,
+                    "primary_image": img_url,
                     "score": round(score, 2),
-                    "product_count": product_count,
+                    "product_count": category_counts[cat_name],
                     "url": f"/search?category={cat_name.replace(' ', '+').replace('&', '%26')}",
                     "recommendation_reason": "Popular Category"
                 })
             
             response = {
                 "results": results,
-                "total": len(buckets),
+                "total": len(sorted_cats),
                 "page": page,
                 "size": size,
                 "metric": metric,
