@@ -86,3 +86,19 @@ async def continue_shopping(
     Ordered by most-recently-touched first.
     """
     return await get_top_products_by_metric("continueshop", visitor_id, user_id, page, size)
+
+# =========================================================================
+# 6️⃣ POPULAR CATEGORIES (Global: Top categories by total product score)
+# =========================================================================
+@router.get("/popularcat")
+async def popular_categories(
+    visitor_id: str = Query(None, description="Ignored (Global API)"),
+    user_id: str = Query(None, description="Ignored (Global API)"),
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100)
+):
+    """
+    Popular Categories: Returns categories sorted by total trending score of their products.
+    Each category includes a representative image from its top-scoring product.
+    """
+    return await get_top_products_by_metric("popularcat", visitor_id="", user_id="", page=page, size=size)

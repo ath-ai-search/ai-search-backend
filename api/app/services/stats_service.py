@@ -614,6 +614,137 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             return response
 
         # =====================================================================
+        # 🏆 API 6: POPULAR CATEGORIES (Global)
+        # Aggregates trending_score per category. Returns top categories
+        # with a representative image from the highest-scoring product.
+        # =====================================================================
+        elif metric == "popularcat":
+            # Try aggregation on category.keyword first (works if mapping has keyword sub-field)
+            # Falls back to category (text) if needed
+            try:
+                os_res = os_client.search(
+                    index=INDEX_NAME,
+                    body={
+                        "size": 0,  # don't return docs, only aggregations
+                        "query": {
+                            "bool": {
+                                "must": [{"range": {"trending_score": {"gt": 1}}}],
+                                "filter": [{"term": {"in_stock": True}}]
+                            }
+                        },
+                        "aggs": {
+                            "by_category": {
+                                "terms": {
+                                    "field": "category.keyword",
+                                    "size": size + offset,
+                                    "order": {"total_score": "desc"}
+                                },
+                                "aggs": {
+                                    "total_score": {"sum": {"field": "trending_score"}},
+                                    "top_product": {
+                                        "top_hits": {
+                                            "size": 5,
+                                            "_source": ["images", "name", "product_id", "url"],
+                                            "sort": [{"trending_score": "desc"}]
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"⚠️  popularcat: category.keyword failed ({e}), trying 'category' fallback")
+                os_res = os_client.search(
+                    index=INDEX_NAME,
+                    body={
+                        "size": 0,
+                        "query": {
+                            "bool": {
+                                "must": [{"range": {"trending_score": {"gt": 1}}}],
+                                "filter": [{"term": {"in_stock": True}}]
+                            }
+                        },
+                        "aggs": {
+                            "by_category": {
+                                "terms": {
+                                    "field": "category",
+                                    "size": size + offset,
+                                    "order": {"total_score": "desc"}
+                                },
+                                "aggs": {
+                                    "total_score": {"sum": {"field": "trending_score"}},
+                                    "top_product": {
+                                        "top_hits": {
+                                            "size": 5,
+                                            "_source": ["images", "name", "product_id", "url"],
+                                            "sort": [{"trending_score": "desc"}]
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                )
+            
+            # Parse aggregation buckets
+            buckets = os_res.get("aggregations", {}).get("by_category", {}).get("buckets", [])
+            results = []
+            
+            # Apply pagination manually (OpenSearch agg doesn't support from/offset directly)
+            paginated = buckets[offset:offset + size]
+            
+            for b in paginated:
+                cat_name = b.get("key", "")
+                score = float(b.get("total_score", {}).get("value", 0))
+                product_count = b.get("doc_count", 0)
+                
+                # 🔥 Try top 5 products in this category until we find one with a valid image
+                category_image = ""
+                top_hits = b.get("top_product", {}).get("hits", {}).get("hits", [])
+                for hit in top_hits:
+                    src = hit.get("_source", {})
+                    raw_img_data = src.get("images") or ""
+                    candidate_image = ""
+                    
+                    if isinstance(raw_img_data, list) and len(raw_img_data) > 0:
+                        candidate_image = str(raw_img_data[0])
+                    elif isinstance(raw_img_data, str) and raw_img_data:
+                        cleaned = raw_img_data.strip("[]'\" ")
+                        candidate_image = cleaned.split(",")[0].strip("[]'\" ")
+                    
+                    # Accept only if it's a real URL
+                    if candidate_image and len(candidate_image) > 10 and "null" not in candidate_image.lower() and "undefined" not in candidate_image.lower():
+                        category_image = candidate_image
+                        break  # found one, stop searching
+                
+                results.append({
+                    "category": cat_name,
+                    "name": cat_name,  # alias for frontend convenience
+                    "image": category_image,
+                    "primary_image": category_image,
+                    "score": round(score, 2),
+                    "product_count": product_count,
+                    "url": f"/search?category={cat_name.replace(' ', '+').replace('&', '%26')}",
+                    "recommendation_reason": "Popular Category"
+                })
+            
+            response = {
+                "results": results,
+                "total": len(buckets),
+                "page": page,
+                "size": size,
+                "metric": metric,
+                "took_ms": round((time.time() - start_time) * 1000, 2),
+                "cached": False
+            }
+            try:
+                await redis_client.setex(cache_key, CACHE_TTL, json.dumps(response))
+            except:
+                pass
+            return response
+
+        # =====================================================================
         # 🔥 API 3: TRENDING (Reads directly from OpenSearch trending_score)
         # Uses pre-computed values in OpenSearch (kept fresh by sync_trending cron)
         # =====================================================================
