@@ -662,32 +662,56 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             hits = os_res.get("hits", {}).get("hits", [])
             logger.info(f"📊 popularcat: aggregating {len(hits)} trending products")
             
-            # 🔥 FIRST PASS: Identify categories that appear as CHILDREN (position > 0)
-            # A category is a "true parent" only if it NEVER appears as a sub-category anywhere
-            known_children = set()
+            # 🔥 DYNAMIC PARENT DETECTION from OpenSearch data
+            # Logic: A category is a REAL parent if it has at least N distinct sub-categories.
+            # This auto-adapts to your store — no hardcoded list.
+            parents_with_children = {}  # {parent: set of distinct children}
+            
             for hit in hits:
                 src = hit.get("_source", {})
-                cats_check = src.get("category", [])
-                if isinstance(cats_check, list) and len(cats_check) > 1:
-                    for sub_cat in cats_check[1:]:
-                        if sub_cat:
-                            known_children.add(str(sub_cat).strip())
+                cats = src.get("category", [])
+                if isinstance(cats, str):
+                    cats = [cats]
+                if not isinstance(cats, list) or len(cats) < 2:
+                    continue
+                
+                parent = str(cats[0]).strip()
+                if not parent:
+                    continue
+                
+                # Collect all distinct children under this parent across all products
+                for child in cats[1:]:
+                    if child:
+                        child_clean = str(child).strip()
+                        if child_clean and child_clean != parent:
+                            parents_with_children.setdefault(parent, set()).add(child_clean)
             
-            # 🔥 EXCLUDE suppliers / non-category buckets (not real departments)
-            EXCLUDED_CATEGORIES = {
+            # 🔥 A category is a "real parent" if it has >= MIN_CHILDREN distinct sub-categories
+            MIN_CHILDREN_FOR_PARENT = 2
+            
+            # 🔥 Also exclude known non-categories (suppliers, store names — safety net)
+            FORCE_EXCLUDE = {
                 "Amazon", "Best Buy", "Walmart", "Target",
                 "Best Sellers", "All Products", "New Releases",
                 "Today's Deal", "Outlet Store", "Sale", "Featured"
             }
             
-            logger.info(f"📊 popularcat: found {len(known_children)} sub-categories to exclude")
+            ALLOWED_PARENT_CATEGORIES = {
+                parent for parent, kids in parents_with_children.items()
+                if len(kids) >= MIN_CHILDREN_FOR_PARENT and parent not in FORCE_EXCLUDE
+            }
+            
+            logger.info(
+                f"📊 popularcat: dynamically detected {len(ALLOWED_PARENT_CATEGORIES)} parent categories "
+                f"from {len(parents_with_children)} candidates"
+            )
             
             # Aggregate by category, tracking ALL candidate products per category
             category_scores = {}      # {cat_name: total_score}
             category_counts = {}      # {cat_name: product_count}
-            category_candidates = {}  # {cat_name: [(score, image, cat_array), ...]} sorted by score desc
+            category_candidates = {}  # {cat_name: [(score, image, cat_array), ...]}
             
-            # 🔥 SECOND PASS: Aggregate ONLY true parents
+            # 🔥 Aggregate by FIRST category, but ONLY if it's a whitelisted parent
             for hit in hits:
                 src = hit.get("_source", {})
                 if src.get("in_stock") is False:
@@ -702,16 +726,26 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 
                 product_image = _extract_image(src)
                 
-                # 🔥 Use FIRST category, but skip if it's actually a sub-category or excluded
-                if cats:
-                    cat = str(cats[0]).strip()
-                    if cat and cat not in known_children and cat not in EXCLUDED_CATEGORIES:
-                        category_scores[cat] = category_scores.get(cat, 0) + score
-                        category_counts[cat] = category_counts.get(cat, 0) + 1
-                        
-                        if cat not in category_candidates:
-                            category_candidates[cat] = []
-                        category_candidates[cat].append((score, product_image, cats))
+                # 🔥 Check ALL items in cats — first one that matches a whitelisted parent wins
+                # This catches products where parent isn't at index 0
+                matched_parent = None
+                for c in cats:
+                    if not c:
+                        continue
+                    c_clean = str(c).strip()
+                    if c_clean in ALLOWED_PARENT_CATEGORIES:
+                        matched_parent = c_clean
+                        break  # use the first match
+                
+                if matched_parent:
+                    category_scores[matched_parent] = category_scores.get(matched_parent, 0) + score
+                    category_counts[matched_parent] = category_counts.get(matched_parent, 0) + 1
+                    
+                    if matched_parent not in category_candidates:
+                        category_candidates[matched_parent] = []
+                    category_candidates[matched_parent].append((score, product_image, cats))
+            
+            logger.info(f"📊 popularcat: matched {len(category_scores)} whitelisted parents from {len(hits)} products")
             
             # Sort categories by total score desc, then paginate
             sorted_cats = sorted(category_scores.items(), key=lambda x: x[1], reverse=True)
