@@ -662,11 +662,32 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             hits = os_res.get("hits", {}).get("hits", [])
             logger.info(f"📊 popularcat: aggregating {len(hits)} trending products")
             
+            # 🔥 FIRST PASS: Identify categories that appear as CHILDREN (position > 0)
+            # A category is a "true parent" only if it NEVER appears as a sub-category anywhere
+            known_children = set()
+            for hit in hits:
+                src = hit.get("_source", {})
+                cats_check = src.get("category", [])
+                if isinstance(cats_check, list) and len(cats_check) > 1:
+                    for sub_cat in cats_check[1:]:
+                        if sub_cat:
+                            known_children.add(str(sub_cat).strip())
+            
+            # 🔥 EXCLUDE suppliers / non-category buckets (not real departments)
+            EXCLUDED_CATEGORIES = {
+                "Amazon", "Best Buy", "Walmart", "Target",
+                "Best Sellers", "All Products", "New Releases",
+                "Today's Deal", "Outlet Store", "Sale", "Featured"
+            }
+            
+            logger.info(f"📊 popularcat: found {len(known_children)} sub-categories to exclude")
+            
             # Aggregate by category, tracking ALL candidate products per category
             category_scores = {}      # {cat_name: total_score}
             category_counts = {}      # {cat_name: product_count}
             category_candidates = {}  # {cat_name: [(score, image, cat_array), ...]} sorted by score desc
             
+            # 🔥 SECOND PASS: Aggregate ONLY true parents
             for hit in hits:
                 src = hit.get("_source", {})
                 if src.get("in_stock") is False:
@@ -681,10 +702,10 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 
                 product_image = _extract_image(src)
                 
-                # 🔥 ONLY use the FIRST category (parent), skip sub-categories
+                # 🔥 Use FIRST category, but skip if it's actually a sub-category or excluded
                 if cats:
                     cat = str(cats[0]).strip()
-                    if cat:
+                    if cat and cat not in known_children and cat not in EXCLUDED_CATEGORIES:
                         category_scores[cat] = category_scores.get(cat, 0) + score
                         category_counts[cat] = category_counts.get(cat, 0) + 1
                         
