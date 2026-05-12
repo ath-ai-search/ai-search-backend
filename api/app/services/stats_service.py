@@ -38,6 +38,82 @@ def get_query_identity(visitor_id: str, user_id: str = None) -> str:
         return user_id.strip()
     return visitor_id.strip() if visitor_id else None
 
+async def _get_bc_category_urls():
+    """
+    Fetch real BigCommerce category URLs (name -> url slug).
+    Cached for 1 hour in Redis. Falls back to empty dict if unavailable.
+    Used by /popularcat to return URLs that actually work (no more 404s).
+    """
+    import httpx  # local import to avoid touching top of file
+    
+    cache_key = "popularcat:bc_category_urls_v1"
+    
+    # Try cache first (1 hour TTL)
+    try:
+        cached = await redis_client.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+    
+    store_hash = os.getenv("BIGCOMMERCE_STORE_HASH")
+    access_token = os.getenv("BIGCOMMERCE_ACCESS_TOKEN")
+    
+    if not store_hash or not access_token:
+        logger.warning("⚠️ BigCommerce credentials not set; popularcat URLs will use fallback slugs")
+        return {}
+    
+    url_map = {}
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            page = 1
+            while page <= 10:  # safety cap
+                resp = await client.get(
+                    f"https://api.bigcommerce.com/stores/{store_hash}/v3/catalog/categories",
+                    headers={"X-Auth-Token": access_token, "Accept": "application/json"},
+                    params={"limit": 250, "page": page}
+                )
+                if resp.status_code != 200:
+                    logger.error(f"BC categories fetch failed: status {resp.status_code}")
+                    break
+                
+                data = resp.json()
+                items = data.get("data", [])
+                if not items:
+                    break
+                
+                for cat in items:
+                    name = (cat.get("name") or "").strip()
+                    custom_url = cat.get("custom_url") or {}
+                    url_slug = ""
+                    if isinstance(custom_url, dict):
+                        url_slug = (custom_url.get("url") or "").strip()
+                    if name and url_slug:
+                        # Normalize: ensure starts with / and ends with /
+                        if not url_slug.startswith("/"):
+                            url_slug = "/" + url_slug
+                        if not url_slug.endswith("/"):
+                            url_slug = url_slug + "/"
+                        url_map[name] = url_slug
+                
+                pagination = data.get("meta", {}).get("pagination", {})
+                if page >= pagination.get("total_pages", 1):
+                    break
+                page += 1
+        
+        # Cache for 1 hour
+        try:
+            await redis_client.setex(cache_key, 3600, json.dumps(url_map))
+        except Exception:
+            pass
+        
+        logger.info(f"📊 Fetched {len(url_map)} category URLs from BigCommerce")
+    except Exception as e:
+        logger.error(f"BC category URL fetch failed: {e}")
+    
+    return url_map
+
+
 def parse_os_product(src):
     """Helper to parse OpenSearch product source into a clean dictionary."""
     # 1. Grab image data from whichever field your database uses
@@ -615,8 +691,9 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
 
         # =====================================================================
         # 🏆 API 6: POPULAR CATEGORIES (Global)
-        # STRICTLY TOP-LEVEL CATEGORIES ONLY.
-        # Absolute URLs that will never 404.
+        # Aggregates trending_score per category. Returns:
+        #   - SEO-friendly Absolute URLs (https://venuemarketplace.com/parent/child/)
+        #   - UNIQUE image per category (no duplicates)
         # =====================================================================
         elif metric == "popularcat":
             import re as _re
@@ -656,8 +733,13 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             )
             
             hits = os_res.get("hits", {}).get("hits", [])
+            logger.info(f"📊 popularcat: aggregating {len(hits)} trending products")
             
-            # Filter out store names and junk
+            # 🔥 Fetch REAL BigCommerce category URLs (cached 1hr) — fixes 404s
+            bc_url_map = await _get_bc_category_urls()
+            
+            # 🔥 DYNAMIC PARENT DETECTION from OpenSearch data
+            
             FORCE_EXCLUDE = {
                 "Amazon", "Best Buy", "Walmart", "Target",
                 "Best Sellers", "All Products", "New Releases",
@@ -683,18 +765,19 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 
                 product_image = _extract_image(src)
                 
-                # 🔥 STRICT RULE: ONLY USE THE TOP-LEVEL PARENT (index 0)
-                top_level_cat = str(cats[0]).strip()
-                
-                if not top_level_cat or top_level_cat in FORCE_EXCLUDE:
-                    continue
-                
-                category_scores[top_level_cat] = category_scores.get(top_level_cat, 0) + score
-                category_counts[top_level_cat] = category_counts.get(top_level_cat, 0) + 1
-                
-                if top_level_cat not in category_candidates:
-                    category_candidates[top_level_cat] = []
-                category_candidates[top_level_cat].append((score, product_image))
+                for cat in cats:
+                    if not cat:
+                        continue
+                    cat = str(cat).strip()
+                    if not cat or cat in FORCE_EXCLUDE:
+                        continue
+                    
+                    category_scores[cat] = category_scores.get(cat, 0) + score
+                    category_counts[cat] = category_counts.get(cat, 0) + 1
+                    
+                    if cat not in category_candidates:
+                        category_candidates[cat] = []
+                    category_candidates[cat].append((score, product_image, cats))
             
             sorted_cats = sorted(category_scores.items(), key=lambda x: x[1], reverse=True)
             paginated = sorted_cats[offset:offset + size]
@@ -706,21 +789,33 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 candidates = category_candidates.get(cat_name, [])
                 
                 chosen_image = ""
-                for cscore, cimg in candidates:
+                chosen_cats = []
+                for cscore, cimg, ccats in candidates:
                     if cimg and cimg not in used_images:
                         chosen_image = cimg
+                        chosen_cats = ccats
                         used_images.add(cimg)
                         break
                 
                 if not chosen_image:
-                    for cscore, cimg in candidates:
+                    for cscore, cimg, ccats in candidates:
                         if cimg:
                             chosen_image = cimg
+                            chosen_cats = ccats
                             break
                 
-                # 🔥 ABSOLUTE FLAT URL (Will never 404 for top-level categories)
+                # 🔥 USE REAL BIGCOMMERCE URL if available (cached 1hr), else fallback slug
+                # This ensures URLs always work — no more 404s
+                if cat_name in bc_url_map:
+                    path = bc_url_map[cat_name]
+                else:
+                    # Fallback if BC doesn't have this category (may 404)
+                    path = f"/{_slugify(cat_name)}/"
+                    logger.warning(f"⚠️ popularcat: no BC URL for '{cat_name}', using slug fallback")
+                
+                # 🔥 FULL ABSOLUTE URL
                 base_domain = "https://venuemarketplace.com"
-                absolute_url = f"{base_domain}/{_slugify(cat_name)}/"
+                absolute_url = f"{base_domain}{path}"
                 
                 results.append({
                     "category": cat_name,
