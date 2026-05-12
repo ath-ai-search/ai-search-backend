@@ -129,3 +129,91 @@ except Exception as e:
 finally:
     if 'cursor' in locals(): cursor.close()
     if 'conn' in locals(): conn.close()
+
+
+# ==========================================
+# 4. VERIFY TRENDING API'S SALE-ONLY FILTER
+# ==========================================
+print("\n" + "="*60)
+print("🛍️  PART 3: TOP 5 SALE PRODUCTS (Trending API Filter Test)")
+print("="*60)
+print("Replicates the exact filter used by /trending API:")
+print("  - trending_score > 1")
+print("  - sale_price > 0 (must be on sale)")
+print("  - Sorted by trending_score DESC")
+print("-" * 60)
+
+response_sale = client.search(
+    index=index_name,
+    body={
+        "size": 5,
+        "_source": [
+            "product_id", "name", "trending_score",
+            "price", "sale_price", "in_stock"
+        ],
+        "query": {
+            "bool": {
+                "must": [
+                    {"range": {"trending_score": {"gt": 1}}},
+                    {"range": {"sale_price": {"gt": 0}}}
+                ]
+            }
+        },
+        "sort": [{"trending_score": "desc"}]
+    }
+)
+
+hits_sale = response_sale.get("hits", {}).get("hits", [])
+
+if not hits_sale:
+    print("⚠️ No sale products found! Sale filter may not be working correctly.")
+else:
+    print(f"✅ Found {len(hits_sale)} sale products. Showing top 5:\n")
+    
+    for idx, item in enumerate(hits_sale, 1):
+        data = item["_source"]
+        
+        try:
+            price = float(data.get("price", 0) or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        try:
+            sale_price = float(data.get("sale_price", 0) or 0)
+        except (TypeError, ValueError):
+            sale_price = 0.0
+        
+        # Calculate discount %
+        discount_pct = 0.0
+        if price > 0 and 0 < sale_price < price:
+            discount_pct = ((price - sale_price) / price) * 100
+        
+        # Sanity check flag
+        if discount_pct >= 1.0:
+            flag = "✅ VALID SALE"
+        elif sale_price > 0 and sale_price >= price:
+            flag = "⚠️ FAKE SALE (sale_price >= price)"
+        else:
+            flag = "❓ EDGE CASE"
+        
+        print(f"  #{idx} {flag}")
+        print(f"     📦 Product ID  : {data.get('product_id')}")
+        print(f"     🏷️  Name        : {data.get('name', '')[:60]}")
+        print(f"     🔥 Trend Score : {data.get('trending_score')}")
+        print(f"     💰 Price       : ${price:.2f}")
+        print(f"     🏷️  Sale Price  : ${sale_price:.2f}")
+        print(f"     🎯 Discount    : {discount_pct:.1f}% OFF")
+        print(f"     📦 In Stock    : {data.get('in_stock', True)}")
+        print("-" * 60)
+    
+    # Summary
+    valid_sales = sum(
+        1 for item in hits_sale
+        if (float(item["_source"].get("price", 0) or 0) > 0
+            and 0 < float(item["_source"].get("sale_price", 0) or 0) < float(item["_source"].get("price", 0) or 0))
+    )
+    print(f"\n📊 SUMMARY: {valid_sales}/{len(hits_sale)} have valid discounts (sale_price < price)")
+    
+    if valid_sales == len(hits_sale):
+        print("✅ Trending API sale filter is working PERFECTLY!")
+    else:
+        print(f"⚠️ {len(hits_sale) - valid_sales} products have sale_price >= price (fake sales). May need cleanup.")
