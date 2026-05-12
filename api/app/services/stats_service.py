@@ -726,9 +726,11 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                             chosen_cats = ccats
                             break
                 
-                # 🔥 BUILD HIERARCHICAL URL — /parent-slug/child-slug/
-                # Using the chosen product's full category array, find parent of this bucket
+                # 🔥 DYNAMIC URL LOGIC: 
+                # Rule 1: If it has NO parent, just use /category-name/
                 url = f"/{_slugify(cat_name)}/"
+                
+                # Rule 2: If it HAS a parent, use /parent-name/category-name/
                 if chosen_cats:
                     try:
                         idx = chosen_cats.index(cat_name)
@@ -736,7 +738,7 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                             parent = chosen_cats[idx - 1]
                             url = f"/{_slugify(parent)}/{_slugify(cat_name)}/"
                     except ValueError:
-                        pass  # cat_name not in chosen_cats — use top-level slug
+                        pass
                 
                 results.append({
                     "category": cat_name,
@@ -745,7 +747,7 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     "primary_image": chosen_image,
                     "score": round(score, 2),
                     "product_count": category_counts[cat_name],
-                    "url": url,
+                    "url": url,  # This will now perfectly output the right URL!
                     "recommendation_reason": "Popular Category"
                 })
             
