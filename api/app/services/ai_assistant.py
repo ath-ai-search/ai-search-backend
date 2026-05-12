@@ -29,6 +29,24 @@ import json
 import logging
 import re
 
+# 🔥 EMOJI STRIPPER — removes all emojis from AI output
+_EMOJI_PATTERN = re.compile(
+    "[\U0001F300-\U0001F9FF"
+    "\U0001F600-\U0001F64F"
+    "\U0001F680-\U0001F6FF"
+    "\U00002600-\U000027BF"
+    "\U0001FA70-\U0001FAFF"
+    "\U0001F1E0-\U0001F1FF"
+    "\U00002700-\U000027BF"
+    "]+", flags=re.UNICODE
+)
+
+def strip_emojis(text):
+    """Remove emojis/icons. Safe no-op for non-strings."""
+    if not isinstance(text, str):
+        return text
+    return _EMOJI_PATTERN.sub('', text).strip()
+
 # OpenAI client
 from app.config import openai_client
 
@@ -355,11 +373,14 @@ async def process_ai_assistant(
             ai_reply = (
                 f"I couldn't find exact matches for that {dropped_str}, "
                 f"but here are the best {updated_request.query.replace('|', ' and ')} "
-                f"items we have in stock! ✨"
+                f"items we have in stock."
             )
         elif not ai_reply or not isinstance(ai_reply, str):
             # Fallback message if AI didn't provide one
-            ai_reply = "Here are the matches I found! 🌟"
+            ai_reply = "Here are the matches I found."
+        
+        # 🔥 STRIP ANY EMOJIS the AI might have slipped in
+        ai_reply = strip_emojis(ai_reply)
         
         # =====================================================================
         # STEP 12: PREPARE SUGGESTIONS
@@ -373,6 +394,9 @@ async def process_ai_assistant(
                 "Find jackets",
                 "I'm looking for bags"
             ]
+        
+        # 🔥 STRIP EMOJIS from every suggestion chip
+        suggestions = [strip_emojis(s) if isinstance(s, str) else s for s in suggestions]
         
         # =====================================================================
         # STEP 13: CLEAN QUERY FOR UI DISPLAY
@@ -410,6 +434,6 @@ async def process_ai_assistant(
         
         return AIAssistantResponse(
             **fail_results,
-            ai_message="Sorry, I encountered an error. 🚧",
+            ai_message="Sorry, I encountered an error.",
             suggestions=["Show me shoes", "I'm looking for bags"]
         )

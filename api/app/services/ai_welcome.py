@@ -20,6 +20,25 @@ FALLBACK BEHAVIOR:
 
 import json
 import logging
+import re
+
+# 🔥 EMOJI STRIPPER
+_EMOJI_PATTERN = re.compile(
+    "[\U0001F300-\U0001F9FF"
+    "\U0001F600-\U0001F64F"
+    "\U0001F680-\U0001F6FF"
+    "\U00002600-\U000027BF"
+    "\U0001FA70-\U0001FAFF"
+    "\U0001F1E0-\U0001F1FF"
+    "\U00002700-\U000027BF"
+    "]+", flags=re.UNICODE
+)
+
+def strip_emojis(text):
+    """Remove emojis. Safe no-op for non-strings."""
+    if not isinstance(text, str):
+        return text
+    return _EMOJI_PATTERN.sub('', text).strip()
 
 from app.config import openai_client
 
@@ -89,16 +108,14 @@ async def generate_ai_welcome(current_query: str) -> dict:
         # =====================================================================
         # STEP 4: RETURN WITH FALLBACKS FOR MISSING FIELDS
         # =====================================================================
+        # Get raw values
+        raw_message = parsed.get("ai_message", WELCOME_DEFAULT_MESSAGE)
+        raw_suggestions = parsed.get("suggestions", WELCOME_DEFAULT_SUGGESTIONS)[:MAX_AI_SUGGESTIONS]
+        
+        # 🔥 STRIP EMOJIS from everything
         return {
-            # If AI didn't provide ai_message, use default friendly one
-            "ai_message": parsed.get("ai_message", WELCOME_DEFAULT_MESSAGE),
-            
-            # Get suggestions, use defaults if missing
-            # Cap at MAX_AI_SUGGESTIONS (4)
-            "suggestions": parsed.get(
-                "suggestions",
-                WELCOME_DEFAULT_SUGGESTIONS
-            )[:MAX_AI_SUGGESTIONS]
+            "ai_message": strip_emojis(raw_message),
+            "suggestions": [strip_emojis(s) if isinstance(s, str) else s for s in raw_suggestions]
         }
     
     except Exception as e:
