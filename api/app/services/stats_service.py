@@ -681,19 +681,16 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 
                 product_image = _extract_image(src)
                 
-                for cat in cats:
-                    if not cat:
-                        continue
-                    cat = str(cat).strip()
-                    if not cat:
-                        continue
-                    
-                    category_scores[cat] = category_scores.get(cat, 0) + score
-                    category_counts[cat] = category_counts.get(cat, 0) + 1
-                    
-                    if cat not in category_candidates:
-                        category_candidates[cat] = []
-                    category_candidates[cat].append((score, product_image, cats))
+                # 🔥 ONLY use the FIRST category (parent), skip sub-categories
+                if cats:
+                    cat = str(cats[0]).strip()
+                    if cat:
+                        category_scores[cat] = category_scores.get(cat, 0) + score
+                        category_counts[cat] = category_counts.get(cat, 0) + 1
+                        
+                        if cat not in category_candidates:
+                            category_candidates[cat] = []
+                        category_candidates[cat].append((score, product_image, cats))
             
             # Sort categories by total score desc, then paginate
             sorted_cats = sorted(category_scores.items(), key=lambda x: x[1], reverse=True)
@@ -726,19 +723,8 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                             chosen_cats = ccats
                             break
                 
-                # 🔥 DYNAMIC URL LOGIC: 
-                # Rule 1: If it has NO parent, just use /category-name/
+                # 🔥 BUILD URL: always /{parent-slug}/ since we only show parents
                 url = f"/{_slugify(cat_name)}/"
-                
-                # Rule 2: If it HAS a parent, use /parent-name/category-name/
-                if chosen_cats:
-                    try:
-                        idx = chosen_cats.index(cat_name)
-                        if idx > 0:
-                            parent = chosen_cats[idx - 1]
-                            url = f"/{_slugify(parent)}/{_slugify(cat_name)}/"
-                    except ValueError:
-                        pass
                 
                 results.append({
                     "category": cat_name,
@@ -747,7 +733,7 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     "primary_image": chosen_image,
                     "score": round(score, 2),
                     "product_count": category_counts[cat_name],
-                    "url": url,  # This will now perfectly output the right URL!
+                    "url": url,
                     "recommendation_reason": "Popular Category"
                 })
             
