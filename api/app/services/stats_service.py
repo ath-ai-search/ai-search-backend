@@ -616,22 +616,20 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
         # =====================================================================
         # 🏆 API 6: POPULAR CATEGORIES (Global)
         # Aggregates trending_score per category. Returns:
-        #   - SEO-friendly URLs (/parent/child/)
+        #   - SEO-friendly Absolute URLs (https://venuemarketplace.com/parent/child/)
         #   - UNIQUE image per category (no duplicates)
         # =====================================================================
         elif metric == "popularcat":
-            import re as _re  # local import to avoid touching imports at top
+            import re as _re
             
-            # Helper: slugify category name -> "Home & Kitchen" -> "home-kitchen"
             def _slugify(text):
                 s = (text or "").lower()
-                s = _re.sub(r'[&]', '', s)            # remove &
-                s = _re.sub(r'[^a-z0-9\s-]', '', s)   # keep alphanumeric, space, hyphen
-                s = _re.sub(r'\s+', '-', s.strip())   # spaces -> hyphens
-                s = _re.sub(r'-+', '-', s)            # collapse multiple hyphens
-                return s.strip('-')
+                s = _re.sub(r"[&]", "", s)
+                s = _re.sub(r"[^a-z0-9\s-]", "", s)
+                s = _re.sub(r"\s+", "-", s.strip())
+                s = _re.sub(r"-+", "-", s)
+                return s.strip("-")
             
-            # Helper: extract first valid image from product source
             def _extract_image(src):
                 raw_img_data = src.get("images") or ""
                 img = ""
@@ -644,7 +642,6 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                     return img
                 return ""
             
-            # Fetch up to 2000 top trending products
             os_res = os_client.search(
                 index=INDEX_NAME,
                 body={
@@ -660,29 +657,16 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             )
             
             hits = os_res.get("hits", {}).get("hits", [])
-            logger.info(f"📊 popularcat: aggregating {len(hits)} trending products")
             
-            # 🔥 STEP 1: IDENTIFY ALL SUB-CATEGORIES
-            # If a category EVER appears at index 1 or higher in any product's array, 
-            # we know it is a sub-category and should NEVER be shown as a main category.
-            known_subcategories = set()
-            for hit in hits:
-                cats = hit.get("_source", {}).get("category", [])
-                if isinstance(cats, list) and len(cats) > 1:
-                    for child in cats[1:]:
-                        if child:
-                            known_subcategories.add(str(child).strip())
-
-            # 🔥 Exclude known non-categories (suppliers, store names)
             FORCE_EXCLUDE = {
                 "Amazon", "Best Buy", "Walmart", "Target",
                 "Best Sellers", "All Products", "New Releases",
                 "Today's Deal", "Outlet Store", "Sale", "Featured"
             }
             
-            category_scores = {}      # {cat_name: total_score}
-            category_counts = {}      # {cat_name: product_count}
-            category_candidates = {}  # {cat_name: [(score, image), ...]}
+            category_scores = {}
+            category_counts = {}
+            category_candidates = {}
             
             for hit in hits:
                 src = hit.get("_source", {})
@@ -699,32 +683,23 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 
                 product_image = _extract_image(src)
                 
-                # 🔥 STEP 2: FIND THIS PRODUCT'S TRUE TOP-LEVEL PARENT
-                # Iterate through its categories and pick the first one that is NOT a known subcategory.
-                top_level_cat = None
-                for c in cats:
-                    if not c:
+                for cat in cats:
+                    if not cat:
                         continue
-                    clean_c = str(c).strip()
-                    if clean_c not in known_subcategories and clean_c not in FORCE_EXCLUDE:
-                        top_level_cat = clean_c
-                        break
-                
-                if not top_level_cat:
-                    continue
-                
-                category_scores[top_level_cat] = category_scores.get(top_level_cat, 0) + score
-                category_counts[top_level_cat] = category_counts.get(top_level_cat, 0) + 1
-                
-                if top_level_cat not in category_candidates:
-                    category_candidates[top_level_cat] = []
-                category_candidates[top_level_cat].append((score, product_image))
+                    cat = str(cat).strip()
+                    if not cat or cat in FORCE_EXCLUDE:
+                        continue
+                    
+                    category_scores[cat] = category_scores.get(cat, 0) + score
+                    category_counts[cat] = category_counts.get(cat, 0) + 1
+                    
+                    if cat not in category_candidates:
+                        category_candidates[cat] = []
+                    category_candidates[cat].append((score, product_image, cats))
             
-            # Sort categories by total score desc, then paginate
             sorted_cats = sorted(category_scores.items(), key=lambda x: x[1], reverse=True)
             paginated = sorted_cats[offset:offset + size]
             
-            # 🔥 ASSIGN UNIQUE IMAGES
             used_images = set()
             results = []
             
@@ -732,23 +707,33 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 candidates = category_candidates.get(cat_name, [])
                 
                 chosen_image = ""
-                for cscore, cimg in candidates:
+                chosen_cats = []
+                for cscore, cimg, ccats in candidates:
                     if cimg and cimg not in used_images:
                         chosen_image = cimg
+                        chosen_cats = ccats
                         used_images.add(cimg)
                         break
                 
-                # Fallback: if all images were used, take the best one anyway
                 if not chosen_image:
-                    for cscore, cimg in candidates:
+                    for cscore, cimg, ccats in candidates:
                         if cimg:
                             chosen_image = cimg
+                            chosen_cats = ccats
                             break
                 
-                # 🔥 CLEAN TOP-LEVEL URL (Since it has no parent)
+                # 🔥 HIERARCHICAL URL BUILDER
                 path = f"/{_slugify(cat_name)}/"
+                if chosen_cats:
+                    try:
+                        idx = chosen_cats.index(cat_name)
+                        if idx > 0:
+                            parent = chosen_cats[idx - 1]
+                            path = f"/{_slugify(parent)}/{_slugify(cat_name)}/"
+                    except ValueError:
+                        pass
                 
-                # 🔥 MAKE IT A FULL ABSOLUTE URL
+                # 🔥 FULL ABSOLUTE URL
                 base_domain = "https://venuemarketplace.com"
                 absolute_url = f"{base_domain}{path}"
                 
