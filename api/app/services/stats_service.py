@@ -777,9 +777,25 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 if len(kids) >= MIN_CHILDREN_FOR_PARENT
             }
             
+            # 🔥 FILTER BY BIGCOMMERCE URL DEPTH
+            # A category is TRULY top-level only if its BC URL has exactly 1 path segment.
+            # e.g. /electronics/ → 1 segment ✅ parent
+            #      /home-kitchen/kitchen-dining-features/ → 2 segments ❌ sub-category
+            top_level_only = set()
+            for parent in ALLOWED_PARENTS:
+                bc_url = bc_url_map.get(parent, "")
+                if bc_url:
+                    # Count non-empty path segments
+                    segments = [s for s in bc_url.strip("/").split("/") if s]
+                    if len(segments) == 1:
+                        top_level_only.add(parent)
+                # If no BC URL → exclude (unsafe to assume top-level)
+            
+            ALLOWED_PARENTS = top_level_only
+            
             logger.info(
-                f"📊 popularcat: detected {len(ALLOWED_PARENTS)} real parents "
-                f"from {len(parents_with_children)} candidates"
+                f"📊 popularcat: {len(ALLOWED_PARENTS)} top-level parents "
+                f"(filtered by BC URL depth from {len(parents_with_children)} candidates)"
             )
             
             # ━━━ PASS 2: Aggregate scores ONLY for real parents ━━━
