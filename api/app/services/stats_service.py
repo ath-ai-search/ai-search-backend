@@ -662,14 +662,17 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             hits = os_res.get("hits", {}).get("hits", [])
             logger.info(f"📊 popularcat: aggregating {len(hits)} trending products")
             
-            # 🔥 DYNAMIC PARENT DETECTION from OpenSearch data
-            # Logic: A category is a REAL parent if it has at least N distinct sub-categories.
-            # This auto-adapts to your store — no hardcoded list.
-            parents_with_children = {}  # {parent: set of distinct children}
-            
-            # 🔥 STRICT TOP-LEVEL PARENT LOGIC
-            # Only aggregate using the absolute top-level parent category (index 0).
-            
+            # 🔥 STEP 1: IDENTIFY ALL SUB-CATEGORIES
+            # If a category EVER appears at index 1 or higher in any product's array, 
+            # we know it is a sub-category and should NEVER be shown as a main category.
+            known_subcategories = set()
+            for hit in hits:
+                cats = hit.get("_source", {}).get("category", [])
+                if isinstance(cats, list) and len(cats) > 1:
+                    for child in cats[1:]:
+                        if child:
+                            known_subcategories.add(str(child).strip())
+
             # 🔥 Exclude known non-categories (suppliers, store names)
             FORCE_EXCLUDE = {
                 "Amazon", "Best Buy", "Walmart", "Target",
@@ -679,7 +682,7 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             
             category_scores = {}      # {cat_name: total_score}
             category_counts = {}      # {cat_name: product_count}
-            category_candidates = {}  # {cat_name: [(score, image, cat_array), ...]}
+            category_candidates = {}  # {cat_name: [(score, image), ...]}
             
             for hit in hits:
                 src = hit.get("_source", {})
@@ -696,10 +699,18 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 
                 product_image = _extract_image(src)
                 
-                # 🔥 STRICT RULE: We only ever use the FIRST category in the array as the parent.
-                top_level_cat = str(cats[0]).strip()
+                # 🔥 STEP 2: FIND THIS PRODUCT'S TRUE TOP-LEVEL PARENT
+                # Iterate through its categories and pick the first one that is NOT a known subcategory.
+                top_level_cat = None
+                for c in cats:
+                    if not c:
+                        continue
+                    clean_c = str(c).strip()
+                    if clean_c not in known_subcategories and clean_c not in FORCE_EXCLUDE:
+                        top_level_cat = clean_c
+                        break
                 
-                if not top_level_cat or top_level_cat in FORCE_EXCLUDE:
+                if not top_level_cat:
                     continue
                 
                 category_scores[top_level_cat] = category_scores.get(top_level_cat, 0) + score
@@ -707,40 +718,34 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 
                 if top_level_cat not in category_candidates:
                     category_candidates[top_level_cat] = []
-                category_candidates[top_level_cat].append((score, product_image, cats))
+                category_candidates[top_level_cat].append((score, product_image))
             
             # Sort categories by total score desc, then paginate
             sorted_cats = sorted(category_scores.items(), key=lambda x: x[1], reverse=True)
             paginated = sorted_cats[offset:offset + size]
             
-            # 🔥 ASSIGN UNIQUE IMAGES — track which image URLs we've already used
+            # 🔥 ASSIGN UNIQUE IMAGES
             used_images = set()
             results = []
             
             for cat_name, score in paginated:
                 candidates = category_candidates.get(cat_name, [])
-                # Already-ordered by score (since hits were pre-sorted)
                 
-                # Try to find a candidate whose image hasn't been used yet
                 chosen_image = ""
-                chosen_cats = []
-                for cscore, cimg, ccats in candidates:
+                for cscore, cimg in candidates:
                     if cimg and cimg not in used_images:
                         chosen_image = cimg
-                        chosen_cats = ccats
                         used_images.add(cimg)
                         break
                 
-                # Fallback: if every image was already used for higher-ranked categories,
-                # use the highest-score image even if it's a duplicate (rare edge case)
+                # Fallback: if all images were used, take the best one anyway
                 if not chosen_image:
-                    for cscore, cimg, ccats in candidates:
+                    for cscore, cimg in candidates:
                         if cimg:
                             chosen_image = cimg
-                            chosen_cats = ccats
                             break
                 
-                # 🔥 BUILD URL: always /{parent-slug}/ since we only show parents
+                # 🔥 CLEAN TOP-LEVEL URL (Since it has no parent)
                 url = f"/{_slugify(cat_name)}/"
                 
                 results.append({
