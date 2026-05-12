@@ -667,51 +667,20 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             # This auto-adapts to your store — no hardcoded list.
             parents_with_children = {}  # {parent: set of distinct children}
             
-            for hit in hits:
-                src = hit.get("_source", {})
-                cats = src.get("category", [])
-                if isinstance(cats, str):
-                    cats = [cats]
-                if not isinstance(cats, list) or len(cats) < 2:
-                    continue
-                
-                parent = str(cats[0]).strip()
-                if not parent:
-                    continue
-                
-                # Collect all distinct children under this parent across all products
-                for child in cats[1:]:
-                    if child:
-                        child_clean = str(child).strip()
-                        if child_clean and child_clean != parent:
-                            parents_with_children.setdefault(parent, set()).add(child_clean)
+            # 🔥 STRICT TOP-LEVEL PARENT LOGIC
+            # Only aggregate using the absolute top-level parent category (index 0).
             
-            # 🔥 A category is a "real parent" if it has >= MIN_CHILDREN distinct sub-categories
-            MIN_CHILDREN_FOR_PARENT = 2
-            
-            # 🔥 Also exclude known non-categories (suppliers, store names — safety net)
+            # 🔥 Exclude known non-categories (suppliers, store names)
             FORCE_EXCLUDE = {
                 "Amazon", "Best Buy", "Walmart", "Target",
                 "Best Sellers", "All Products", "New Releases",
                 "Today's Deal", "Outlet Store", "Sale", "Featured"
             }
             
-            ALLOWED_PARENT_CATEGORIES = {
-                parent for parent, kids in parents_with_children.items()
-                if len(kids) >= MIN_CHILDREN_FOR_PARENT and parent not in FORCE_EXCLUDE
-            }
-            
-            logger.info(
-                f"📊 popularcat: dynamically detected {len(ALLOWED_PARENT_CATEGORIES)} parent categories "
-                f"from {len(parents_with_children)} candidates"
-            )
-            
-            # Aggregate by category, tracking ALL candidate products per category
             category_scores = {}      # {cat_name: total_score}
             category_counts = {}      # {cat_name: product_count}
             category_candidates = {}  # {cat_name: [(score, image, cat_array), ...]}
             
-            # 🔥 Aggregate by FIRST category, but ONLY if it's a whitelisted parent
             for hit in hits:
                 src = hit.get("_source", {})
                 if src.get("in_stock") is False:
@@ -719,33 +688,26 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 
                 score = float(src.get("trending_score", 0) or 0)
                 cats = src.get("category", [])
+                
                 if isinstance(cats, str):
                     cats = [cats]
-                if not isinstance(cats, list):
+                if not isinstance(cats, list) or len(cats) == 0:
                     continue
                 
                 product_image = _extract_image(src)
                 
-                # 🔥 Check ALL items in cats — first one that matches a whitelisted parent wins
-                # This catches products where parent isn't at index 0
-                matched_parent = None
-                for c in cats:
-                    if not c:
-                        continue
-                    c_clean = str(c).strip()
-                    if c_clean in ALLOWED_PARENT_CATEGORIES:
-                        matched_parent = c_clean
-                        break  # use the first match
+                # 🔥 STRICT RULE: We only ever use the FIRST category in the array as the parent.
+                top_level_cat = str(cats[0]).strip()
                 
-                if matched_parent:
-                    category_scores[matched_parent] = category_scores.get(matched_parent, 0) + score
-                    category_counts[matched_parent] = category_counts.get(matched_parent, 0) + 1
-                    
-                    if matched_parent not in category_candidates:
-                        category_candidates[matched_parent] = []
-                    category_candidates[matched_parent].append((score, product_image, cats))
-            
-            logger.info(f"📊 popularcat: matched {len(category_scores)} whitelisted parents from {len(hits)} products")
+                if not top_level_cat or top_level_cat in FORCE_EXCLUDE:
+                    continue
+                
+                category_scores[top_level_cat] = category_scores.get(top_level_cat, 0) + score
+                category_counts[top_level_cat] = category_counts.get(top_level_cat, 0) + 1
+                
+                if top_level_cat not in category_candidates:
+                    category_candidates[top_level_cat] = []
+                category_candidates[top_level_cat].append((score, product_image, cats))
             
             # Sort categories by total score desc, then paginate
             sorted_cats = sorted(category_scores.items(), key=lambda x: x[1], reverse=True)
