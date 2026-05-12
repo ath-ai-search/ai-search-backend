@@ -739,13 +739,50 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             bc_url_map = await _get_bc_category_urls()
             
             # 🔥 DYNAMIC PARENT DETECTION from OpenSearch data
+            # A category is a "real parent" only if it has ≥ 2 distinct sub-categories.
+            # Auto-adapts to your store — no hardcoded whitelist.
             
             FORCE_EXCLUDE = {
                 "Amazon", "Best Buy", "Walmart", "Target",
                 "Best Sellers", "All Products", "New Releases",
-                "Today's Deal", "Outlet Store", "Sale", "Featured"
+                "Today's Deal", "Outlet Store", "Sale", "Featured",
+                "Sale Products"
             }
             
+            # ━━━ PASS 1: Build parent→children map to detect true parents ━━━
+            parents_with_children = {}  # {parent: set of distinct children}
+            
+            for hit in hits:
+                src = hit.get("_source", {})
+                cats = src.get("category", [])
+                if isinstance(cats, str):
+                    cats = [cats]
+                if not isinstance(cats, list) or len(cats) < 2:
+                    continue
+                
+                parent = str(cats[0]).strip()
+                if not parent or parent in FORCE_EXCLUDE:
+                    continue
+                
+                for child in cats[1:]:
+                    if child:
+                        child_clean = str(child).strip()
+                        if child_clean and child_clean != parent:
+                            parents_with_children.setdefault(parent, set()).add(child_clean)
+            
+            # A real parent has at least 2 distinct sub-categories
+            MIN_CHILDREN_FOR_PARENT = 2
+            ALLOWED_PARENTS = {
+                parent for parent, kids in parents_with_children.items()
+                if len(kids) >= MIN_CHILDREN_FOR_PARENT
+            }
+            
+            logger.info(
+                f"📊 popularcat: detected {len(ALLOWED_PARENTS)} real parents "
+                f"from {len(parents_with_children)} candidates"
+            )
+            
+            # ━━━ PASS 2: Aggregate scores ONLY for real parents ━━━
             category_scores = {}
             category_counts = {}
             category_candidates = {}
@@ -765,19 +802,23 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 
                 product_image = _extract_image(src)
                 
-                for cat in cats:
-                    if not cat:
+                # 🔥 Find the first category in this product's array that IS a real parent
+                matched_parent = None
+                for c in cats:
+                    if not c:
                         continue
-                    cat = str(cat).strip()
-                    if not cat or cat in FORCE_EXCLUDE:
-                        continue
+                    c_clean = str(c).strip()
+                    if c_clean in ALLOWED_PARENTS:
+                        matched_parent = c_clean
+                        break  # use first match
+                
+                if matched_parent:
+                    category_scores[matched_parent] = category_scores.get(matched_parent, 0) + score
+                    category_counts[matched_parent] = category_counts.get(matched_parent, 0) + 1
                     
-                    category_scores[cat] = category_scores.get(cat, 0) + score
-                    category_counts[cat] = category_counts.get(cat, 0) + 1
-                    
-                    if cat not in category_candidates:
-                        category_candidates[cat] = []
-                    category_candidates[cat].append((score, product_image, cats))
+                    if matched_parent not in category_candidates:
+                        category_candidates[matched_parent] = []
+                    category_candidates[matched_parent].append((score, product_image, cats))
             
             sorted_cats = sorted(category_scores.items(), key=lambda x: x[1], reverse=True)
             paginated = sorted_cats[offset:offset + size]
