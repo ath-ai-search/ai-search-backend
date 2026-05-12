@@ -504,6 +504,116 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             return response
 
         # =====================================================================
+        # 🛍️ API 5: CONTINUE SHOPPING (Merged Pick-Up + Recommendation Grids)
+        # Shows ALL products user touched: saved (cart/wishlist) AND viewed/clicked
+        # Ordered by last interaction time. No duplicates.
+        # =====================================================================
+        elif metric == "continueshop":
+            if not identity: return {"error": "visitor_id required"}
+            
+            # Count anything user has touched (view, click, cart, wishlist)
+            cur.execute("""
+                SELECT COUNT(*) as t 
+                FROM product_metrics 
+                WHERE visitor_id = %s AND (views + clicks + carts + wishlist) > 0
+            """, (identity,))
+            total = cur.fetchone()["t"]
+            
+            # Fetch every interacted product, newest first
+            cur.execute("""
+                SELECT product_id, variant_image, carts, wishlist
+                FROM product_metrics 
+                WHERE visitor_id = %s AND (views + clicks + carts + wishlist) > 0
+                ORDER BY last_seen DESC LIMIT %s OFFSET %s
+            """, (identity, size, offset))
+            user_history = cur.fetchall()
+            
+            user_pids = [r["product_id"] for r in user_history]
+            variant_map = {r["product_id"]: r["variant_image"] for r in user_history if "variant_image" in r and r["variant_image"]}
+            saved_map = {r["product_id"]: ((r.get("carts") or 0) + (r.get("wishlist") or 0)) > 0 for r in user_history}
+            user_results = []
+            
+            # Fetch product details from OpenSearch
+            if user_pids:
+                os_res = os_client.search(
+                    index=INDEX_NAME,
+                    body={"size": len(user_pids), "query": {"terms": {"product_id": user_pids}}}
+                )
+                prod_map = {h["_source"]["product_id"]: parse_os_product(h["_source"]) for h in os_res.get("hits", {}).get("hits", [])}
+                
+                # Preserve user_pids order (newest-touched first)
+                for pid in user_pids:
+                    if pid in prod_map:
+                        prod = prod_map[pid].copy()
+                        
+                        # 🔥 USE THE EXACT IMAGE USER CLICKED (variant_image override)
+                        var_img = variant_map.get(pid)
+                        if var_img and isinstance(var_img, str) and len(var_img) > 10:
+                            if "null" not in var_img.lower() and "undefined" not in var_img.lower():
+                                prod["image"] = var_img
+                                prod["primary_image"] = var_img
+                        
+                        # Tag with reason — UI can use this to show "Saved" vs "Recently Viewed" labels
+                        if saved_map.get(pid):
+                            prod["recommendation_reason"] = "Saved in Cart/Wishlist"
+                        else:
+                            prod["recommendation_reason"] = "Recently Viewed by You"
+                        
+                        user_results.append(prod)
+            
+            # Pad with luxury sale items if user history < requested size
+            padding_needed = size - len(user_results)
+            dynamic_results = []
+            
+            if padding_needed > 0:
+                must_not = [{"terms": {"product_id": user_pids}}] if user_pids else []
+                random_offset = random.randint(0, 25)
+                
+                os_pad_res = os_client.search(
+                    index=INDEX_NAME,
+                    body={
+                        "size": padding_needed,
+                        "from": random_offset,          
+                        "sort": [{"price": "desc"}],
+                        "query": {
+                            "bool": {
+                                "must": [{"match_all": {}}],
+                                "must_not": must_not,
+                                "filter": [
+                                    {"range": {"sale_price": {"gt": 0}}},
+                                    {"range": {"price": {"gte": 100}}},
+                                    {"query_string": {
+                                        "default_field": "category",
+                                        "query": "Fashion OR Kitchen OR Clothing"
+                                    }}
+                                ]
+                            }
+                        }
+                    }
+                )
+                for hit in os_pad_res.get("hits", {}).get("hits", []):
+                    prod = parse_os_product(hit.get("_source", {}))
+                    prod["recommendation_reason"] = "Luxury Deals Just For You"
+                    dynamic_results.append(prod)
+            
+            final_results = user_results + dynamic_results
+            
+            response = {
+                "results": final_results,
+                "total": max(total, len(final_results)),
+                "page": page,
+                "size": size,
+                "metric": metric,
+                "took_ms": round((time.time() - start_time) * 1000, 2),
+                "cached": False
+            }
+            try:
+                await redis_client.setex(cache_key, CACHE_TTL, json.dumps(response))
+            except:
+                pass
+            return response
+
+        # =====================================================================
         # 🔥 API 3: TRENDING (Reads directly from OpenSearch trending_score)
         # Uses pre-computed values in OpenSearch (kept fresh by sync_trending cron)
         # =====================================================================

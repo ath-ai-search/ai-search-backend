@@ -69,3 +69,20 @@ async def recommendation_grids(
 ):
     """Recommendation Grids: Returns the EXACT products the user has both viewed AND clicked."""
     return await get_top_products_by_metric("recommendation-grids", visitor_id, user_id, page, size)
+
+# =========================================================================
+# 5️⃣ CONTINUE SHOPPING (Merged: Pick-Up + Recommendation Grids)
+# =========================================================================
+@router.get("/continueshop")
+async def continue_shopping(
+    visitor_id: str = Query(..., description="Browser UUID (required)"),
+    user_id: str = Query(None, description="Customer ID (if logged in)"),
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100)
+):
+    """
+    Continue Shopping: Merges /pick-up (cart + wishlist) AND /recommendation-grids 
+    (viewed + clicked) into a SINGLE feed. Shows EVERY product user has interacted with.
+    Ordered by most-recently-touched first.
+    """
+    return await get_top_products_by_metric("continueshop", visitor_id, user_id, page, size)
