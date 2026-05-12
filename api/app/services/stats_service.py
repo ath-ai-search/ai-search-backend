@@ -615,9 +615,8 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
 
         # =====================================================================
         # 🏆 API 6: POPULAR CATEGORIES (Global)
-        # Aggregates trending_score per category. Returns:
-        #   - SEO-friendly Absolute URLs (https://venuemarketplace.com/parent/child/)
-        #   - UNIQUE image per category (no duplicates)
+        # STRICTLY TOP-LEVEL CATEGORIES ONLY.
+        # Absolute URLs that will never 404.
         # =====================================================================
         elif metric == "popularcat":
             import re as _re
@@ -658,6 +657,7 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
             
             hits = os_res.get("hits", {}).get("hits", [])
             
+            # Filter out store names and junk
             FORCE_EXCLUDE = {
                 "Amazon", "Best Buy", "Walmart", "Target",
                 "Best Sellers", "All Products", "New Releases",
@@ -683,19 +683,18 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 
                 product_image = _extract_image(src)
                 
-                for cat in cats:
-                    if not cat:
-                        continue
-                    cat = str(cat).strip()
-                    if not cat or cat in FORCE_EXCLUDE:
-                        continue
-                    
-                    category_scores[cat] = category_scores.get(cat, 0) + score
-                    category_counts[cat] = category_counts.get(cat, 0) + 1
-                    
-                    if cat not in category_candidates:
-                        category_candidates[cat] = []
-                    category_candidates[cat].append((score, product_image, cats))
+                # 🔥 STRICT RULE: ONLY USE THE TOP-LEVEL PARENT (index 0)
+                top_level_cat = str(cats[0]).strip()
+                
+                if not top_level_cat or top_level_cat in FORCE_EXCLUDE:
+                    continue
+                
+                category_scores[top_level_cat] = category_scores.get(top_level_cat, 0) + score
+                category_counts[top_level_cat] = category_counts.get(top_level_cat, 0) + 1
+                
+                if top_level_cat not in category_candidates:
+                    category_candidates[top_level_cat] = []
+                category_candidates[top_level_cat].append((score, product_image))
             
             sorted_cats = sorted(category_scores.items(), key=lambda x: x[1], reverse=True)
             paginated = sorted_cats[offset:offset + size]
@@ -707,35 +706,21 @@ async def get_top_products_by_metric(metric: str, visitor_id: str, user_id: str 
                 candidates = category_candidates.get(cat_name, [])
                 
                 chosen_image = ""
-                chosen_cats = []
-                for cscore, cimg, ccats in candidates:
+                for cscore, cimg in candidates:
                     if cimg and cimg not in used_images:
                         chosen_image = cimg
-                        chosen_cats = ccats
                         used_images.add(cimg)
                         break
                 
                 if not chosen_image:
-                    for cscore, cimg, ccats in candidates:
+                    for cscore, cimg in candidates:
                         if cimg:
                             chosen_image = cimg
-                            chosen_cats = ccats
                             break
                 
-                # 🔥 HIERARCHICAL URL BUILDER
-                path = f"/{_slugify(cat_name)}/"
-                if chosen_cats:
-                    try:
-                        idx = chosen_cats.index(cat_name)
-                        if idx > 0:
-                            parent = chosen_cats[idx - 1]
-                            path = f"/{_slugify(parent)}/{_slugify(cat_name)}/"
-                    except ValueError:
-                        pass
-                
-                # 🔥 FULL ABSOLUTE URL
+                # 🔥 ABSOLUTE FLAT URL (Will never 404 for top-level categories)
                 base_domain = "https://venuemarketplace.com"
-                absolute_url = f"{base_domain}{path}"
+                absolute_url = f"{base_domain}/{_slugify(cat_name)}/"
                 
                 results.append({
                     "category": cat_name,
