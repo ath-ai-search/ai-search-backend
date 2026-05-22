@@ -349,7 +349,7 @@ async def execute_search(request: SearchRequest) -> dict:
     semantic_shoulds = []
     if vector:
         # 🔥 Bigger candidate pool — more options to filter through
-        k_val = min(max(KNN_MIN_K, from_val + request.page_size + 200), MAX_OS_WINDOW, 500)
+        k_val = min(max(KNN_MIN_K, from_val + request.page_size + KNN_BUFFER), MAX_OS_WINDOW, 300)
         # 🔥 Boost KNN based on query length
         # Short queries (1-5 words): KNN OFF (rely on keyword matching for precision)
         # Long queries (6+ words): KNN ON (need semantic understanding)
@@ -415,7 +415,7 @@ async def execute_search(request: SearchRequest) -> dict:
                         "type": "cross_fields",
                         # 🔥 Very lenient — just need 1 word match (Amazon-style)
                         # We'll filter off-topic products via dynamic guard later
-                        "minimum_should_match": "1"
+                        "minimum_should_match": "2<-1 5<-2"
                     }
                 })
             
@@ -640,7 +640,7 @@ async def execute_search(request: SearchRequest) -> dict:
         # Example: "iphone 11 white" → top 5 are iPhones → category words: phones, cell, apple, iphone
         # Then any product whose category doesn't overlap with these = OFF-TOPIC = banish
         top_results_categories = []
-        for r in results[:5]:  # 🔥 Top 5 for better signal
+        for r in results[:10]:  # 🔥 Top 10 for reliable signal
             for cat in r.get("category", []):
                 if cat:
                     cat_clean = str(cat).strip().lower()
@@ -659,7 +659,7 @@ async def execute_search(request: SearchRequest) -> dict:
         # 🔥 STRICTER: Any word appearing in ≥2 of top 3 products is dominant
         dominant_category_words = set()
         for word, count in category_word_counts.most_common():
-            if count >= 2:  # appears in at least 2 of top 3
+            if count >= 3:  # appears in at least 3 of top 10
                 dominant_category_words.add(word)
         
         # 🔥 STRONGER: Always add query intent words FIRST — they're the most reliable signal
