@@ -86,18 +86,51 @@ async def correct_query_typos(query: str, aggressive: bool = False) -> tuple:
             
             if options and options[0].get("score", 0) > threshold:
                 # 🔥 SMART CORRECTION SELECTION
-                # Among all suggestions, PREFER ones where original is a PREFIX.
-                # E.g. "leath" → "leather" (prefix extension) beats "leath" → "leash" (letter change)
-                # This handles partial-word typos better.
+                # Among ALL suggestions, PREFER ones where original is a PREFIX.
+                # E.g. "leath" → "leather" (prefix) beats "leath" → "leash" (1-char change)
+                # E.g. "macb" → "macbook" (prefix) beats "macb" → "maca" (1-char change)
                 best_suggestion = options[0]["text"]
                 
-                # Look for prefix matches in the options (top 5)
-                for opt in options[:5]:
+                # Look for prefix matches across ALL options (not just top 5)
+                # Choose the LONGEST prefix-extension (most informative)
+                prefix_matches = []
+                for opt in options:
                     opt_text = opt.get("text", "")
-                    # If original is a prefix of the suggestion, prefer it
                     if opt_text.startswith(original_word) and len(opt_text) > len(original_word):
-                        best_suggestion = opt_text
-                        break
+                        prefix_matches.append((opt_text, opt.get("score", 0)))
+                
+                if prefix_matches:
+                    # Sort by score descending, then by length descending
+                    prefix_matches.sort(key=lambda x: (-x[1], -len(x[0])))
+                    best_suggestion = prefix_matches[0][0]
+                else:
+                    # 🔥 Fallback: direct prefix search in catalog
+                    # If suggester didn't return a prefix match, search catalog directly
+                    # for words starting with the original word
+                    if len(original_word) >= 3:
+                        try:
+                            prefix_resp = os_client.search(
+                                index=INDEX_NAME,
+                                body={
+                                    "size": 1,
+                                    "query": {
+                                        "match_phrase_prefix": {
+                                            "name": {"query": original_word, "max_expansions": 50}
+                                        }
+                                    }
+                                }
+                            )
+                            top_hit = prefix_resp.get("hits", {}).get("hits", [])
+                            if top_hit:
+                                # Extract the catalog word that starts with our prefix
+                                top_name = top_hit[0].get("_source", {}).get("name", "").lower()
+                                for w in top_name.split():
+                                    w_clean = ''.join(c for c in w if c.isalnum()).lower()
+                                    if w_clean.startswith(original_word) and len(w_clean) > len(original_word):
+                                        best_suggestion = w_clean
+                                        break
+                        except Exception:
+                            pass
                 
                 # 🔥 SAFETY CHECK: Don't correct if original word actually exists in catalog
                 # This prevents "linger" → "longer" when "linger" matches real products
