@@ -414,14 +414,12 @@ async def execute_search(request: SearchRequest) -> dict:
                         "query": item,
                         "fields": ["name^10", "category^10", "brand^3"], 
                         "type": "cross_fields",
-                        # 🔥 BALANCED for Amazon-style results:
-                        # 1 word  → 1 match (100%)
-                        # 2 words → 2 matches (100%)
-                        # 3-4 words → 2 matches (66%)
-                        # 5+ words → 3 matches (60%)
-                        # Lenient enough to fill the page with similar products,
-                        # strict enough to exclude pure noise.
-                        "minimum_should_match": "3<-1 6<-2"
+                        # 🔥 VERY LENIENT — Amazon-style, get LOTS of candidates
+                        # Dynamic guard removes the off-topic ones afterwards.
+                        # 1 word → 1 match
+                        # 2 words → 1 match (50%)
+                        # 3+ words → 2 matches (need ≥2 query words in product)
+                        "minimum_should_match": "1<2"
                     }
                 })            
             # 3. CONVERSATIONAL AI MODE (6+ words)
@@ -746,50 +744,45 @@ async def execute_search(request: SearchRequest) -> dict:
                 category_overlap = dominant_category_words & product_cat_words
                 name_overlap = dominant_category_words & product_name_words
                 
-                # 🎯 SMART ACCESSORY DETECTION (Amazon-style)
-                # Detect if this product's CATEGORY is accessory-type
-                # Universal e-commerce categories (not product-specific):
-                accessory_indicators = {
-                    "accessories", "cases", "covers", "chargers", "cables", 
-                    "headphones", "earbuds", "earphones", "adapters", "adapter",
-                    "protectors", "stands", "mounts", "holsters", "sleeves",
-                    "keyboard", "trackpad", "mouse", "dock", "hub", "stylus",
-                    "screen", "skins", "wraps", "lanyards", "straps"
-                }
+                # 🎯 100% DYNAMIC accessory detection
+                # An "accessory" is a product whose CATEGORY doesn't match the dominant
+                # category of top results, but its NAME mentions the same brand/model.
+                # Example: iMangoo Headphones — category="Headphones" (different from iPhone categories)
+                # but name has "iphone" (same brand). Detected as accessory dynamically.
+                # 
+                # NO hardcoded lists. Uses the catalog's own category hierarchy.
                 
-                # Build accessory check from CATEGORY field (most reliable signal)
-                product_cat_str = " ".join(str(c).lower() for c in r.get("category", []))
-                is_accessory_category = any(ind in product_cat_str for ind in accessory_indicators)
+                is_likely_accessory = (
+                    len(product_cat_words) > 0 and       # has a real category
+                    len(category_overlap) == 0 and       # but doesn't match dominant
+                    len(name_overlap) >= 1               # name has some query words (mentions brand/model)
+                )
                 
-                # Check if user asked for an accessory
-                query_str = " ".join(query_intent_words)
-                user_wants_accessory = any(ind in query_str for ind in accessory_indicators)
-                
-                # 🔻 RULE 1: ACCESSORY but user didn't ask → BANISH (full strength)
-                # If user searches "iphone 14 plus midnight" → headphones/cases should disappear
-                # If user searches "iphone case" → cases stay (user asked!)
-                if is_accessory_category and not user_wants_accessory:
+                # 🔻 RULE 1: ACCESSORY (off-category but name mentions product) → BANISH
+                # iPhone search → headphones/cases/cables disappear (different category)
+                # User explicitly asking accessory still works (query intent gets matched in name)
+                if is_likely_accessory:
                     combined_score -= 100000.0
                     logger.info(
                         f"🔻 BANISH ACCESSORY: '{r.get('name','')[:40]}' "
-                        f"| cat={list(product_cat_words)[:3]}"
+                        f"| cat={list(product_cat_words)[:3]} "
+                        f"| not in dominant: {sorted(dominant_category_words)[:5]}"
                     )
-                # 🔻 RULE 2: NO category AND weak name match → BANISH (off-topic)
+                # 🔻 RULE 2: NO category AND weak name match → BANISH (completely off-topic)
                 elif not category_overlap and len(name_overlap) < 2:
                     combined_score -= 100000.0
                     logger.info(
                         f"🔻 BANISH OFF-TOPIC: '{r.get('name','')[:40]}' "
                         f"| weak overlap"
                     )
-                # 🔥 RULE 3: Strong name overlap but no category (iPhones with category=Amazon)
-                # → BIG boost based on how many query words matched
+                # 🔥 RULE 3: Strong name overlap (no category, but name has 2+ query words)
+                # E.g. iPhone variants with category="Amazon" filtered out but name="Apple iPhone 11 White"
                 elif not category_overlap and len(name_overlap) >= 2:
-                    # Tiered boost based on match strength
                     combined_score += 1000.0 + (query_match_ratio * 5000.0)
-                # 🔥 RULE 4: Strong category match → bonus
+                # 🔥 RULE 4: Strong category match (≥2 dominant words in category) → bonus
                 elif len(category_overlap) >= 2:
                     combined_score += 500.0 + (query_match_ratio * 2000.0)
-                # 🔥 RULE 5: Weak category match
+                # 🔥 RULE 5: Weak category match (1 word)
                 elif len(category_overlap) == 1 and len(dominant_category_words) >= 3:
                     if query_match_ratio < 0.5:
                         combined_score -= 20000.0
