@@ -746,56 +746,55 @@ async def execute_search(request: SearchRequest) -> dict:
                 category_overlap = dominant_category_words & product_cat_words
                 name_overlap = dominant_category_words & product_name_words
                 
-                # 🔍 Detect if this product is an ACCESSORY (different category than main product)
-                # Accessories have "cases", "accessories", "covers", "chargers" in category
-                # But for an iPhone search, dominant categories are "phones", "cell", etc.
-                # So accessories will have category_overlap = 0 or very low
-                is_likely_accessory = (
-                    len(product_cat_words) > 0 and  # has a category
-                    len(category_overlap) == 0  # but no overlap with dominant
-                )
+                # 🎯 SMART ACCESSORY DETECTION (Amazon-style)
+                # Detect if this product's CATEGORY is accessory-type
+                # Universal e-commerce categories (not product-specific):
+                accessory_indicators = {
+                    "accessories", "cases", "covers", "chargers", "cables", 
+                    "headphones", "earbuds", "earphones", "adapters", "adapter",
+                    "protectors", "stands", "mounts", "holsters", "sleeves",
+                    "keyboard", "trackpad", "mouse", "dock", "hub", "stylus",
+                    "screen", "skins", "wraps", "lanyards", "straps"
+                }
                 
-                # 🔥 RULE 1: NO category AND weak name match → BANISH (totally unrelated)
-                if not category_overlap and len(name_overlap) < 2:
+                # Build accessory check from CATEGORY field (most reliable signal)
+                product_cat_str = " ".join(str(c).lower() for c in r.get("category", []))
+                is_accessory_category = any(ind in product_cat_str for ind in accessory_indicators)
+                
+                # Check if user asked for an accessory
+                query_str = " ".join(query_intent_words)
+                user_wants_accessory = any(ind in query_str for ind in accessory_indicators)
+                
+                # 🔻 RULE 1: ACCESSORY but user didn't ask → BANISH (full strength)
+                # If user searches "iphone 14 plus midnight" → headphones/cases should disappear
+                # If user searches "iphone case" → cases stay (user asked!)
+                if is_accessory_category and not user_wants_accessory:
                     combined_score -= 100000.0
                     logger.info(
-                        f"🔻 BANISH: '{r.get('name','')[:40]}' "
-                        f"| cat={list(product_cat_words)[:3]} "
-                        f"| weak name={list(name_overlap)[:3]}"
+                        f"🔻 BANISH ACCESSORY: '{r.get('name','')[:40]}' "
+                        f"| cat={list(product_cat_words)[:3]}"
                     )
-                # 🔥 RULE 2: ACCESSORY (no category match but has product brand/model words) → DEMOTE
-                # Example: OtterBox case for iPhone 14 has name overlap (iphone, 14, plus)
-                # But category is "Cases" not "Phones" → this is an accessory, demote it
-                elif is_likely_accessory and len(name_overlap) >= 1:
-                    combined_score -= 30000.0  # 🔥 Strong demote so main products rank above
+                # 🔻 RULE 2: NO category AND weak name match → BANISH (off-topic)
+                elif not category_overlap and len(name_overlap) < 2:
+                    combined_score -= 100000.0
                     logger.info(
-                        f"⬇️ ACCESSORY: '{r.get('name','')[:40]}' "
-                        f"| cat={list(product_cat_words)[:3]} "
-                        f"| name_match={len(name_overlap)}"
+                        f"🔻 BANISH OFF-TOPIC: '{r.get('name','')[:40]}' "
+                        f"| weak overlap"
                     )
-                # 🔥 RULE 3: Weak match (1 category word out of many)
-                elif len(category_overlap) == 1 and len(dominant_category_words) >= 3:
-                    # If category contains accessory words AND query doesn't have those → demote hard
-                    accessory_indicators = {"accessories", "cases", "covers", "chargers", "cables", 
-                                            "headphones", "earbuds", "earphones", "adapters",
-                                            "screen", "protectors", "stands", "mounts", "holsters"}
-                    has_accessory_category = bool(product_cat_words & accessory_indicators)
-                    query_has_accessory_intent = bool(query_intent_words & accessory_indicators)
-                    
-                    if has_accessory_category and not query_has_accessory_intent:
-                        # Product is an accessory but user didn't ask for one → big demote
-                        combined_score -= 30000.0
-                        logger.info(
-                            f"⬇️ ACCESSORY-CAT: '{r.get('name','')[:40]}' "
-                            f"| cat has accessory words: {list(product_cat_words & accessory_indicators)}"
-                        )
-                    elif query_match_ratio < 0.5:
-                        combined_score -= 20000.0
-                    else:
-                        combined_score -= 5000.0
+                # 🔥 RULE 3: Strong name overlap but no category (iPhones with category=Amazon)
+                # → BIG boost based on how many query words matched
+                elif not category_overlap and len(name_overlap) >= 2:
+                    # Tiered boost based on match strength
+                    combined_score += 1000.0 + (query_match_ratio * 5000.0)
                 # 🔥 RULE 4: Strong category match → bonus
                 elif len(category_overlap) >= 2:
-                    combined_score += 500.0
+                    combined_score += 500.0 + (query_match_ratio * 2000.0)
+                # 🔥 RULE 5: Weak category match
+                elif len(category_overlap) == 1 and len(dominant_category_words) >= 3:
+                    if query_match_ratio < 0.5:
+                        combined_score -= 20000.0
+                    else:
+                        combined_score += (query_match_ratio * 1000.0)
             
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
