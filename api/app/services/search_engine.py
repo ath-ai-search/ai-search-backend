@@ -60,10 +60,10 @@ async def correct_query_typos(query: str) -> tuple:
                         "text": query,
                         "term": {
                             "field": "name",
-                            "suggest_mode": "missing",   # 🔥 CHANGED: only suggest if word is NOT in index
-                            "min_word_length": 4,        # 🔥 Increased — don't correct short words
-                            "max_edits": 1,              # 🔥 Reduced — only 1 letter changes (safer)
-                            "prefix_length": 2           # 🔥 Increased — first 2 letters must match
+                            "suggest_mode": "missing",   # only suggest for words NOT in catalog
+                            "min_word_length": 4,        # don't correct short words like "11", "14"
+                            "max_edits": 2,              # 🔥 Back to 2 — needed for typos like "ihpone" → "iphone"
+                            "prefix_length": 1           # 🔥 Back to 1 — first letter must match
                         }
                     }
                 }
@@ -78,13 +78,10 @@ async def correct_query_typos(query: str) -> tuple:
             original_word = word_data.get("text", "")
             options = word_data.get("options", [])
             
-            # 🔥 Only accept correction if HIGH confidence (>0.85, was 0.7)
-            # AND the suggested word is significantly different (not just a casing match)
-            if options and options[0].get("score", 0) > 0.85:
+            if options and options[0].get("score", 0) > 0.7:
                 corrected_words.append(options[0]["text"])
                 has_correction = True
             else:
-                # Keep original word
                 corrected_words.append(original_word)
         
         if has_correction:
@@ -417,13 +414,14 @@ async def execute_search(request: SearchRequest) -> dict:
                         "query": item,
                         "fields": ["name^10", "category^10", "brand^3"], 
                         "type": "cross_fields",
-                        # 🔥 STRICTER: keep candidate pool focused
-                        # 1 word → 1 (100%)
-                        # 2 words → 2 (100%)
-                        # 3 words → 2 (66%)
-                        # 4 words → 3 (75%)
-                        # 5+ words → 3 (60%)
-                        "minimum_should_match": "3<-1"
+                        # 🔥 BALANCED for Amazon-style results:
+                        # 1 word  → 1 match (100%)
+                        # 2 words → 2 matches (100%)
+                        # 3-4 words → 2 matches (66%)
+                        # 5+ words → 3 matches (60%)
+                        # Lenient enough to fill the page with similar products,
+                        # strict enough to exclude pure noise.
+                        "minimum_should_match": "3<-1 6<-2"
                     }
                 })            
             # 3. CONVERSATIONAL AI MODE (6+ words)
@@ -726,14 +724,7 @@ async def execute_search(request: SearchRequest) -> dict:
             query_match_count = len(query_intent_words & product_name_words)
             query_match_ratio = query_match_count / len(query_intent_words) if query_intent_words else 0
             
-            # 🔬 DEBUG: Log products that SHOULD be exact match but aren't
-            if query_match_ratio >= 0.75 and "starlight" in r.get("name", "").lower():
-                logger.info(
-                    f"🔬 DEBUG: '{r.get('name','')[:50]}' "
-                    f"| query_words={sorted(query_intent_words)} "
-                    f"| name_words={sorted(product_name_words)[:15]} "
-                    f"| match_count={query_match_count}/{len(query_intent_words)}"
-                )
+            # Debug log removed — was for troubleshooting Starlight tokenization
             
             # 🎯 RULE 0: EXACT PRODUCT MATCH → GUARANTEED #1
             # OVERRIDES raw_anchor: sets score to 1,000,000+ so exact matches ALWAYS beat
