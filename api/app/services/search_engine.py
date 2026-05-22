@@ -413,13 +413,13 @@ async def execute_search(request: SearchRequest) -> dict:
                         "query": item,
                         "fields": ["name^10", "category^10", "brand^3"], 
                         "type": "cross_fields",
-                        # 🔥 BALANCED:
-                        # 1 word → 1 match (100%)
-                        # 2 words → 2 matches (100%)
-                        # 3 words → 2 matches (66%)
-                        # 4-5 words → 3 matches
-                        # Filters out junk like jeans matching just "Plus" alone
-                        "minimum_should_match": "3<-1 5<-2"
+                        # 🔥 STRICTER: keep candidate pool focused
+                        # 1 word → 1 (100%)
+                        # 2 words → 2 (100%)
+                        # 3 words → 2 (66%)
+                        # 4 words → 3 (75%)
+                        # 5+ words → 3 (60%)
+                        "minimum_should_match": "3<-1"
                     }
                 })            
             # 3. CONVERSATIONAL AI MODE (6+ words)
@@ -722,6 +722,15 @@ async def execute_search(request: SearchRequest) -> dict:
             query_match_count = len(query_intent_words & product_name_words)
             query_match_ratio = query_match_count / len(query_intent_words) if query_intent_words else 0
             
+            # 🔬 DEBUG: Log products that SHOULD be exact match but aren't
+            if query_match_ratio >= 0.75 and "starlight" in r.get("name", "").lower():
+                logger.info(
+                    f"🔬 DEBUG: '{r.get('name','')[:50]}' "
+                    f"| query_words={sorted(query_intent_words)} "
+                    f"| name_words={sorted(product_name_words)[:15]} "
+                    f"| match_count={query_match_count}/{len(query_intent_words)}"
+                )
+            
             # 🎯 RULE 0: EXACT PRODUCT MATCH → GUARANTEED #1
             # OVERRIDES raw_anchor: sets score to 1,000,000+ so exact matches ALWAYS beat
             # any OpenSearch boost (which can reach 50k-100k for accessories).
@@ -735,42 +744,8 @@ async def execute_search(request: SearchRequest) -> dict:
                     f"🎯 EXACT #1: '{r.get('name','')[:40]}' "
                     f"| matches all: {sorted(query_intent_words)[:6]}"
                 )
-            # 🎯 RULE 0.5: HIGH MATCH (≥75%) but missing 1 word → strong boost
-            # E.g. "iphone 14 plus starlight" but product name doesn't have "14" 
-            # → still rank high (it's the right product family)
-            elif query_match_ratio >= 0.75 and len(query_intent_words) >= 3:
-                combined_score = 500_000.0 + raw_anchor
-                logger.info(
-                    f"🎯 STRONG MATCH (75%): '{r.get('name','')[:40]}' "
-                    f"| ratio={query_match_ratio:.2f}"
-                )
-            # 🎯 RULE 0.5: HIGH MATCH (≥75%) but missing 1 word → strong boost
-            # E.g. "iphone 14 plus starlight" but product name doesn't have "14" 
-            # → still rank high (it's the right product family)
-            elif query_match_ratio >= 0.75 and len(query_intent_words) >= 3:
-                combined_score = 500_000.0 + raw_anchor
-                logger.info(
-                    f"🎯 STRONG MATCH (75%): '{r.get('name','')[:40]}' "
-                    f"| ratio={query_match_ratio:.2f}"
-                )
-            # 🎯 RULE 0.5: HIGH MATCH (≥75%) but missing 1 word → strong boost
-            # E.g. "iphone 14 plus starlight" but product name doesn't have "14" 
-            # → still rank high (it's the right product family)
-            elif query_match_ratio >= 0.75 and len(query_intent_words) >= 3:
-                combined_score = 500_000.0 + raw_anchor
-                logger.info(
-                    f"🎯 STRONG MATCH (75%): '{r.get('name','')[:40]}' "
-                    f"| ratio={query_match_ratio:.2f}"
-                )
-            # 🎯 RULE 0.5: HIGH MATCH (≥75%) but missing 1 word → strong boost
-            # E.g. "iphone 14 plus starlight" but product name doesn't have "14" 
-            # → still rank high (it's the right product family)
-            elif query_match_ratio >= 0.75 and len(query_intent_words) >= 3:
-                combined_score = 500_000.0 + raw_anchor
-                logger.info(
-                    f"🎯 STRONG MATCH (75%): '{r.get('name','')[:40]}' "
-                    f"| ratio={query_match_ratio:.2f}"
-                )
+            # (No 75% rule — only TRUE exact match (100%) gets the massive boost.
+            # This prevents accessories like cases from ranking above the actual product.)
             
             if not is_exact_match and dominant_category_words:
                 category_overlap = dominant_category_words & product_cat_words
