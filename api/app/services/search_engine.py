@@ -766,16 +766,30 @@ async def execute_search(request: SearchRequest) -> dict:
                 # 🔥 RULE 2: ACCESSORY (no category match but has product brand/model words) → DEMOTE
                 # Example: OtterBox case for iPhone 14 has name overlap (iphone, 14, plus)
                 # But category is "Cases" not "Phones" → this is an accessory, demote it
-                elif is_likely_accessory and len(name_overlap) >= 2:
-                    combined_score -= 30000.0  # 🔥 Strong demote so iPhones rank above
+                elif is_likely_accessory and len(name_overlap) >= 1:
+                    combined_score -= 30000.0  # 🔥 Strong demote so main products rank above
                     logger.info(
                         f"⬇️ ACCESSORY: '{r.get('name','')[:40]}' "
                         f"| cat={list(product_cat_words)[:3]} "
                         f"| name_match={len(name_overlap)}"
                     )
-                # 🔥 RULE 3: Weak match
+                # 🔥 RULE 3: Weak match (1 category word out of many)
                 elif len(category_overlap) == 1 and len(dominant_category_words) >= 3:
-                    if query_match_ratio < 0.5:
+                    # If category contains accessory words AND query doesn't have those → demote hard
+                    accessory_indicators = {"accessories", "cases", "covers", "chargers", "cables", 
+                                            "headphones", "earbuds", "earphones", "adapters",
+                                            "screen", "protectors", "stands", "mounts", "holsters"}
+                    has_accessory_category = bool(product_cat_words & accessory_indicators)
+                    query_has_accessory_intent = bool(query_intent_words & accessory_indicators)
+                    
+                    if has_accessory_category and not query_has_accessory_intent:
+                        # Product is an accessory but user didn't ask for one → big demote
+                        combined_score -= 30000.0
+                        logger.info(
+                            f"⬇️ ACCESSORY-CAT: '{r.get('name','')[:40]}' "
+                            f"| cat has accessory words: {list(product_cat_words & accessory_indicators)}"
+                        )
+                    elif query_match_ratio < 0.5:
                         combined_score -= 20000.0
                     else:
                         combined_score -= 5000.0
