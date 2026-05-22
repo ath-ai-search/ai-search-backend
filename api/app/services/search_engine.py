@@ -605,7 +605,7 @@ async def execute_search(request: SearchRequest) -> dict:
         import re as _re
         from collections import Counter
         
-        logger.info(f"🔧 Re-ranking {len(results)} results with category guard...")
+        logger.debug(f"🔧 Re-ranking {len(results)} results with category guard...")
         product_ids = [r["id"] for r in results if r.get("id")]
         trending_scores = get_trending_scores(product_ids)
         
