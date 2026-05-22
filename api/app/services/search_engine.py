@@ -239,38 +239,8 @@ async def execute_search(request: SearchRequest) -> dict:
         
         logger.info(f"🚻 Auto-detected gender: {gender_label} (from query: '{query_text}')")
     
-    # 🎨 AUTO-DETECT COLOR FROM QUERY (universal fix)
-    # When user types "red", "blue", "white" etc. → make it a SOFT-REQUIRED match
-    # Color must appear somewhere in product (name, color field, or attributes)
-    COMMON_COLORS = {
-        "red", "blue", "green", "black", "white", "yellow", "orange", "purple",
-        "pink", "brown", "gray", "grey", "silver", "gold", "beige", "tan",
-        "navy", "maroon", "ivory", "cream", "teal", "violet", "indigo", "khaki",
-        "burgundy", "turquoise", "magenta", "coral", "olive", "rose"
-    }
-    
-    detected_colors = [w for w in query_tokens if w in COMMON_COLORS]
-    
-    if detected_colors:
-        # Build a SHOULD filter that REQUIRES at least one color match
-        # Check across name, color, colors, attributes
-        color_required_shoulds = []
-        for color in detected_colors:
-            color_required_shoulds.extend([
-                {"match": {"name": color}},
-                {"match": {"color": color}},
-                {"match": {"colors": color}},
-                {"match": {"attributes.color": color}},
-                {"match": {"attributes.Color": color}},
-            ])
-        # Add to filters — at least ONE color clause must match
-        filters.append({
-            "bool": {
-                "should": color_required_shoulds,
-                "minimum_should_match": 1
-            }
-        })
-        logger.info(f"🎨 Auto-detected color filter: {detected_colors}")
+    # Color detection is handled DYNAMICALLY by OpenSearch boost on color/colors/attributes 
+    # fields in semantic_shoulds. No hardcoded list needed — works for ANY color in any language.
     
     if matrix["min_price"] is not None or matrix["max_price"] is not None:
         price_range = {}
@@ -403,13 +373,14 @@ async def execute_search(request: SearchRequest) -> dict:
             {"match_phrase": {"brand": {"query": item, "boost": BOOST_BRAND_PHRASE}}},
             {"match": {"category": {"query": item, "boost": BOOST_CATEGORY_MATCH}}},
             
-            # 🎨 COLOR ATTRIBUTE BOOST (handles BigCommerce variant colors)
-            # If "white" is in query and product has attributes.Color = "White", boost it.
-            # Uses SEPARATE clauses (not cross_fields) so single-word color matches still work.
-            {"match": {"color": {"query": item, "boost": 30.0}}},
-            {"match": {"colors": {"query": item, "boost": 30.0}}},
-            {"match": {"attributes.color": {"query": item, "boost": 30.0}}},
-            {"match": {"attributes.Color": {"query": item, "boost": 30.0}}},
+            # 🎨 DYNAMIC COLOR/ATTRIBUTE BOOST (Amazon-style)
+            # OpenSearch automatically matches color from query to product's color/colors fields.
+            # No hardcoded color list — if catalog has the color, it matches. Works for ANY color.
+            # Matching products rank at TOP, non-matching still appear below (similar products).
+            {"match": {"color": {"query": item, "boost": 200.0}}},
+            {"match": {"colors": {"query": item, "boost": 200.0}}},
+            {"match": {"attributes.color": {"query": item, "boost": 200.0}}},
+            {"match": {"attributes.Color": {"query": item, "boost": 200.0}}},
             
             # 🔥 STRICT MATCH (all words must appear across main fields)
             {"multi_match": {"query": item, "fields": ["name^10", "brand^5", "category^3"], "type": "cross_fields", "minimum_should_match": "80%", "boost": 80.0}},
@@ -439,11 +410,11 @@ async def execute_search(request: SearchRequest) -> dict:
                 must_clauses.append({
                     "multi_match": {
                         "query": item,
-                        # 🎯 Higher category weight so product type wins over adjectives
-                        # "red dresses for men" → "dresses" must match category, not just "red" in name
                         "fields": ["name^10", "category^10", "brand^3"], 
                         "type": "cross_fields",
-                        "minimum_should_match": "2<-1 4<60%"  
+                        # 🔥 Amazon-style: lenient match so MANY products show
+                        # Color/exact words become BOOSTS not filters
+                        "minimum_should_match": "1<1 3<50%"
                     }
                 })
             
@@ -772,22 +743,9 @@ async def execute_search(request: SearchRequest) -> dict:
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
         
-        # Sort by final structured relevance tiers (HIGHEST combined_score FIRST)
+        # Sort by combined_score — banished products sink to bottom but stay visible
+        # Amazon-style: exact match first, similar products fill the page
         results.sort(key=lambda x: x.get("combined_score", 0), reverse=True)
-        
-        # 🚫 REMOVE BANISHED PRODUCTS — they had no category overlap with user's query intent
-        # Banished products have combined_score < -10000 (penalty was -100000)
-        original_count = len(results)
-        results = [r for r in results if r.get("combined_score", 0) > -10000]
-        banished_count = original_count - len(results)
-        
-        if banished_count > 0:
-            logger.info(f"🚫 Removed {banished_count} off-topic products from results")
-            # Adjust total_hits so pagination/UI shows correct number
-            total_hits = max(0, total_hits - banished_count)
-            # Recompute total_pages too
-            raw_total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
-            total_pages = min(raw_total_pages, max_safe_page)
         
         for r in results:
             r.pop("combined_score", None)
