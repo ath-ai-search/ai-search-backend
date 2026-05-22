@@ -985,9 +985,6 @@ async def execute_search(request: SearchRequest) -> dict:
                     f"🔻 BANISH OFF-TOPIC: '{r.get('name','')[:40]}' "
                     f"| weak overlap | cat={list(product_cat_words)[:2]}"
                 )
-                            combined_score -= 20000.0
-                        else:
-                            combined_score += (query_match_ratio * 1000.0)
             
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
