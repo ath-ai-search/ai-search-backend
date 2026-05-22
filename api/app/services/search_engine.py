@@ -413,12 +413,13 @@ async def execute_search(request: SearchRequest) -> dict:
                         "query": item,
                         "fields": ["name^10", "category^10", "brand^3"], 
                         "type": "cross_fields",
-                        # 🔥 Lenient — let dynamic guard filter off-topic later
-                        # 1 word → 1 match
-                        # 2 words → 1 match
-                        # 3+ words → 2 matches (allow many missing)
-                        # This gets MORE candidates so we have iPhones in many colors
-                        "minimum_should_match": "3<2"
+                        # 🔥 BALANCED:
+                        # 1 word → 1 match (100%)
+                        # 2 words → 2 matches (100%)
+                        # 3 words → 2 matches (66%)
+                        # 4-5 words → 3 matches
+                        # Filters out junk like jeans matching just "Plus" alone
+                        "minimum_should_match": "3<-1 5<-2"
                     }
                 })            
             # 3. CONVERSATIONAL AI MODE (6+ words)
@@ -690,7 +691,9 @@ async def execute_search(request: SearchRequest) -> dict:
         for r in results:
             raw_anchor = r.pop("_raw_score_anchor", 0)
             trending = trending_scores.get(r["id"], 0)
-            combined_score = raw_anchor + (math.log1p(trending) * 1.5)
+            # 🔥 Trending boost REMOVED from main scoring — was causing exact matches to rank lower
+            # Trending only displayed in the result, not used for ranking
+            combined_score = raw_anchor
             
             # Get product CATEGORY words
             product_cat_words = set()
@@ -732,13 +735,50 @@ async def execute_search(request: SearchRequest) -> dict:
                     f"🎯 EXACT #1: '{r.get('name','')[:40]}' "
                     f"| matches all: {sorted(query_intent_words)[:6]}"
                 )
+            # 🎯 RULE 0.5: HIGH MATCH (≥75%) but missing 1 word → strong boost
+            # E.g. "iphone 14 plus starlight" but product name doesn't have "14" 
+            # → still rank high (it's the right product family)
+            elif query_match_ratio >= 0.75 and len(query_intent_words) >= 3:
+                combined_score = 500_000.0 + raw_anchor
+                logger.info(
+                    f"🎯 STRONG MATCH (75%): '{r.get('name','')[:40]}' "
+                    f"| ratio={query_match_ratio:.2f}"
+                )
+            # 🎯 RULE 0.5: HIGH MATCH (≥75%) but missing 1 word → strong boost
+            # E.g. "iphone 14 plus starlight" but product name doesn't have "14" 
+            # → still rank high (it's the right product family)
+            elif query_match_ratio >= 0.75 and len(query_intent_words) >= 3:
+                combined_score = 500_000.0 + raw_anchor
+                logger.info(
+                    f"🎯 STRONG MATCH (75%): '{r.get('name','')[:40]}' "
+                    f"| ratio={query_match_ratio:.2f}"
+                )
+            # 🎯 RULE 0.5: HIGH MATCH (≥75%) but missing 1 word → strong boost
+            # E.g. "iphone 14 plus starlight" but product name doesn't have "14" 
+            # → still rank high (it's the right product family)
+            elif query_match_ratio >= 0.75 and len(query_intent_words) >= 3:
+                combined_score = 500_000.0 + raw_anchor
+                logger.info(
+                    f"🎯 STRONG MATCH (75%): '{r.get('name','')[:40]}' "
+                    f"| ratio={query_match_ratio:.2f}"
+                )
+            # 🎯 RULE 0.5: HIGH MATCH (≥75%) but missing 1 word → strong boost
+            # E.g. "iphone 14 plus starlight" but product name doesn't have "14" 
+            # → still rank high (it's the right product family)
+            elif query_match_ratio >= 0.75 and len(query_intent_words) >= 3:
+                combined_score = 500_000.0 + raw_anchor
+                logger.info(
+                    f"🎯 STRONG MATCH (75%): '{r.get('name','')[:40]}' "
+                    f"| ratio={query_match_ratio:.2f}"
+                )
             
             if not is_exact_match and dominant_category_words:
                 category_overlap = dominant_category_words & product_cat_words
                 name_overlap = dominant_category_words & product_name_words
                 
                 # 🔥 RULE 1: NO category AND weak name match → BANISH
-                if not category_overlap and len(name_overlap) < 3:
+                # Stricter: require ≥2 name overlap (was <3, now <2 means demote)
+                if not category_overlap and len(name_overlap) < 2:
                     combined_score -= 100000.0
                     logger.info(
                         f"🔻 BANISH: '{r.get('name','')[:40]}' "
