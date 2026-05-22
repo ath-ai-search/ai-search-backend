@@ -406,19 +406,21 @@ async def execute_search(request: SearchRequest) -> dict:
             # 1. Count how many words the user typed
             word_count = len(item.split())
             
-         # 2. STANDARD COMMERCE MODE (1 to 5 words)
+# 2. STANDARD COMMERCE MODE (1 to 5 words)
             if word_count <= 5:
                 must_clauses.append({
                     "multi_match": {
                         "query": item,
                         "fields": ["name^10", "category^10", "brand^3"], 
                         "type": "cross_fields",
-                        # 🔥 Very lenient — just need 1 word match (Amazon-style)
-                        # We'll filter off-topic products via dynamic guard later
-                        "minimum_should_match": "2<-1 5<-2"
+                        # 🔥 Lenient — let dynamic guard filter off-topic later
+                        # 1 word → 1 match
+                        # 2 words → 1 match
+                        # 3+ words → 2 matches (allow many missing)
+                        # This gets MORE candidates so we have iPhones in many colors
+                        "minimum_should_match": "3<2"
                     }
-                })
-            
+                })            
             # 3. CONVERSATIONAL AI MODE (6+ words)
             # If the user types a long sentence like "outfit for a beach wedding in Santorini", 
             # we do NOT add a must_clause. We bypass keyword restrictions completely and 
@@ -656,10 +658,11 @@ async def execute_search(request: SearchRequest) -> dict:
         # Count word frequency
         category_word_counts = Counter(top_results_categories)
         
-        # 🔥 STRICTER: Any word appearing in ≥2 of top 3 products is dominant
+        # 🔥 Word must appear in ≥2 of top 10 to be considered dominant
+        # Lower threshold = catches more dominant signals = better banish
         dominant_category_words = set()
         for word, count in category_word_counts.most_common():
-            if count >= 3:  # appears in at least 3 of top 10
+            if count >= 2:  # appears in at least 2 of top 10
                 dominant_category_words.add(word)
         
         # 🔥 STRONGER: Always add query intent words FIRST — they're the most reliable signal
@@ -706,36 +709,31 @@ async def execute_search(request: SearchRequest) -> dict:
             # Combine for full product signal
             product_all_words = product_cat_words | product_name_words
             
-            # 🔥 STRICT ALIGNMENT CHECK
-            # Multi-layer check: category, name, AND query intent overlap.
+            # 🔥 SMART ALIGNMENT CHECK
+            # Category is preferred signal. But if category is empty/uninformative,
+            # check if NAME has STRONG overlap (≥2 dominant words) — that's also valid.
+            # This handles products with category="Amazon" but name="Apple iPhone 11 White"
             
             if dominant_category_words:
                 category_overlap = dominant_category_words & product_cat_words
                 name_overlap = dominant_category_words & product_name_words
-                full_overlap = dominant_category_words & product_all_words
                 
-                # 🔥 RULE 1: NO category AND NO name overlap → BANISH (totally off-topic)
-                if not category_overlap and not name_overlap:
+                # 🔥 RULE 1: NO category AND weak name match → BANISH
+                # E.g. Cuisinart cookware: name has "white" + "11" (2 words) but category is "Cookware"
+                # If product name needs ≥3 words of overlap to count as iPhone-like
+                if not category_overlap and len(name_overlap) < 3:
                     combined_score -= 100000.0
                     logger.info(
-                        f"🔻 BANISH (no match): '{r.get('name','')[:40]}' "
+                        f"🔻 BANISH: '{r.get('name','')[:40]}' "
                         f"| cat={list(product_cat_words)[:3]} "
-                        f"| no overlap with {sorted(dominant_category_words)[:5]}"
+                        f"| weak name overlap={list(name_overlap)[:3]}"
                     )
-                # 🔥 RULE 2: Only name matches but category is WAY off → demote heavily
-                # Example: "dresses for men" query → product "Red Deodorant for Men" 
-                # Name has "red"+"men" but category is "Fragrance" not "Dresses" → demote
-                elif not category_overlap and name_overlap:
-                    # Check if query has clear product nouns (≥5 chars) — if so, demote hard
-                    product_nouns_in_query = {w for w in query_intent_words if len(w) >= 5}
-                    if product_nouns_in_query and not (product_nouns_in_query & product_all_words):
-                        combined_score -= 50000.0
-                        logger.info(
-                            f"⬇️ DEMOTE (wrong type): '{r.get('name','')[:40]}' "
-                            f"| missing product nouns: {list(product_nouns_in_query)[:3]} "
-                            f"| cat={list(product_cat_words)[:3]}"
-                        )
-                # 🔥 RULE 3: Weak match
+                # 🔥 RULE 2: No category but STRONG name overlap (3+ words) → KEEP
+                # E.g. "Apple iPhone 11 Pro White" — name has apple, iphone, white, pro = 4 words
+                # This is clearly an iPhone even if category is "Amazon"
+                elif not category_overlap and len(name_overlap) >= 3:
+                    combined_score += 1000.0  # Strong name match — promote!
+                # 🔥 RULE 3: Weak category match (1 word) → moderate demote
                 elif len(category_overlap) == 1 and len(dominant_category_words) >= 3:
                     combined_score -= 5000.0
                 # 🔥 RULE 4: Strong category match → bonus
