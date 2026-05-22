@@ -313,23 +313,37 @@ async def execute_search(request: SearchRequest) -> dict:
             "trending_score": 0  
         })
     
-    # 🆕 TRENDING BOOST: Re-rank with popularity from PostgreSQL
+    # 🆕 TRENDING BOOST: Re-rank with popularity from PostgreSQL + Intent Guard
     if request.sort not in ["price_asc", "price_desc"] and results:
         product_ids = [r["id"] for r in results if r.get("id")]
         trending_scores = get_trending_scores(product_ids)
         
+        # Normalize search text to see if the customer is explicitly trying to buy an accessory
+        query_normalized = query_text.lower()
+        user_wants_accessory = any(word in query_normalized for word in ["case", "charger", "cable", "headphones", "earbuds", "glass", "socks", "cover", "mount", "shield", "adapter", "screen protector"])
+        
         for r in results:
-            # Extract our raw anchor score to maintain strict relevance tiers
             raw_anchor = r.pop("_raw_score_anchor", 0)
             trending = trending_scores.get(r["id"], 0)
             
             import math
-            # Using the raw score as the unbreakable foundation allows trending values 
-            # to sort products cleanly within their own relevance tiers without jumping boundaries.
-            r["combined_score"] = raw_anchor + (math.log1p(trending) * 1.5)
+            combined_score = raw_anchor + (math.log1p(trending) * 1.5)
+            
+            # 🔥 INTENT GUARD: If user is searching for a device (no accessory keywords in query), 
+            # prevent cheap/popular accessories from jumping above core hardware variations.
+            if not user_wants_accessory:
+                is_accessory_item = any(
+                    any(acc_word in str(cat).lower() for acc_word in ["accessory", "case", "headphones", "earbuds", "socks", "charger", "cable", "apparel", "glass"])
+                    for cat in r.get("category", [])
+                ) or any(acc_word in r.get("name", "").lower() for acc_word in ["case", "cover", "magsafe", "socks", "headphones", "earbuds", "charger", "cable", "adapter", "screen protector"])
+                
+                if is_accessory_item:
+                    combined_score -= 1000.0  # Drops them safely into a secondary tier below core hardware items
+            
+            r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
         
-        # Sort by combined score (relevance + popularity)
+        # Sort by final structured relevance tiers
         results.sort(key=lambda x: x["combined_score"], reverse=True)
         
         for r in results:
