@@ -746,28 +746,37 @@ async def execute_search(request: SearchRequest) -> dict:
                 category_overlap = dominant_category_words & product_cat_words
                 name_overlap = dominant_category_words & product_name_words
                 
-                # 🔥 RULE 1: NO category AND weak name match → BANISH
-                # Stricter: require ≥2 name overlap (was <3, now <2 means demote)
+                # 🔍 Detect if this product is an ACCESSORY (different category than main product)
+                # Accessories have "cases", "accessories", "covers", "chargers" in category
+                # But for an iPhone search, dominant categories are "phones", "cell", etc.
+                # So accessories will have category_overlap = 0 or very low
+                is_likely_accessory = (
+                    len(product_cat_words) > 0 and  # has a category
+                    len(category_overlap) == 0  # but no overlap with dominant
+                )
+                
+                # 🔥 RULE 1: NO category AND weak name match → BANISH (totally unrelated)
                 if not category_overlap and len(name_overlap) < 2:
                     combined_score -= 100000.0
                     logger.info(
                         f"🔻 BANISH: '{r.get('name','')[:40]}' "
                         f"| cat={list(product_cat_words)[:3]} "
-                        f"| weak name overlap={list(name_overlap)[:3]}"
+                        f"| weak name={list(name_overlap)[:3]}"
                     )
-                # 🔥 RULE 2: No category but STRONG name overlap (3+ words) → KEEP
-                elif not category_overlap and len(name_overlap) >= 3:
-                    combined_score += 1000.0
-                # 🔥 RULE 3: Weak category match → demote (likely accessory/related)
-                # If query_match_ratio is low, this is probably an accessory → bigger demote
+                # 🔥 RULE 2: ACCESSORY (no category match but has product brand/model words) → DEMOTE
+                # Example: OtterBox case for iPhone 14 has name overlap (iphone, 14, plus)
+                # But category is "Cases" not "Phones" → this is an accessory, demote it
+                elif is_likely_accessory and len(name_overlap) >= 2:
+                    combined_score -= 30000.0  # 🔥 Strong demote so iPhones rank above
+                    logger.info(
+                        f"⬇️ ACCESSORY: '{r.get('name','')[:40]}' "
+                        f"| cat={list(product_cat_words)[:3]} "
+                        f"| name_match={len(name_overlap)}"
+                    )
+                # 🔥 RULE 3: Weak match
                 elif len(category_overlap) == 1 and len(dominant_category_words) >= 3:
                     if query_match_ratio < 0.5:
-                        # Low match ratio + weak category = likely accessory → bigger demote
                         combined_score -= 20000.0
-                        logger.info(
-                            f"⬇️ ACCESSORY-LIKE: '{r.get('name','')[:40]}' "
-                            f"| match ratio: {query_match_ratio:.2f}"
-                        )
                     else:
                         combined_score -= 5000.0
                 # 🔥 RULE 4: Strong category match → bonus
