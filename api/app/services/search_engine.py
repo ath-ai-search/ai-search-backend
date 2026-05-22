@@ -730,14 +730,22 @@ async def execute_search(request: SearchRequest) -> dict:
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
         
-        # 🔥 DEBUG: log scores BEFORE sort
-        logger.info(f"📊 BEFORE sort: {[(r.get('name','')[:25], round(r.get('combined_score', 0), 1)) for r in results[:5]]}")
-        
         # Sort by final structured relevance tiers (HIGHEST combined_score FIRST)
         results.sort(key=lambda x: x.get("combined_score", 0), reverse=True)
         
-        # 🔥 DEBUG: log scores AFTER sort
-        logger.info(f"📊 AFTER sort:  {[(r.get('name','')[:25], round(r.get('combined_score', 0), 1)) for r in results[:5]]}")
+        # 🚫 REMOVE BANISHED PRODUCTS — they had no category overlap with user's query intent
+        # Banished products have combined_score < -10000 (penalty was -100000)
+        original_count = len(results)
+        results = [r for r in results if r.get("combined_score", 0) > -10000]
+        banished_count = original_count - len(results)
+        
+        if banished_count > 0:
+            logger.info(f"🚫 Removed {banished_count} off-topic products from results")
+            # Adjust total_hits so pagination/UI shows correct number
+            total_hits = max(0, total_hits - banished_count)
+            # Recompute total_pages too
+            raw_total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
+            total_pages = min(raw_total_pages, max_safe_page)
         
         for r in results:
             r.pop("combined_score", None)
