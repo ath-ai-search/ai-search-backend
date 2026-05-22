@@ -730,8 +730,14 @@ async def execute_search(request: SearchRequest) -> dict:
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
         
-        # Sort by final structured relevance tiers
-        results.sort(key=lambda x: x["combined_score"], reverse=True)
+        # 🔥 DEBUG: log scores BEFORE sort
+        logger.info(f"📊 BEFORE sort: {[(r.get('name','')[:25], round(r.get('combined_score', 0), 1)) for r in results[:5]]}")
+        
+        # Sort by final structured relevance tiers (HIGHEST combined_score FIRST)
+        results.sort(key=lambda x: x.get("combined_score", 0), reverse=True)
+        
+        # 🔥 DEBUG: log scores AFTER sort
+        logger.info(f"📊 AFTER sort:  {[(r.get('name','')[:25], round(r.get('combined_score', 0), 1)) for r in results[:5]]}")
         
         for r in results:
             r.pop("combined_score", None)
