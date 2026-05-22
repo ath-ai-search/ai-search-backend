@@ -714,11 +714,10 @@ async def execute_search(request: SearchRequest) -> dict:
                 # 🔥 RULE 1: NO CATEGORY MATCH → BANISH
                 if not category_overlap:
                     combined_score -= 100000.0  # 🔥 Massive — guaranteed to drop to bottom
-                    logger.info(
+                    logger.debug(
                         f"🔻 BANISH: '{r.get('name','')[:40]}' "
                         f"| cat={list(product_cat_words)[:3]} "
                         f"| no overlap with {sorted(dominant_category_words)[:5]} "
-                        f"| score: {raw_anchor:.1f} → {combined_score:.1f}"
                     )
                 # 🔥 RULE 2: Weak match — 1 word only → moderate demote
                 elif len(category_overlap) == 1 and len(dominant_category_words) >= 3:
