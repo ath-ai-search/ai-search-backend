@@ -239,6 +239,39 @@ async def execute_search(request: SearchRequest) -> dict:
         
         logger.info(f"🚻 Auto-detected gender: {gender_label} (from query: '{query_text}')")
     
+    # 🎨 AUTO-DETECT COLOR FROM QUERY (universal fix)
+    # When user types "red", "blue", "white" etc. → make it a SOFT-REQUIRED match
+    # Color must appear somewhere in product (name, color field, or attributes)
+    COMMON_COLORS = {
+        "red", "blue", "green", "black", "white", "yellow", "orange", "purple",
+        "pink", "brown", "gray", "grey", "silver", "gold", "beige", "tan",
+        "navy", "maroon", "ivory", "cream", "teal", "violet", "indigo", "khaki",
+        "burgundy", "turquoise", "magenta", "coral", "olive", "rose"
+    }
+    
+    detected_colors = [w for w in query_tokens if w in COMMON_COLORS]
+    
+    if detected_colors:
+        # Build a SHOULD filter that REQUIRES at least one color match
+        # Check across name, color, colors, attributes
+        color_required_shoulds = []
+        for color in detected_colors:
+            color_required_shoulds.extend([
+                {"match": {"name": color}},
+                {"match": {"color": color}},
+                {"match": {"colors": color}},
+                {"match": {"attributes.color": color}},
+                {"match": {"attributes.Color": color}},
+            ])
+        # Add to filters — at least ONE color clause must match
+        filters.append({
+            "bool": {
+                "should": color_required_shoulds,
+                "minimum_should_match": 1
+            }
+        })
+        logger.info(f"🎨 Auto-detected color filter: {detected_colors}")
+    
     if matrix["min_price"] is not None or matrix["max_price"] is not None:
         price_range = {}
         if matrix["min_price"] is not None: price_range["gte"] = matrix["min_price"]
@@ -406,9 +439,9 @@ async def execute_search(request: SearchRequest) -> dict:
                 must_clauses.append({
                     "multi_match": {
                         "query": item,
-                        # ⚠️ KEEP only main searchable text fields here
-                        # Color attributes are boosted via semantic_shoulds (above), NOT used as gatekeeper
-                        "fields": ["name^10", "category^4", "brand^3"], 
+                        # 🎯 Higher category weight so product type wins over adjectives
+                        # "red dresses for men" → "dresses" must match category, not just "red" in name
+                        "fields": ["name^10", "category^10", "brand^3"], 
                         "type": "cross_fields",
                         "minimum_should_match": "2<-1 4<60%"  
                     }
@@ -656,24 +689,21 @@ async def execute_search(request: SearchRequest) -> dict:
             if count >= 2:  # appears in at least 2 of top 3
                 dominant_category_words.add(word)
         
-        # 🔥 Also extract dominant words from query itself (user's intent)
-        # E.g. "iphone 11 white color" → contains "iphone", "white"
-        # We add the query's MEANINGFUL words to the dominant set
+        # 🔥 STRONGER: Always add query intent words FIRST — they're the most reliable signal
+        # User TYPED these words — they know what they want.
+        # "formal red dresses for men" → dresses, formal, red, men become required
+        dominant_category_words.update(query_intent_words)
+        
+        # 🔥 Check if any query word also appears as a real category (extra signal)
         query_words = _re.findall(r'\b[a-z]+\b', (query_text or "").lower())
         for word in query_words:
             if len(word) >= 4 and word not in CATEGORY_STOPWORDS:
-                # Check if this word matches any product category (any product, not just top 3)
-                # If yes, it's a strong category signal
                 appears_in_any_category = any(
                     word in " ".join([str(c).lower() for c in r.get("category", [])])
                     for r in results
                 )
                 if appears_in_any_category:
                     dominant_category_words.add(word)
-        
-        # 🔥 STRENGTHEN: Add query intent words to dominant set
-        # If user types "iphone", "iphone" becomes a hard required signal
-        dominant_category_words.update(query_intent_words)
         
         if dominant_category_words:
             logger.info(f"🎯 Dynamic category intent (combined): {sorted(list(dominant_category_words))[:10]}")
@@ -703,26 +733,39 @@ async def execute_search(request: SearchRequest) -> dict:
             # Combine for full product signal
             product_all_words = product_cat_words | product_name_words
             
-            # 🔥 STRICT ALIGNMENT CHECK with BANISH log
-            # Compares product's CATEGORY against query intent.
-            # If NO category overlap → BANISH (works for Nike Shoes vs iPhone search etc.)
+            # 🔥 STRICT ALIGNMENT CHECK
+            # Multi-layer check: category, name, AND query intent overlap.
             
             if dominant_category_words:
                 category_overlap = dominant_category_words & product_cat_words
+                name_overlap = dominant_category_words & product_name_words
                 full_overlap = dominant_category_words & product_all_words
                 
-                # 🔥 RULE 1: NO CATEGORY MATCH → BANISH
-                if not category_overlap:
-                    combined_score -= 100000.0  # 🔥 Massive — guaranteed to drop to bottom
-                    logger.debug(
-                        f"🔻 BANISH: '{r.get('name','')[:40]}' "
+                # 🔥 RULE 1: NO category AND NO name overlap → BANISH (totally off-topic)
+                if not category_overlap and not name_overlap:
+                    combined_score -= 100000.0
+                    logger.info(
+                        f"🔻 BANISH (no match): '{r.get('name','')[:40]}' "
                         f"| cat={list(product_cat_words)[:3]} "
-                        f"| no overlap with {sorted(dominant_category_words)[:5]} "
+                        f"| no overlap with {sorted(dominant_category_words)[:5]}"
                     )
-                # 🔥 RULE 2: Weak match — 1 word only → moderate demote
+                # 🔥 RULE 2: Only name matches but category is WAY off → demote heavily
+                # Example: "dresses for men" query → product "Red Deodorant for Men" 
+                # Name has "red"+"men" but category is "Fragrance" not "Dresses" → demote
+                elif not category_overlap and name_overlap:
+                    # Check if query has clear product nouns (≥5 chars) — if so, demote hard
+                    product_nouns_in_query = {w for w in query_intent_words if len(w) >= 5}
+                    if product_nouns_in_query and not (product_nouns_in_query & product_all_words):
+                        combined_score -= 50000.0
+                        logger.info(
+                            f"⬇️ DEMOTE (wrong type): '{r.get('name','')[:40]}' "
+                            f"| missing product nouns: {list(product_nouns_in_query)[:3]} "
+                            f"| cat={list(product_cat_words)[:3]}"
+                        )
+                # 🔥 RULE 3: Weak match
                 elif len(category_overlap) == 1 and len(dominant_category_words) >= 3:
                     combined_score -= 5000.0
-                # 🔥 RULE 3: Strong match → bonus
+                # 🔥 RULE 4: Strong category match → bonus
                 elif len(category_overlap) >= 2:
                     combined_score += 500.0
             
