@@ -596,43 +596,67 @@ async def execute_search(request: SearchRequest) -> dict:
         product_ids = [r["id"] for r in results if r.get("id")]
         trending_scores = get_trending_scores(product_ids)
         
-        # 🔥 DYNAMIC CATEGORY-BASED RELEVANCE
-        # Instead of hardcoded "if iphone then exclude shoes" logic, we use a 
-        # data-driven approach: determine the DOMINANT category from the top 
-        # search results, then demote products that don't fit that category.
-        # This works for ANY product type — no hardcoded lists needed.
+        # 🔥 DYNAMIC CATEGORY-BASED RELEVANCE (STRICT MODE)
+        # Look at the TOP 3 highest-scoring products (they have the strongest signal)
+        # and use THEIR categories as the gold standard. Anything different = demoted.
+        # 100% dynamic, works for any product type, no hardcoded lists.
         
         import math
         import re as _re
+        from collections import Counter
         
-        # ---- 1. Find the DOMINANT category from top 10 results ----
-        # If user searches "iphone" → top 10 are mostly "Cell Phones" → that's the dominant category
-        # If user searches "dress" → top 10 are mostly "Dresses" → that's dominant
-        # Products NOT in the dominant category tree get demoted.
+        # Common "stopword" category words to ignore (too generic)
+        CATEGORY_STOPWORDS = {
+            "and", "the", "for", "with", "all", "new", "more", 
+            "products", "items", "store", "shop", "categories",
+            "amazon", "walmart", "target", "ebay",  # supplier names, not real categories
+            "best", "sellers", "deals", "outlet", "luxury", "premium",
+            "men", "women", "kids", "boys", "girls", "unisex",  # gender, handled separately
+        }
         
-        top_10_categories = []
-        for r in results[:10]:
+        # ---- 1. Find DOMINANT category words from TOP 3 results ONLY ----
+        # Top 3 have the highest match scores, so they best represent user intent.
+        # If user searches "iphone 11 white" → top 3 are iPhones → categories: Cell Phones, Apple iPhone, Phones
+        top_results_categories = []
+        for r in results[:3]:  # 🔥 Only top 3, not top 10 (stricter signal)
             for cat in r.get("category", []):
                 if cat:
                     cat_clean = str(cat).strip().lower()
                     if cat_clean and cat_clean not in ["uncategorized", "none"]:
-                        # Tokenize category into words for matching
                         cat_words = _re.findall(r'\b[a-z]+\b', cat_clean)
-                        top_10_categories.extend(cat_words)
+                        # Filter out stopwords + short words
+                        meaningful_words = [
+                            w for w in cat_words 
+                            if w not in CATEGORY_STOPWORDS and len(w) >= 4
+                        ]
+                        top_results_categories.extend(meaningful_words)
         
         # Count word frequency
-        from collections import Counter
-        category_word_counts = Counter(top_10_categories)
+        category_word_counts = Counter(top_results_categories)
         
-        # The most common category words define the user's intent
-        # Take top 5 most common words (with min frequency 3)
+        # 🔥 STRICTER: Any word appearing in ≥2 of top 3 products is dominant
         dominant_category_words = set()
-        for word, count in category_word_counts.most_common(10):
-            if count >= 3 and len(word) >= 3:
+        for word, count in category_word_counts.most_common():
+            if count >= 2:  # appears in at least 2 of top 3
                 dominant_category_words.add(word)
         
+        # 🔥 Also extract dominant words from query itself (user's intent)
+        # E.g. "iphone 11 white color" → contains "iphone", "white"
+        # We add the query's MEANINGFUL words to the dominant set
+        query_words = _re.findall(r'\b[a-z]+\b', (query_text or "").lower())
+        for word in query_words:
+            if len(word) >= 4 and word not in CATEGORY_STOPWORDS:
+                # Check if this word matches any product category (any product, not just top 3)
+                # If yes, it's a strong category signal
+                appears_in_any_category = any(
+                    word in " ".join([str(c).lower() for c in r.get("category", [])])
+                    for r in results
+                )
+                if appears_in_any_category:
+                    dominant_category_words.add(word)
+        
         if dominant_category_words:
-            logger.info(f"🎯 Dynamic category detection: dominant words = {list(dominant_category_words)[:5]}")
+            logger.info(f"🎯 Dynamic category intent: {list(dominant_category_words)[:7]}")
         
         # ---- 2. Score each product based on category alignment ----
         for r in results:
@@ -645,16 +669,20 @@ async def execute_search(request: SearchRequest) -> dict:
             for cat in r.get("category", []):
                 if cat:
                     cat_words = _re.findall(r'\b[a-z]+\b', str(cat).lower())
-                    product_cat_words.update(cat_words)
+                    meaningful = [w for w in cat_words if w not in CATEGORY_STOPWORDS and len(w) >= 4]
+                    product_cat_words.update(meaningful)
             
-            # 🔥 ALIGNMENT CHECK
-            # If we found dominant category words AND this product has ZERO overlap → demote
-            # This is dynamic: works for any product type without hardcoding
+            # 🔥 STRICTER ALIGNMENT CHECK
+            # If user intent is clear (dominant words found) AND this product 
+            # has ZERO overlap with those words → product is off-topic → demote heavily
             if dominant_category_words and product_cat_words:
                 overlap = dominant_category_words & product_cat_words
                 if not overlap:
-                    # No category overlap with the top results — this product is off-topic
-                    combined_score -= 5000.0
+                    # NO category alignment — heavy demote
+                    combined_score -= 10000.0  # 🔥 Increased from -5000 to -10000 for stronger isolation
+            elif dominant_category_words and not product_cat_words:
+                # Product has NO recognizable category but query has clear intent → demote
+                combined_score -= 5000.0
             
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
