@@ -32,18 +32,16 @@ DB_CONFIG_TRENDING = {
 }
 
 
-async def correct_query_typos(query: str) -> tuple:
+async def correct_query_typos(query: str, aggressive: bool = False) -> tuple:
     """
     🔤 TYPO CORRECTION using OpenSearch's TERM SUGGESTER (unsupervised learning).
     Auto-learns spellings from your product catalog — no hardcoded dictionary.
     
-    Examples:
-      "ihpone 11"   → "iphone 11"
-      "samsng glax" → "samsung galaxy"
-      "nikr shoe"   → "nike shoes"
-    
-    🔥 IMPORTANT: We DON'T correct words that ALREADY EXIST in the catalog.
-    "Starlight" is a real Apple color — don't auto-correct it to "Straight"!
+    Two modes:
+    - Standard mode: suggest_mode="missing" — only correct words NOT in catalog
+      (protects valid words like "Starlight")
+    - Aggressive mode: suggest_mode="always" + lower threshold — used as zero-result 
+      fallback for partial words like "linger" → "lingerie"
     
     Returns: (corrected_query: str, was_corrected: bool)
     """
@@ -51,6 +49,14 @@ async def correct_query_typos(query: str) -> tuple:
         return query, False
     
     try:
+        # Choose mode
+        if aggressive:
+            suggest_mode = "always"      # Try to correct even valid words
+            threshold = 0.4              # Lower confidence threshold
+        else:
+            suggest_mode = "missing"     # Only words not in catalog
+            threshold = 0.7              # Higher confidence
+        
         resp = os_client.search(
             index=INDEX_NAME,
             body={
@@ -60,10 +66,10 @@ async def correct_query_typos(query: str) -> tuple:
                         "text": query,
                         "term": {
                             "field": "name",
-                            "suggest_mode": "missing",   # only suggest for words NOT in catalog
-                            "min_word_length": 4,        # don't correct short words like "11", "14"
-                            "max_edits": 2,              # 🔥 Back to 2 — needed for typos like "ihpone" → "iphone"
-                            "prefix_length": 1           # 🔥 Back to 1 — first letter must match
+                            "suggest_mode": suggest_mode,
+                            "min_word_length": 4,
+                            "max_edits": 2,
+                            "prefix_length": 1
                         }
                     }
                 }
@@ -78,7 +84,7 @@ async def correct_query_typos(query: str) -> tuple:
             original_word = word_data.get("text", "")
             options = word_data.get("options", [])
             
-            if options and options[0].get("score", 0) > 0.7:
+            if options and options[0].get("score", 0) > threshold:
                 corrected_words.append(options[0]["text"])
                 has_correction = True
             else:
@@ -86,7 +92,8 @@ async def correct_query_typos(query: str) -> tuple:
         
         if has_correction:
             corrected = " ".join(corrected_words)
-            logger.info(f"🔤 Typo correction: '{query}' → '{corrected}'")
+            mode_label = "AGGRESSIVE" if aggressive else "STANDARD"
+            logger.info(f"🔤 Typo correction [{mode_label}]: '{query}' → '{corrected}'")
             return corrected, True
         
         return query, False
@@ -448,8 +455,48 @@ async def execute_search(request: SearchRequest) -> dict:
     if total_hits == 0 and core_query and request.page == 1:
         logger.warning(f"⚠️ Zero results for '{query_text}' — trying smart fallback")
         
+        # 🔄 FALLBACK 0: AGGRESSIVE typo correction
+        # User may have typed a partial word like "linger" (meant "lingerie")
+        # In standard mode, "linger" is a valid English word so we don't correct it.
+        # In aggressive mode, we try harder to find a matching catalog word.
+        if not was_corrected:
+            aggressive_corrected, was_aggressive = await correct_query_typos(query_text, aggressive=True)
+            if was_aggressive and aggressive_corrected != query_text:
+                logger.info(f"🔤 Trying aggressive correction: '{query_text}' → '{aggressive_corrected}'")
+                # Retry search with corrected query
+                try:
+                    retry_resp = os_client.search(
+                        index=INDEX_NAME,
+                        body={
+                            "from": 0,
+                            "size": fetch_size,
+                            "query": {
+                                "bool": {
+                                    "must": [{
+                                        "multi_match": {
+                                            "query": aggressive_corrected,
+                                            "fields": ["name^10", "category^5", "brand^3"],
+                                            "fuzziness": "AUTO"
+                                        }
+                                    }],
+                                    "filter": [{"term": {"in_stock": True}}]
+                                }
+                            },
+                            "track_total_hits": True
+                        }
+                    )
+                    retry_hits = retry_resp.get("hits", {}).get("hits", [])
+                    if retry_hits:
+                        logger.info(f"✅ Aggressive typo correction found {len(retry_hits)} products")
+                        response = retry_resp
+                        hits = response.get("hits", {})
+                        total_hits = hits.get("total", {}).get("value", 0)
+                        query_text = aggressive_corrected  # update for downstream logic
+                except Exception as e:
+                    logger.error(f"❌ Aggressive correction retry failed: {e}")
+        
         # 🔄 FALLBACK 1: Pure semantic vector search (finds similar items even if exact words don't match)
-        if vector:
+        if total_hits == 0 and vector:
             try:
                 fallback_query = {
                     "from": 0,
@@ -610,29 +657,36 @@ async def execute_search(request: SearchRequest) -> dict:
             if count >= 2:  # appears in at least 2 of top 3
                 dominant_category_words.add(word)
         
-        # 🎯 ESSENTIAL BRAND DETECTION (100% dynamic, from top 3 product BRAND fields)
-        # If 2+ of top 3 results share a brand, that's the user's product type.
+        # 🎯 ESSENTIAL BRAND DETECTION (100% dynamic, from top 10 product BRAND fields)
+        # If 30%+ of top 10 results share a brand, that's the user's product type.
         # All relevant products should have this brand in their name or brand field.
-        # 
-        # Example: "iphone 11 white" → top 3 brands = [Apple, Apple, Apple] → essential = "apple"
-        # → PRIOKNIKO Socks (brand=PRIOKNIKO, no "apple" in name) → BANISHED
-        # → Rice Paper (brand=pizety, no "apple") → BANISHED
-        # 
-        # For multi-brand queries like "running shoes": top 3 brands might be Nike, Adidas, Puma
-        # → no common brand → no brand filter → all shoes shown (correct!)
+        #
+        # Why TOP 10 (not top 3): top 3 can be polluted by junk that matches query
+        # words but is unrelated (e.g. socks matching "11 white"). Top 10 dilutes this.
+        #
+        # Why count >= 3: stricter than 50% — handles cases where catalog has
+        # mixed legitimate results.
+        #
+        # Supplier-brands (AMAZON, GENERIC, WALMART, etc) are auto-detected dynamically
+        # because they appear across DOZENS of unrelated products — they're noisy
+        # signals and won't be the "most common" if there's a real brand mixed in.
         essential_brand = None
         top_brands = []
-        for r in results[:3]:
+        for r in results[:10]:  # 🔥 TOP 10 for reliable signal (was top 3)
             brand = (r.get("brand") or "").lower().strip()
             if brand and len(brand) >= 3 and brand not in {"none", "default", "uncategorized"}:
                 top_brands.append(brand)
         
-        if len(top_brands) >= 2:
+        if len(top_brands) >= 3:
             brand_counts = Counter(top_brands)
             most_common_brand, count = brand_counts.most_common(1)[0]
-            if count >= 2:  # at least 2 of top 3 share this brand
+            # 🔥 At least 3 of top 10 share this brand (30%+ dominance)
+            # Strong enough signal that this is what user wants
+            if count >= 3:
                 essential_brand = most_common_brand
-                logger.info(f"🏷️ Essential brand detected: '{essential_brand}' (in {count}/3 top results)")
+                logger.info(f"🏷️ Essential brand detected: '{essential_brand}' (in {count}/10 top results)")
+            else:
+                logger.info(f"🏷️ No dominant brand in top 10 (brand counts: {dict(brand_counts.most_common(3))})")
         
         # 🔥 STRONGER: Always add query intent words FIRST — they're the most reliable signal
         # User TYPED these words — they know what they want.
