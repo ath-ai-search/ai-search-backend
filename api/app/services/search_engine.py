@@ -455,10 +455,7 @@ async def execute_search(request: SearchRequest) -> dict:
     if total_hits == 0 and core_query and request.page == 1:
         logger.warning(f"⚠️ Zero results for '{query_text}' — trying smart fallback")
         
-        # 🔄 FALLBACK 0: AGGRESSIVE typo correction
-        # User may have typed a partial word like "linger" (meant "lingerie")
-        # In standard mode, "linger" is a valid English word so we don't correct it.
-        # In aggressive mode, we try harder to find a matching catalog word.
+        # 🔄 FALLBACK 0a: AGGRESSIVE typo correction
         if not was_corrected:
             aggressive_corrected, was_aggressive = await correct_query_typos(query_text, aggressive=True)
             if was_aggressive and aggressive_corrected != query_text:
@@ -494,6 +491,47 @@ async def execute_search(request: SearchRequest) -> dict:
                         query_text = aggressive_corrected  # update for downstream logic
                 except Exception as e:
                     logger.error(f"❌ Aggressive correction retry failed: {e}")
+        
+        # 🔄 FALLBACK 0b: PREFIX MATCH — for partial words like "linger" → "lingerie"
+        # If user typed a word that's a prefix of a longer catalog word, try matching
+        # the prefix against name/category. This catches "linger" → "lingerie",
+        # "phon" → "phone", "leath" → "leather", etc.
+        if total_hits == 0:
+            try:
+                prefix_query = {
+                    "from": 0,
+                    "size": fetch_size,
+                    "query": {
+                        "bool": {
+                            "should": [
+                                # Try matching each query word as a prefix
+                                {"multi_match": {
+                                    "query": core_query,
+                                    "fields": ["name^5", "category^3", "brand"],
+                                    "type": "phrase_prefix",
+                                    "max_expansions": 50
+                                }},
+                                # Also try the full query as a phrase_prefix
+                                {"match_phrase_prefix": {
+                                    "name": {"query": core_query, "max_expansions": 50}
+                                }}
+                            ],
+                            "filter": [{"term": {"in_stock": True}}],
+                            "minimum_should_match": 1
+                        }
+                    },
+                    "track_total_hits": True
+                }
+                prefix_resp = os_client.search(index=INDEX_NAME, body=prefix_query)
+                prefix_hits = prefix_resp.get("hits", {}).get("hits", [])
+                
+                if prefix_hits:
+                    logger.info(f"✅ Prefix fallback found {len(prefix_hits)} products for '{core_query}'")
+                    response = prefix_resp
+                    hits = response.get("hits", {})
+                    total_hits = hits.get("total", {}).get("value", 0)
+            except Exception as e:
+                logger.error(f"❌ Prefix fallback failed: {e}")
         
         # 🔄 FALLBACK 1: Pure semantic vector search (finds similar items even if exact words don't match)
         if total_hits == 0 and vector:
