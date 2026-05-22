@@ -197,48 +197,23 @@ async def execute_search(request: SearchRequest) -> dict:
     filters = [{"term": {"in_stock": True}}]
     must_nots = []
     
-    # 🔥 AUTO-DETECT GENDER FROM QUERY TEXT (universal fix)
-    # When user types "men", "women", "kids", etc. — treat as HARD filter
-    # Also blocks opposite-gender products from showing.
-    query_lower = (query_text or "").lower()
-    query_tokens = re.findall(r'\b[a-z]+\b', query_lower)
-    
-    GENDER_PATTERNS = {
-        "men":     {"match": ["men", "mens", "male", "man", "gentleman"],     "opposite": ["women", "womens", "female", "woman", "ladies", "girls"]},
-        "women":   {"match": ["women", "womens", "female", "woman", "ladies", "lady"], "opposite": ["men", "mens", "male", "man", "boys"]},
-        "kids":    {"match": ["kids", "kid", "children", "child"],            "opposite": []},
-        "boys":    {"match": ["boys", "boy"],                                  "opposite": ["girls", "girl"]},
-        "girls":   {"match": ["girls", "girl"],                                "opposite": ["boys", "boy"]},
-        "unisex":  {"match": ["unisex"],                                       "opposite": []},
-    }
-    
-    detected_gender = None
-    for gender_label, config in GENDER_PATTERNS.items():
-        if any(word in query_tokens for word in config["match"]):
-            detected_gender = (gender_label, config)
-            break
-    
-    if detected_gender:
-        gender_label, config = detected_gender
-        # Add positive filter: product must mention this gender
-        gender_shoulds = []
-        for word in config["match"]:
-            gender_shoulds.extend([
-                {"match": {"gender": word}},
-                {"match": {"attributes.gender": word}},
-                {"match": {"attributes.Gender": word}},
-                {"match_phrase": {"category": word}},
-                {"match_phrase": {"name": word}},
-            ])
-        filters.append({"bool": {"should": gender_shoulds, "minimum_should_match": 1}})
-        
-        # Add negative filter: BLOCK opposite gender products  
-        if config["opposite"]:
-            for opp in config["opposite"]:
-                must_nots.append({"match_phrase": {"name": opp}})
-                must_nots.append({"match_phrase": {"category": opp}})
-        
-        logger.info(f"🚻 Auto-detected gender: {gender_label} (from query: '{query_text}')")
+    # 🚻 GENDER HANDLING (100% DYNAMIC, NO HARDCODED LISTS)
+    # 
+    # Approach: gender words like "men", "women", "kids" are ALREADY in the user's query.
+    # OpenSearch's normal text matching (already in semantic_shoulds below) ranks 
+    # products matching these words HIGHER automatically.
+    #
+    # We do NOT use hardcoded {men: [...], women: [...]} lists or hard must_not blocks.
+    # Instead, the dynamic category guard (later in code) detects when product categories
+    # don't match the dominant category of top results and banishes them.
+    #
+    # This means:
+    #   "shoes for men" → OpenSearch ranks men's shoes higher (they match "men" in name)
+    #   "dresses for men" → OpenSearch tries to match both, falls back to "dresses"
+    #                       if no men's dresses exist in catalog (graceful fallback)
+    #   "kids running shoes" → kids' shoes rank higher, others below
+    #
+    # Result: works for ANY gender label, in ANY language, NO hardcoded lists.
     
     # Color detection is handled DYNAMICALLY by OpenSearch boost on color/colors/attributes 
     # fields in semantic_shoulds. No hardcoded list needed — works for ANY color in any language.
@@ -262,57 +237,22 @@ async def execute_search(request: SearchRequest) -> dict:
             size_shoulds = [{"multi_match": {"query": str(s).strip() if "size" in str(s).lower() else f"size {str(s).strip()} {str(s).strip()}", "fields": ["size", "sizes", "name"], "type": "best_fields"}} for s in request.filters.size[:MAX_SIZE_FILTERS]]
             filters.append({"bool": {"should": size_shoulds, "minimum_should_match": 1}})
         if getattr(request.filters, "gender", None):
-            # 🔥 STRICT GENDER FILTER (no fuzziness — "men" must not match "women")
-            # Also blocks opposite gender via must_not for hard isolation.
-            FILTER_GENDER_PATTERNS = {
-                "men":     {"match": ["men", "mens", "male", "man", "gentleman"],     "opposite": ["women", "womens", "female", "woman", "ladies", "lady", "girls"]},
-                "women":   {"match": ["women", "womens", "female", "woman", "ladies", "lady"], "opposite": ["men", "mens", "male", "man", "gentleman", "boys"]},
-                "kids":    {"match": ["kids", "kid", "children", "child"],            "opposite": []},
-                "boys":    {"match": ["boys", "boy"],                                  "opposite": ["girls", "girl"]},
-                "girls":   {"match": ["girls", "girl"],                                "opposite": ["boys", "boy"]},
-                "unisex":  {"match": ["unisex"],                                       "opposite": []},
-            }
-            
+            # 🚻 GENDER FILTER (clicked from sidebar) — dynamic, no hardcoded list
+            # User clicked a gender filter checkbox → match it in name/category fields
             gender_shoulds = []
-            blocked_opposites = set()
-            
             for g in request.filters.gender[:MAX_GENDER_FILTERS]:
                 g_clean = str(g).strip().lower()
-                config = FILTER_GENDER_PATTERNS.get(g_clean)
-                
-                if config:
-                    # Build POSITIVE match for this gender + variants (NO fuzziness)
-                    for word in config["match"]:
-                        gender_shoulds.extend([
-                            {"match": {"gender": word}},
-                            {"match": {"attributes.gender": word}},
-                            {"match": {"attributes.Gender": word}},
-                            {"match_phrase": {"category": word}},
-                            {"match_phrase": {"name": word}},
-                        ])
-                    # Collect opposite-gender words to block
-                    for opp in config["opposite"]:
-                        blocked_opposites.add(opp)
-                else:
-                    # Fallback: unknown gender label, basic match (no fuzziness)
-                    gender_shoulds.extend([
-                        {"match": {"gender": g_clean}},
-                        {"match": {"attributes.gender": g_clean}},
-                        {"match": {"attributes.Gender": g_clean}},
-                        {"match_phrase": {"category": g_clean}},
-                        {"match_phrase": {"name": g_clean}},
-                    ])
+                gender_shoulds.extend([
+                    {"match": {"gender": g_clean}},
+                    {"match": {"attributes.gender": g_clean}},
+                    {"match": {"attributes.Gender": g_clean}},
+                    {"match_phrase": {"category": g_clean}},
+                    {"match_phrase": {"name": g_clean}},
+                ])
             
             if gender_shoulds:
                 filters.append({"bool": {"should": gender_shoulds, "minimum_should_match": 1}})
-            
-            # 🚫 BLOCK opposite-gender products at must_not level (HARD BLOCK)
-            for opp in blocked_opposites:
-                must_nots.append({"match_phrase": {"name": opp}})
-                must_nots.append({"match_phrase": {"category": opp}})
-            
-            if blocked_opposites:
-                logger.info(f"🚻 Filter gender: {request.filters.gender} → blocking opposites: {blocked_opposites}")
+                logger.info(f"🚻 Sidebar gender filter applied: {request.filters.gender}")
         if getattr(request.filters, "brand", None):
             brand_shoulds = []
             for b in request.filters.brand[:MAX_BRAND_FILTERS]:
@@ -461,10 +401,13 @@ async def execute_search(request: SearchRequest) -> dict:
     
     # =====================================================================
     # 🚀 OPENSEARCH QUERY: SAMPLER + GLOBAL COUNTS
+    # 🔥 Fetch a LARGE candidate pool so the dynamic guard can banish
+    # off-topic products. Then we paginate the CLEAN results in Python below.
     # =====================================================================
+    fetch_size = max(200, request.page_size * 10)
     os_query = {
-        "from": from_val,
-        "size": request.page_size,
+        "from": 0,  # 🔥 Start from 0 — paginate in Python AFTER banishing
+        "size": fetch_size,
         **query_body,
         "sort": sort_query,
         "track_total_hits": True,
@@ -798,16 +741,24 @@ async def execute_search(request: SearchRequest) -> dict:
         # 🚫 REMOVE BANISHED PRODUCTS (off-topic items)
         # iPhone search should NEVER show shoes. Shoes search should NEVER show phones.
         # The dynamic guard banishes off-topic products with -100000 penalty.
-        # We filter them out here so user only sees products in the right category.
         original_count = len(results)
         results = [r for r in results if r.get("combined_score", 0) > -10000]
         banished_count = original_count - len(results)
         
         if banished_count > 0:
-            logger.info(f"🚫 Removed {banished_count} off-topic products (kept {len(results)} relevant)")
-            total_hits = max(0, total_hits - banished_count)
-            raw_total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
-            total_pages = min(raw_total_pages, max_safe_page)
+            logger.info(f"🚫 Removed {banished_count} off-topic products from {original_count} → {len(results)} clean")
+        
+        # 🔥 RECALCULATE total_hits to reflect CLEAN count (not the original 200 OpenSearch hits)
+        # If we kept 50 out of 200, then total_hits should represent the true clean count
+        total_hits = len(results)
+        raw_total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
+        total_pages = min(raw_total_pages, max_safe_page)
+        
+        # 🔥 PAGINATE THE CLEAN RESULTS IN PYTHON
+        # We fetched 200 candidates, banished off-topic ones, now slice for current page
+        page_start = from_val
+        page_end = from_val + request.page_size
+        results = results[page_start:page_end]
         
         for r in results:
             r.pop("combined_score", None)
