@@ -312,8 +312,9 @@ async def execute_search(request: SearchRequest) -> dict:
             # 🔥 JUNK-WORD SAFETY NET: If the user adds words like "color", this heavily boosts the core product anyway
             {"multi_match": {"query": item, "fields": ["name^10", "brand^5", "category^3"], "type": "cross_fields", "minimum_should_match": "80%", "boost": 80.0}},
             
-            {"multi_match": {"query": item, "fields": ["name^10", "brand^5", "category^3", "description"], "type": "cross_fields", "operator": "and", "boost": BOOST_CROSS_FIELDS}},
-            {"multi_match": {"query": item, "fields": ["name^5", "brand^3", "category^2", "description"], "type": "best_fields", "fuzziness": "AUTO", "boost": BOOST_FUZZY_FALLBACK}}
+            # 🚫 Removed 'description' from fields below to stop irrelevant items (like clown costumes) from sneaking in
+            {"multi_match": {"query": item, "fields": ["name^10", "brand^5", "category^3"], "type": "cross_fields", "operator": "and", "boost": BOOST_CROSS_FIELDS}},
+            {"multi_match": {"query": item, "fields": ["name^5", "brand^3", "category^2"], "type": "best_fields", "fuzziness": "AUTO", "boost": BOOST_FUZZY_FALLBACK}}
         ])
     
     score_functions = []
