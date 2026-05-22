@@ -144,7 +144,8 @@ from app.core.constants import (
 )
 logger = logging.getLogger(__name__)
 
-MIN_RELEVANCE_SCORE = 25.0  # 🆕 Stricter threshold — removes weak vector matches
+MIN_RELEVANCE_SCORE = 25.0          # Strict threshold for keyword queries
+MIN_RELEVANCE_SCORE_CONVERSATIONAL = 2.0  # 🔥 Much lower for AI/vector queries — vector scores are smaller than keyword scores
 async def execute_search(request: SearchRequest) -> dict:
     _start_time = time.perf_counter()  # 🆕 Start timing    
     request.page_size = DEFAULT_PAGE_SIZE if request.page_size != SMALL_PAGE_SIZE else SMALL_PAGE_SIZE
@@ -288,10 +289,21 @@ async def execute_search(request: SearchRequest) -> dict:
     elif request.sort == "on_sale": sort_query = [{"_score": "desc"}]
     elif request.sort == "popularity": sort_query = [{"trending_score": "desc"}]
     
+    # 🔥 DETECT CONVERSATIONAL QUERY MODE
+    # Long queries (6+ words) like "something cozy for a rainy Sunday" need PURE semantic search.
+    # We dial up the AI vector dramatically and dial down keyword matching.
+    word_count_total = len((core_query or "").split())
+    is_conversational = word_count_total >= 6
+    
     semantic_shoulds = []
     if vector:
-        k_val = min(max(KNN_MIN_K, from_val + request.page_size + KNN_BUFFER), MAX_OS_WINDOW, 300)  
-        semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": k_val, "boost": 0.3}}})    
+        k_val = min(max(KNN_MIN_K, from_val + request.page_size + KNN_BUFFER), MAX_OS_WINDOW, 300)
+        # 🔥 Boost KNN 10x higher for conversational queries (lets AI understanding dominate)
+        knn_boost = 3.0 if is_conversational else 0.3
+        semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": k_val, "boost": knn_boost}}})
+        
+        if is_conversational:
+            logger.info(f"🤖 CONVERSATIONAL MODE: {word_count_total} words, KNN boost={knn_boost}")    
     for item in multi_items:
         semantic_shoulds.extend([
             # 🔥 UNIVERSAL PHRASE BOOST: Exact word ordering gets immediate priority
@@ -357,7 +369,11 @@ async def execute_search(request: SearchRequest) -> dict:
         query_body = {"query": {"bool": {"must": [{"match_all": {}}], "filter": filters, "must_not": must_nots}}}
     
     use_min_score = bool(vector or core_query)
-    min_relevance_score = MIN_RELEVANCE_SCORE if use_min_score else 0.0
+    # 🔥 Use lower threshold for conversational queries (vector search returns smaller raw scores)
+    if is_conversational:
+        min_relevance_score = MIN_RELEVANCE_SCORE_CONVERSATIONAL
+    else:
+        min_relevance_score = MIN_RELEVANCE_SCORE if use_min_score else 0.0
     actual_total_hits = 0
     
     if use_min_score:
@@ -577,13 +593,32 @@ async def execute_search(request: SearchRequest) -> dict:
                 if is_unrelated:
                     combined_score -= 5000.0  # Sends them 100 pages deep out of view
             
-            # 🔥 GUARD C: Grooming/Beauty Banishment
-            # If the user searches for clothes/shoes, we absolutely banish Electronics AND Grooming/Beauty products.
+            # 🔥 GUARD C: Grooming/Beauty/Electronics Banishment (Expanded)
+            # When user searches clothing/shoes, banish ALL unrelated categories.
             if user_wants_apparel:
-                is_unrelated = any(any(w in str(cat).lower() for w in ["electronics", "phones", "computers", "tablets", "appliances", "beauty", "grooming", "health", "personal care"]) for cat in r.get("category", [])) or any(w in r.get("name", "").lower() for w in ["trimmer", "perfume", "cologne", "balm", "razor", "shaver", "shampoo", "beard"])
+                UNRELATED_CATEGORIES = [
+                    "electronics", "phones", "computers", "tablets", "appliances",
+                    "beauty", "grooming", "health", "personal care", "fragrance",
+                    "shaving", "skincare", "haircare", "makeup", "cologne",
+                    "kitchen", "furniture", "home decor", "office", "stationery"
+                ]
+                UNRELATED_NAME_WORDS = [
+                    "trimmer", "perfume", "cologne", "balm", "razor", "shaver",
+                    "shampoo", "conditioner", "beard oil", "shaving cream", "shaving foam",
+                    "deodorant", "lotion", "aftershave", "moisturizer", "fragrance",
+                    "cream", "serum", "wax", "scissors", "clipper", "grooming"
+                ]
+                
+                cat_str = " ".join([str(c).lower() for c in r.get("category", [])])
+                name_str = r.get("name", "").lower()
+                
+                is_unrelated = (
+                    any(w in cat_str for w in UNRELATED_CATEGORIES) or
+                    any(w in name_str for w in UNRELATED_NAME_WORDS)
+                )
                 
                 if is_unrelated:
-                    combined_score -= 5000.0  # Sends trimmers and perfumes 100 pages deep out of view
+                    combined_score -= 5000.0  # Banished far below all relevant products
 
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
