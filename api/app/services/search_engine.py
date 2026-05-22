@@ -201,7 +201,7 @@ async def execute_search(request: SearchRequest) -> dict:
                     "query": item,
                     "fields": ["name^10", "category^4", "brand^3"], 
                     "type": "cross_fields",
-                    "minimum_should_match": "4<-1"  # 🔥 Strict 100% match for up to 4 words, allows 1 fallback term for long inputs
+                    "minimum_should_match": "2<75%"  # 🔥 Exact matches rank #1, alternatives (3/4 words) show below, irrelevant items are blocked
                 }
             })
     
