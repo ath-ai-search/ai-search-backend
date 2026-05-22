@@ -177,6 +177,8 @@ async def execute_search(request: SearchRequest) -> dict:
         semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": k_val, "boost": 0.3}}})    
     for item in multi_items:
         semantic_shoulds.extend([
+            # 🔥 UNIVERSAL PHRASE BOOST: Exact word ordering gets immediate priority
+            {"match_phrase": {"name": {"query": item, "boost": 100.0, "slop": 2}}},
             {"match_phrase": {"name": {"query": item, "boost": BOOST_NAME_PHRASE}}},
             {"match_phrase": {"brand": {"query": item, "boost": BOOST_BRAND_PHRASE}}},
             {"match": {"category": {"query": item, "boost": BOOST_CATEGORY_MATCH}}},
@@ -190,17 +192,16 @@ async def execute_search(request: SearchRequest) -> dict:
             score_functions.append({"filter": {"match": {"name": acc}}, "weight": ACCESSORY_DEMOTION_WEIGHT})
             score_functions.append({"filter": {"match": {"category": acc}}, "weight": ACCESSORY_DEMOTION_WEIGHT})
     
-    # 🆕 SMART TYPO & VOICE SEARCH MATCH (Live Fix)
-    # Uses "fuzziness": "AUTO" to automatically fix spelling mistakes like "baes" -> "bags"
+    # 🆕 GLOBAL DYNAMIC GATEKEEPER (Universal Fix for Short & Long Queries)
     must_clauses = []
     if core_query:
         for item in multi_items:
             must_clauses.append({
                 "multi_match": {
                     "query": item,
-                    "fields": ["name^7", "category^4", "brand^3"], 
-                    "fuzziness": "AUTO",
-                    "operator": "or"
+                    "fields": ["name^10", "category^4", "brand^3"], 
+                    "type": "cross_fields",
+                    "minimum_should_match": "3<-1"  # 🔥 Strict 100% match for up to 3-4 words, allows 1 fallback term for extra long inputs
                 }
             })
     
