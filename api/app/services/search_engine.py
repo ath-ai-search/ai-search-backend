@@ -141,7 +141,8 @@ async def execute_search(request: SearchRequest) -> dict:
             size_shoulds = [{"multi_match": {"query": str(s).strip() if "size" in str(s).lower() else f"size {str(s).strip()} {str(s).strip()}", "fields": ["size", "sizes", "name"], "type": "best_fields"}} for s in request.filters.size[:MAX_SIZE_FILTERS]]
             filters.append({"bool": {"should": size_shoulds, "minimum_should_match": 1}})
         if getattr(request.filters, "gender", None):
-            gender_shoulds = [{"multi_match": {"query": str(g).strip(), "fields": ["gender", "attributes.gender", "category", "name"], "type": "best_fields"}} for g in request.filters.gender[:MAX_GENDER_FILTERS]]
+            # Added case variations for custom fields ('attributes.Gender') to ensure matches across all synced datasets
+            gender_shoulds = [{"multi_match": {"query": str(g).strip(), "fields": ["gender", "attributes.gender", "attributes.Gender", "category", "name"], "type": "best_fields", "fuzziness": "AUTO"}} for g in request.filters.gender[:MAX_GENDER_FILTERS]]
             filters.append({"bool": {"should": gender_shoulds, "minimum_should_match": 1}})
         if getattr(request.filters, "brand", None):
             brand_shoulds = []
@@ -308,35 +309,35 @@ async def execute_search(request: SearchRequest) -> dict:
             "rating": source.get("rating") if source.get("rating", 0) > 0 else DEMO_RATING_BASE + (_pid_hash % DEMO_RATING_RANGE) / 10.0,
             "sales_count": source.get("sales_count") if source.get("sales_count", 0) > 0 else (_pid_hash % DEMO_SALES_RANGE) + DEMO_SALES_BASE,
             "score": round(SCORE_DISPLAY_MIN + (normalized_score * SCORE_DISPLAY_RANGE), 2),
-            "trending_score": 0  # 🆕 Will be populated below
+            "_raw_score_anchor": raw_score, # 🔥 Temporary internal field used to secure the exact match sorting tiers
+            "trending_score": 0  
         })
     
     # 🆕 TRENDING BOOST: Re-rank with popularity from PostgreSQL
     if request.sort not in ["price_asc", "price_desc"] and results:
-        # Get product IDs from current results
         product_ids = [r["id"] for r in results if r.get("id")]
-        
-        # Fetch trending scores from PostgreSQL
         trending_scores = get_trending_scores(product_ids)
         
-        # Calculate combined score: relevance + trending
         for r in results:
-            base_score = r.get("score", 0)
+            # Extract our raw anchor score to maintain strict relevance tiers
+            raw_anchor = r.pop("_raw_score_anchor", 0)
             trending = trending_scores.get(r["id"], 0)
             
-            # Combined formula: 70% relevance + 30% trending (normalized)
-            # Trending log to prevent extreme dominance
             import math
-            trending_boost = math.log1p(trending) * 0.3  # log scaled
-            r["combined_score"] = base_score + trending_boost
-            r["trending_score"] = round(trending, 1)  # for debugging
+            # Using the raw score as the unbreakable foundation allows trending values 
+            # to sort products cleanly within their own relevance tiers without jumping boundaries.
+            r["combined_score"] = raw_anchor + (math.log1p(trending) * 1.5)
+            r["trending_score"] = round(trending, 1)  
         
         # Sort by combined score (relevance + popularity)
         results.sort(key=lambda x: x["combined_score"], reverse=True)
         
-        # Clean up internal field (keep trending_score for transparency)
         for r in results:
             r.pop("combined_score", None)
+    else:
+        # Clean up temporary field if sort parameter skips re-ranking
+        for r in results:
+            r.pop("_raw_score_anchor", None)
     
     # =====================================================================
     # 🚀 STEP 16: PARSER - PERFECT SORTING
