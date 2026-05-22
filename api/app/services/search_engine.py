@@ -323,18 +323,30 @@ async def execute_search(request: SearchRequest) -> dict:
             score_functions.append({"filter": {"match": {"name": acc}}, "weight": ACCESSORY_DEMOTION_WEIGHT})
             score_functions.append({"filter": {"match": {"category": acc}}, "weight": ACCESSORY_DEMOTION_WEIGHT})
     
-    # 🆕 GLOBAL DYNAMIC GATEKEEPER (Amazon-Style Lenient Tiering)
+    # 🆕 GLOBAL DYNAMIC GATEKEEPER (Hybrid AI Mode: Keyword + Conversational Intent)
     must_clauses = []
     if core_query:
         for item in multi_items:
-            must_clauses.append({
-                "multi_match": {
-                    "query": item,
-                    "fields": ["name^10", "category^4", "brand^3"], 
-                    "type": "cross_fields",
-                    "minimum_should_match": "2<50%"  # 🔥 Accurate matches rank #1, related products fill the remaining rows!
-                }
-            })
+            # 1. Count how many words the user typed
+            word_count = len(item.split())
+            
+            # 2. STANDARD COMMERCE MODE (1 to 5 words)
+            if word_count <= 5:
+                must_clauses.append({
+                    "multi_match": {
+                        "query": item,
+                        "fields": ["name^10", "category^4", "brand^3"], 
+                        "type": "cross_fields",
+                        "minimum_should_match": "2<-1 4<60%"  
+                    }
+                })
+            
+            # 3. CONVERSATIONAL AI MODE (6+ words)
+            # If the user types a long sentence like "outfit for a beach wedding in Santorini", 
+            # we do NOT add a must_clause. We bypass keyword restrictions completely and 
+            # let the OpenAI KNN Vector search handle 100% of the matching based on pure semantic intent!
+            else:
+                pass
     
     if vector or core_query:
         bool_query = {"should": semantic_shoulds, "must_not": must_nots, "minimum_should_match": 1, "filter": filters}
@@ -565,11 +577,13 @@ async def execute_search(request: SearchRequest) -> dict:
                 if is_unrelated:
                     combined_score -= 5000.0  # Sends them 100 pages deep out of view
             
-            # If the user searches for clothes/shoes, we absolutely banish Electronics.
+            # 🔥 GUARD C: Grooming/Beauty Banishment
+            # If the user searches for clothes/shoes, we absolutely banish Electronics AND Grooming/Beauty products.
             if user_wants_apparel:
-                is_unrelated = any(any(w in str(cat).lower() for w in ["electronics", "phones", "computers", "tablets", "appliances"]) for cat in r.get("category", []))
+                is_unrelated = any(any(w in str(cat).lower() for w in ["electronics", "phones", "computers", "tablets", "appliances", "beauty", "grooming", "health", "personal care"]) for cat in r.get("category", [])) or any(w in r.get("name", "").lower() for w in ["trimmer", "perfume", "cologne", "balm", "razor", "shaver", "shampoo", "beard"])
+                
                 if is_unrelated:
-                    combined_score -= 5000.0
+                    combined_score -= 5000.0  # Sends trimmers and perfumes 100 pages deep out of view
 
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
