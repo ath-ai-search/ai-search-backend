@@ -85,7 +85,40 @@ async def correct_query_typos(query: str, aggressive: bool = False) -> tuple:
             options = word_data.get("options", [])
             
             if options and options[0].get("score", 0) > threshold:
-                corrected_words.append(options[0]["text"])
+                suggested_word = options[0]["text"]
+                
+                # 🔥 SAFETY CHECK: Don't correct if original word actually exists in catalog
+                # This prevents "linger" → "longer" when "linger" is a real word
+                # Check by doing a quick term existence search
+                if not aggressive:
+                    try:
+                        exists_check = os_client.search(
+                            index=INDEX_NAME,
+                            body={
+                                "size": 0,
+                                "query": {
+                                    "bool": {
+                                        "should": [
+                                            {"match": {"name": original_word}},
+                                            {"match": {"description": original_word}}
+                                        ],
+                                        "minimum_should_match": 1
+                                    }
+                                },
+                                "track_total_hits": True
+                            }
+                        )
+                        original_exists_count = exists_check.get("hits", {}).get("total", {}).get("value", 0)
+                        
+                        # If the original word matches ≥5 products in catalog, it's a real word
+                        # → don't auto-correct it
+                        if original_exists_count >= 5:
+                            corrected_words.append(original_word)
+                            continue
+                    except Exception:
+                        pass
+                
+                corrected_words.append(suggested_word)
                 has_correction = True
             else:
                 corrected_words.append(original_word)
@@ -493,9 +526,9 @@ async def execute_search(request: SearchRequest) -> dict:
                     logger.error(f"❌ Aggressive correction retry failed: {e}")
         
         # 🔄 FALLBACK 0b: PREFIX MATCH — for partial words like "linger" → "lingerie"
-        # If user typed a word that's a prefix of a longer catalog word, try matching
-        # the prefix against name/category. This catches "linger" → "lingerie",
-        # "phon" → "phone", "leath" → "leather", etc.
+        # If user typed a word that's a prefix of a longer catalog word, match against
+        # name field only (category is keyword type, doesn't support phrase_prefix).
+        # Catches "linger" → "lingerie", "phon" → "phone", "leath" → "leather", etc.
         if total_hits == 0:
             try:
                 prefix_query = {
@@ -504,16 +537,17 @@ async def execute_search(request: SearchRequest) -> dict:
                     "query": {
                         "bool": {
                             "should": [
-                                # Try matching each query word as a prefix
+                                # Phrase prefix on name (text field) — handles "linger" → "lingerie"
+                                {"match_phrase_prefix": {
+                                    "name": {"query": core_query, "max_expansions": 50, "boost": 5.0}
+                                }},
+                                # Also try as fuzzy multi-match on name only
                                 {"multi_match": {
                                     "query": core_query,
-                                    "fields": ["name^5", "category^3", "brand"],
-                                    "type": "phrase_prefix",
-                                    "max_expansions": 50
-                                }},
-                                # Also try the full query as a phrase_prefix
-                                {"match_phrase_prefix": {
-                                    "name": {"query": core_query, "max_expansions": 50}
+                                    "fields": ["name^3", "brand"],
+                                    "type": "best_fields",
+                                    "fuzziness": "AUTO",
+                                    "prefix_length": 2
                                 }}
                             ],
                             "filter": [{"term": {"in_stock": True}}],
