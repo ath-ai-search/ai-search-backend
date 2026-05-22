@@ -583,18 +583,18 @@ async def execute_search(request: SearchRequest) -> dict:
             "men", "women", "kids", "boys", "girls", "unisex",  # gender, handled separately
         }
         
-        # ---- 1. Find DOMINANT category words from TOP 5 results ----
-        # Top 5 have strongest match — they tell us what category user really wants.
-        # Example: "iphone 11 white" → top 5 are iPhones → category words: phones, cell, apple, iphone
-        # Then any product whose category doesn't overlap with these = OFF-TOPIC = banish
+        # ---- 1. Find DOMINANT category words from TOP 3 results ONLY ----
+        # 🔥 TOP 3 is more reliable than top 10. Top 3 = strongest matches.
+        # Using top 10 lets accessories at positions 6-10 pollute the signal.
+        # Example: "iphone 14 plus midnight" top 3 = iPhones (cat=Amazon, filtered)
+        # → dominant_category_words = only query words → accessory headphones get banished.
         top_results_categories = []
-        for r in results[:10]:  # 🔥 Top 10 for reliable signal
+        for r in results[:3]:  # 🔥 TOP 3 ONLY for clean signal
             for cat in r.get("category", []):
                 if cat:
                     cat_clean = str(cat).strip().lower()
                     if cat_clean and cat_clean not in ["uncategorized", "none"]:
                         cat_words = _re.findall(r'\b[a-z]+\b', cat_clean)
-                        # Filter out stopwords + short words
                         meaningful_words = [
                             w for w in cat_words 
                             if w not in CATEGORY_STOPWORDS and len(w) >= 4
@@ -604,12 +604,39 @@ async def execute_search(request: SearchRequest) -> dict:
         # Count word frequency
         category_word_counts = Counter(top_results_categories)
         
-        # 🔥 Word must appear in ≥2 of top 10 to be considered dominant
-        # Lower threshold = catches more dominant signals = better banish
+        # 🔥 Word must appear in ≥2 of top 3 to be considered dominant
         dominant_category_words = set()
         for word, count in category_word_counts.most_common():
-            if count >= 2:  # appears in at least 2 of top 10
+            if count >= 2:  # appears in at least 2 of top 3
                 dominant_category_words.add(word)
+        
+        # 🎯 ESSENTIAL WORDS DETECTION (100% dynamic, from top 3 product NAMES)
+        # Find words that appear in ALL OR MOST of top 3 names.
+        # These are the "product identifier" words — required for any result to be relevant.
+        # Example: "iphone 11 white" → top 3 names all have "apple", "iphone", "11"
+        # → essential words = {apple, iphone, 11}
+        # → PRIOKNIKO Socks (no "iphone") → BANISHED
+        essential_words = set()
+        if len(results) >= 2:
+            top_name_word_sets = []
+            for r in results[:3]:
+                name_clean = r.get("name", "").lower()
+                name_tokens = set(_re.findall(r'\b[a-z0-9]+\b', name_clean))
+                # Keep meaningful words (≥3 chars), exclude generic noise
+                meaningful_name_words = {
+                    w for w in name_tokens 
+                    if len(w) >= 3 and w not in CATEGORY_STOPWORDS
+                }
+                if meaningful_name_words:
+                    top_name_word_sets.append(meaningful_name_words)
+            
+            # Essential = words appearing in ALL top 3 names (intersection)
+            if len(top_name_word_sets) >= 2:
+                essential_words = set.intersection(*top_name_word_sets)
+                # Only keep words also in user's query — these are the user's intent
+                essential_words = essential_words & query_intent_words
+                if essential_words:
+                    logger.info(f"🎯 Essential words (must be in name): {sorted(essential_words)}")
         
         # 🔥 STRONGER: Always add query intent words FIRST — they're the most reliable signal
         # User TYPED these words — they know what they want.
@@ -668,20 +695,29 @@ async def execute_search(request: SearchRequest) -> dict:
             # Debug log removed — was for troubleshooting Starlight tokenization
             
             # 🎯 RULE 0: EXACT PRODUCT MATCH → GUARANTEED #1
-            # OVERRIDES raw_anchor: sets score to 1,000,000+ so exact matches ALWAYS beat
-            # any OpenSearch boost (which can reach 50k-100k for accessories).
             is_exact_match = False
             if query_match_ratio >= 1.0 and len(query_intent_words) >= 2:
-                # Set score to BASE + raw_anchor — base alone guarantees top ranking,
-                # raw_anchor breaks ties among multiple exact matches.
                 combined_score = 1_000_000.0 + raw_anchor
                 is_exact_match = True
                 logger.info(
                     f"🎯 EXACT #1: '{r.get('name','')[:40]}' "
                     f"| matches all: {sorted(query_intent_words)[:6]}"
                 )
-            # (No 75% rule — only TRUE exact match (100%) gets the massive boost.
-            # This prevents accessories like cases from ranking above the actual product.)
+            
+            # 🎯 ESSENTIAL WORD CHECK (100% dynamic)
+            # If essential words exist (extracted from top 3 names + query),
+            # the product MUST contain at least one — otherwise it's off-topic.
+            # Example: For iPhone search, essential = {iphone}.
+            # PRIOKNIKO Socks has no "iphone" → BANISH (even if "11" and "white" match)
+            if not is_exact_match and essential_words:
+                has_essential = bool(essential_words & product_name_words)
+                if not has_essential:
+                    combined_score -= 100000.0
+                    logger.info(
+                        f"🔻 BANISH (no essential): '{r.get('name','')[:40]}' "
+                        f"| essential={sorted(essential_words)[:5]} "
+                        f"| name has none of them"
+                    )
             
             if not is_exact_match and dominant_category_words:
                 category_overlap = dominant_category_words & product_cat_words
