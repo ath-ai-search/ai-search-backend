@@ -616,11 +616,13 @@ async def execute_search(request: SearchRequest) -> dict:
         product_ids = [r["id"] for r in results if r.get("id")]
         trending_scores = get_trending_scores(product_ids)
         
-        # 🔥 EXTRACT QUERY INTENT WORDS FIRST
-        # Get meaningful product words from user's query for direct comparison
+        # 🔥 EXTRACT QUERY INTENT WORDS — INCLUDES MODEL NUMBERS
+        # Captures "iphone", "14", "plus", "starlight", "s24", "m4", etc.
+        # Model numbers like "14", "11", "s24" are critical for product identification.
         query_intent_words = set()
-        for word in _re.findall(r'\b[a-z]+\b', (query_text or "").lower()):
-            if len(word) >= 3 and word not in {"and", "the", "for", "with", "all", "color", "size"}:
+        for word in _re.findall(r'\b[a-z0-9]+\b', (query_text or "").lower()):
+            # Allow ≥2 char to include model numbers like "11", "14", "s24", "m1"
+            if len(word) >= 2 and word not in {"and", "the", "for", "with", "all", "color", "size", "by", "of", "in"}:
                 query_intent_words.add(word)
         
         # 🔥 DYNAMIC CATEGORY-BASED RELEVANCE (STRICT MODE)
@@ -698,38 +700,40 @@ async def execute_search(request: SearchRequest) -> dict:
                     meaningful = [w for w in cat_words if w not in CATEGORY_STOPWORDS and len(w) >= 4]
                     product_cat_words.update(meaningful)
             
-            # 🔥 Also get product NAME words (catches edge cases where category is too broad)
+            # 🔥 Get product NAME words — INCLUDES MODEL NUMBERS  
+            # Captures alphanumeric tokens like "iphone", "14", "plus", "starlight", "s24"
             product_name_words = set()
             name_clean = r.get("name", "").lower()
-            name_words = _re.findall(r'\b[a-z]+\b', name_clean)
+            name_words = _re.findall(r'\b[a-z0-9]+\b', name_clean)
             for w in name_words:
-                if len(w) >= 4 and w not in CATEGORY_STOPWORDS:
+                # Allow ≥2 to keep model numbers (11, 14, s24, m1, etc.)
+                if len(w) >= 2 and w not in CATEGORY_STOPWORDS:
                     product_name_words.add(w)
             
             # Combine for full product signal
             product_all_words = product_cat_words | product_name_words
             
-            # 🔥 SMART ALIGNMENT CHECK with EXACT PRODUCT BOOST
-            # The user typed specific words — products that match ALL of them are the EXACT product.
-            # Products that match only some are RELATED (related models, accessories, etc.)
+            # 🔥 SMART ALIGNMENT CHECK with GUARANTEED EXACT-MATCH PRIORITY
+            # If product name contains ALL user query words → force to top of results.
             
-            # 🎯 Calculate query match ratio (how many query words appear in this product's name)
-            # "iphone 14 plus starlight" → query_intent_words = {iphone, plus, starlight}
-            # Apple iPhone 14 Plus Starlight: name has all 3 → ratio = 1.0 → EXACT MATCH
-            # OtterBox Defender for iPhone 14: name has only "iphone" → ratio = 0.33 → ACCESSORY
             query_match_count = len(query_intent_words & product_name_words)
             query_match_ratio = query_match_count / len(query_intent_words) if query_intent_words else 0
             
-            # 🔥 RULE 0: EXACT PRODUCT MATCH (all query words in name) → MASSIVE BOOST
-            # This is the product the user is searching for. Rank it #1.
+            # 🎯 RULE 0: EXACT PRODUCT MATCH → GUARANTEED #1
+            # OVERRIDES raw_anchor: sets score to 1,000,000+ so exact matches ALWAYS beat
+            # any OpenSearch boost (which can reach 50k-100k for accessories).
+            is_exact_match = False
             if query_match_ratio >= 1.0 and len(query_intent_words) >= 2:
-                combined_score += 50000.0  # 🎯 GUARANTEED top ranking
+                # Set score to BASE + raw_anchor — base alone guarantees top ranking,
+                # raw_anchor breaks ties among multiple exact matches.
+                combined_score = 1_000_000.0 + raw_anchor
+                is_exact_match = True
                 logger.info(
-                    f"🎯 EXACT MATCH: '{r.get('name','')[:40]}' "
-                    f"| has all query words: {sorted(query_intent_words)}"
+                    f"🎯 EXACT #1: '{r.get('name','')[:40]}' "
+                    f"| matches all: {sorted(query_intent_words)[:6]}"
                 )
             
-            if dominant_category_words:
+            if not is_exact_match and dominant_category_words:
                 category_overlap = dominant_category_words & product_cat_words
                 name_overlap = dominant_category_words & product_name_words
                 
