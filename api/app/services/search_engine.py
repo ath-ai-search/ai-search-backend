@@ -346,8 +346,14 @@ async def execute_search(request: SearchRequest) -> dict:
     semantic_shoulds = []
     if vector:
         k_val = min(max(KNN_MIN_K, from_val + request.page_size + KNN_BUFFER), MAX_OS_WINDOW, 300)
-        # 🔥 Boost KNN 10x higher for conversational queries (lets AI understanding dominate)
-        knn_boost = 3.0 if is_conversational else 0.3
+        # 🔥 Boost KNN based on query length
+        # Short queries (1-5 words): KNN OFF (rely on keyword matching for precision)
+        # Long queries (6+ words): KNN ON (need semantic understanding)
+        # Vector search OFF for short queries prevents "Nike Air ≈ Apple Air iPhone" mistakes
+        if is_conversational:
+            knn_boost = 3.0  # Long conversational queries — semantic dominates
+        else:
+            knn_boost = 0.1  # Short queries — minimal influence, prevents false matches
         semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": k_val, "boost": knn_boost}}})
         
         if is_conversational:
@@ -593,8 +599,16 @@ async def execute_search(request: SearchRequest) -> dict:
     
     # 🆕 TRENDING BOOST: Re-rank with popularity from PostgreSQL + Intent & Category Guard
     if request.sort not in ["price_asc", "price_desc"] and results:
+        logger.info(f"🔧 Re-ranking {len(results)} results with category guard...")
         product_ids = [r["id"] for r in results if r.get("id")]
         trending_scores = get_trending_scores(product_ids)
+        
+        # 🔥 EXTRACT QUERY INTENT WORDS FIRST
+        # Get meaningful product words from user's query for direct comparison
+        query_intent_words = set()
+        for word in _re.findall(r'\b[a-z]+\b', (query_text or "").lower()):
+            if len(word) >= 3 and word not in {"and", "the", "for", "with", "all", "color", "size"}:
+                query_intent_words.add(word)
         
         # 🔥 DYNAMIC CATEGORY-BASED RELEVANCE (STRICT MODE)
         # Look at the TOP 3 highest-scoring products (they have the strongest signal)
@@ -655,16 +669,20 @@ async def execute_search(request: SearchRequest) -> dict:
                 if appears_in_any_category:
                     dominant_category_words.add(word)
         
-        if dominant_category_words:
-            logger.info(f"🎯 Dynamic category intent: {list(dominant_category_words)[:7]}")
+        # 🔥 STRENGTHEN: Add query intent words to dominant set
+        # If user types "iphone", "iphone" becomes a hard required signal
+        dominant_category_words.update(query_intent_words)
         
-        # ---- 2. Score each product based on category alignment ----
+        if dominant_category_words:
+            logger.info(f"🎯 Dynamic category intent (combined): {sorted(list(dominant_category_words))[:10]}")
+        
+        # ---- 2. Score each product based on category + name alignment ----
         for r in results:
             raw_anchor = r.pop("_raw_score_anchor", 0)
             trending = trending_scores.get(r["id"], 0)
             combined_score = raw_anchor + (math.log1p(trending) * 1.5)
             
-            # Get product category words
+            # Get product CATEGORY words
             product_cat_words = set()
             for cat in r.get("category", []):
                 if cat:
@@ -672,17 +690,26 @@ async def execute_search(request: SearchRequest) -> dict:
                     meaningful = [w for w in cat_words if w not in CATEGORY_STOPWORDS and len(w) >= 4]
                     product_cat_words.update(meaningful)
             
-            # 🔥 STRICTER ALIGNMENT CHECK
-            # If user intent is clear (dominant words found) AND this product 
-            # has ZERO overlap with those words → product is off-topic → demote heavily
-            if dominant_category_words and product_cat_words:
-                overlap = dominant_category_words & product_cat_words
+            # 🔥 Also get product NAME words (catches edge cases where category is too broad)
+            product_name_words = set()
+            name_clean = r.get("name", "").lower()
+            name_words = _re.findall(r'\b[a-z]+\b', name_clean)
+            for w in name_words:
+                if len(w) >= 4 and w not in CATEGORY_STOPWORDS:
+                    product_name_words.add(w)
+            
+            # Combine for full product signal
+            product_all_words = product_cat_words | product_name_words
+            
+            # 🔥 STRICT ALIGNMENT CHECK
+            if dominant_category_words:
+                overlap = dominant_category_words & product_all_words
                 if not overlap:
-                    # NO category alignment — heavy demote
-                    combined_score -= 10000.0  # 🔥 Increased from -5000 to -10000 for stronger isolation
-            elif dominant_category_words and not product_cat_words:
-                # Product has NO recognizable category but query has clear intent → demote
-                combined_score -= 5000.0
+                    # ZERO overlap with user intent → demote HEAVILY
+                    combined_score -= 50000.0  # 🔥 Massive demote — banishes off-topic products
+                elif len(overlap) == 1 and len(dominant_category_words) > 3:
+                    # Only 1 weak match against many strong signals → moderate demote
+                    combined_score -= 2000.0
             
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
