@@ -772,36 +772,50 @@ async def execute_search(request: SearchRequest) -> dict:
             if count >= 2:  # appears in at least 2 of top 3
                 dominant_category_words.add(word)
         
-        # 🎯 ESSENTIAL BRAND DETECTION (100% dynamic, from top 10 product BRAND fields)
-        # If 30%+ of top 10 results share a brand, that's the user's product type.
-        # All relevant products should have this brand in their name or brand field.
+        # 🎯 ESSENTIAL BRAND DETECTION (100% dynamic, from OpenSearch global aggregation)
+        # 
+        # Why GLOBAL aggregation (not top 10 results):
+        # For short queries like "iphone", OpenSearch ranks SHORT product names higher.
+        # OtterBox case names are short ("Otterbox Defender for iPhone 14") so they
+        # dominate top 10. Apple iPhone names are longer ("Apple iPhone 14 Plus, 256GB,
+        # Midnight - Unlocked Renewed") so they rank lower despite being the main product.
         #
-        # Why TOP 10 (not top 3): top 3 can be polluted by junk that matches query
-        # words but is unrelated (e.g. socks matching "11 white"). Top 10 dilutes this.
-        #
-        # Why count >= 3: stricter than 50% — handles cases where catalog has
-        # mixed legitimate results.
-        #
-        # Supplier-brands (AMAZON, GENERIC, WALMART, etc) are auto-detected dynamically
-        # because they appear across DOZENS of unrelated products — they're noisy
-        # signals and won't be the "most common" if there's a real brand mixed in.
+        # SOLUTION: Use OpenSearch's global_brands aggregation which counts brands
+        # across ALL matching products (not just top 10). 
+        # 
+        # Example for "iphone" query:
+        # - Top 10 results: 8 OtterBox + 2 Apple (skewed by ranking)
+        # - Global aggregation: 50 Apple, 25 OtterBox, 15 others (full picture)
+        # - Apple = 55% of matches → APPLE is essential brand ✓
         essential_brand = None
-        top_brands = []
-        for r in results[:10]:  # 🔥 TOP 10 for reliable signal (was top 3)
-            brand = (r.get("brand") or "").lower().strip()
-            if brand and len(brand) >= 3 and brand not in {"none", "default", "uncategorized"}:
-                top_brands.append(brand)
         
-        if len(top_brands) >= 3:
-            brand_counts = Counter(top_brands)
-            most_common_brand, count = brand_counts.most_common(1)[0]
-            # 🔥 At least 3 of top 10 share this brand (30%+ dominance)
-            # Strong enough signal that this is what user wants
-            if count >= 3:
-                essential_brand = most_common_brand
-                logger.info(f"🏷️ Essential brand detected: '{essential_brand}' (in {count}/10 top results)")
-            else:
-                logger.info(f"🏷️ No dominant brand in top 10 (brand counts: {dict(brand_counts.most_common(3))})")
+        global_brands_buckets = response.get("aggregations", {}).get("global_brands", {}).get("buckets", [])
+        
+        if global_brands_buckets and len(global_brands_buckets) >= 1:
+            total_matching = sum(b.get("doc_count", 0) for b in global_brands_buckets)
+            top_brand_bucket = global_brands_buckets[0]
+            top_brand_name = str(top_brand_bucket.get("key", "")).lower().strip()
+            top_brand_count = top_brand_bucket.get("doc_count", 0)
+            
+            if total_matching > 0 and top_brand_name and len(top_brand_name) >= 3:
+                top_brand_ratio = top_brand_count / total_matching
+                
+                # 🔥 If top brand has 40%+ of ALL matches, it's the essential brand
+                # 40% threshold:
+                #   - "iphone" → Apple = 50%+ → essential (good!)
+                #   - "running shoes" → Nike = 25-30% → not essential (good, multi-brand)
+                #   - "dresses" → top brand = 5% → not essential (good, varied)
+                if top_brand_ratio >= 0.4:
+                    essential_brand = top_brand_name
+                    logger.info(
+                        f"🏷️ Essential brand detected: '{essential_brand}' "
+                        f"({top_brand_count}/{total_matching} = {top_brand_ratio:.0%} of all matches)"
+                    )
+                else:
+                    top_3_brands = [(b.get("key"), b.get("doc_count")) for b in global_brands_buckets[:3]]
+                    logger.info(
+                        f"🏷️ No dominant brand (top {top_brand_ratio:.0%} < 40%): {top_3_brands}"
+                    )
         
         # 🔥 STRONGER: Always add query intent words FIRST — they're the most reliable signal
         # User TYPED these words — they know what they want.
