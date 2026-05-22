@@ -296,6 +296,15 @@ async def execute_search(request: SearchRequest) -> dict:
         semantic_shoulds.extend([
             # 🔥 UNIVERSAL PHRASE BOOST: Exact word ordering gets immediate priority
             {"match_phrase": {"name": {"query": item, "boost": 100.0, "slop": 2}}},
+            
+            # 🔥 STRONG CATEGORY-NAME ALIGNMENT
+            # Boosts products whose CATEGORY matches a key word in query.
+            # When user says "dress" → boosts products in "Dresses" category.
+            # When user says "shirt" → boosts products in "Shirts" category.
+            # When user says "watch" → boosts products in "Watches" category.
+            # Universal: works for any product type, no hardcoding.
+            {"match_phrase": {"category": {"query": item, "boost": 60.0}}},
+            
             {"match_phrase": {"name": {"query": item, "boost": BOOST_NAME_PHRASE}}},
             {"match_phrase": {"brand": {"query": item, "boost": BOOST_BRAND_PHRASE}}},
             {"match": {"category": {"query": item, "boost": BOOST_CATEGORY_MATCH}}},
@@ -499,9 +508,28 @@ async def execute_search(request: SearchRequest) -> dict:
         product_ids = [r["id"] for r in results if r.get("id")]
         trending_scores = get_trending_scores(product_ids)
         
-        # Normalize search text to see if the customer is explicitly trying to buy an accessory
+        # Normalize search text to see if customer explicitly wants accessory
         query_normalized = query_text.lower()
-        user_wants_accessory = any(word in query_normalized for word in ["case", "charger", "cable", "headphones", "earbuds", "glass", "socks", "cover", "mount", "shield", "adapter", "screen protector"])
+        ACCESSORY_INTENT_WORDS = [
+            "case", "charger", "cable", "headphones", "earbuds", "glass", "socks", 
+            "cover", "mount", "shield", "adapter", "screen protector", "watch", "belt", 
+            "wallet", "tie", "cufflink", "bracelet", "ring", "necklace", "earring", "sunglasses",
+            "hat", "cap", "bag", "backpack", "purse"
+        ]
+        user_wants_accessory = any(word in query_normalized for word in ACCESSORY_INTENT_WORDS)
+        
+        # 🔥 EXPANDED ACCESSORY CATEGORIES — covers fashion accessories too
+        ACCESSORY_CATEGORY_WORDS = [
+            "accessory", "accessories", "case", "headphones", "earbuds", "socks", 
+            "charger", "cable", "glass", "watch", "belt", "wallet", "tie", "cufflink",
+            "bracelet", "ring", "necklace", "earring", "sunglass", "hat", "cap",
+            "bag", "backpack", "purse", "handbag", "jewelry"
+        ]
+        ACCESSORY_NAME_WORDS = [
+            "case", "cover", "magsafe", "socks", "headphones", "earbuds", "charger", 
+            "cable", "adapter", "screen protector", "watch", "belt", "wallet", "tie",
+            "cufflink", "bracelet", "ring", "necklace", "earring", "sunglass"
+        ]
         
         for r in results:
             raw_anchor = r.pop("_raw_score_anchor", 0)
@@ -510,16 +538,15 @@ async def execute_search(request: SearchRequest) -> dict:
             import math
             combined_score = raw_anchor + (math.log1p(trending) * 1.5)
             
-            # 🔥 INTENT GUARD: If user is searching for a device (no accessory keywords in query), 
-            # prevent cheap/popular accessories from jumping above core hardware variations.
+            # 🔥 INTENT GUARD: demote accessories when user is searching for main product
             if not user_wants_accessory:
                 is_accessory_item = any(
-                    any(acc_word in str(cat).lower() for acc_word in ["accessory", "case", "headphones", "earbuds", "socks", "charger", "cable", "apparel", "glass"])
+                    any(acc_word in str(cat).lower() for acc_word in ACCESSORY_CATEGORY_WORDS)
                     for cat in r.get("category", [])
-                ) or any(acc_word in r.get("name", "").lower() for acc_word in ["case", "cover", "magsafe", "socks", "headphones", "earbuds", "charger", "cable", "adapter", "screen protector"])
+                ) or any(acc_word in r.get("name", "").lower() for acc_word in ACCESSORY_NAME_WORDS)
                 
                 if is_accessory_item:
-                    combined_score -= 1000.0  # Drops them safely into a secondary tier below core hardware items
+                    combined_score -= 1000.0  # heavy demote
             
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
