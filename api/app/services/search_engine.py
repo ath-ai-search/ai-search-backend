@@ -85,11 +85,22 @@ async def correct_query_typos(query: str, aggressive: bool = False) -> tuple:
             options = word_data.get("options", [])
             
             if options and options[0].get("score", 0) > threshold:
-                suggested_word = options[0]["text"]
+                # 🔥 SMART CORRECTION SELECTION
+                # Among all suggestions, PREFER ones where original is a PREFIX.
+                # E.g. "leath" → "leather" (prefix extension) beats "leath" → "leash" (letter change)
+                # This handles partial-word typos better.
+                best_suggestion = options[0]["text"]
+                
+                # Look for prefix matches in the options (top 5)
+                for opt in options[:5]:
+                    opt_text = opt.get("text", "")
+                    # If original is a prefix of the suggestion, prefer it
+                    if opt_text.startswith(original_word) and len(opt_text) > len(original_word):
+                        best_suggestion = opt_text
+                        break
                 
                 # 🔥 SAFETY CHECK: Don't correct if original word actually exists in catalog
-                # This prevents "linger" → "longer" when "linger" is a real word
-                # Check by doing a quick term existence search
+                # This prevents "linger" → "longer" when "linger" matches real products
                 if not aggressive:
                     try:
                         exists_check = os_client.search(
@@ -110,15 +121,14 @@ async def correct_query_typos(query: str, aggressive: bool = False) -> tuple:
                         )
                         original_exists_count = exists_check.get("hits", {}).get("total", {}).get("value", 0)
                         
-                        # If the original word matches ≥5 products in catalog, it's a real word
-                        # → don't auto-correct it
+                        # If the original word matches ≥5 products, keep it
                         if original_exists_count >= 5:
                             corrected_words.append(original_word)
                             continue
                     except Exception:
                         pass
                 
-                corrected_words.append(suggested_word)
+                corrected_words.append(best_suggestion)
                 has_correction = True
             else:
                 corrected_words.append(original_word)
