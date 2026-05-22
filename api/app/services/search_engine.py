@@ -42,6 +42,9 @@ async def correct_query_typos(query: str) -> tuple:
       "samsng glax" → "samsung galaxy"
       "nikr shoe"   → "nike shoes"
     
+    🔥 IMPORTANT: We DON'T correct words that ALREADY EXIST in the catalog.
+    "Starlight" is a real Apple color — don't auto-correct it to "Straight"!
+    
     Returns: (corrected_query: str, was_corrected: bool)
     """
     if not query or len(query.strip()) < 3:
@@ -57,10 +60,10 @@ async def correct_query_typos(query: str) -> tuple:
                         "text": query,
                         "term": {
                             "field": "name",
-                            "suggest_mode": "popular",   # only suggest words from popular products
-                            "min_word_length": 3,        # don't correct tiny words
-                            "max_edits": 2,              # up to 2 letter changes per word
-                            "prefix_length": 1           # first letter must match (prevents wild corrections)
+                            "suggest_mode": "missing",   # 🔥 CHANGED: only suggest if word is NOT in index
+                            "min_word_length": 4,        # 🔥 Increased — don't correct short words
+                            "max_edits": 1,              # 🔥 Reduced — only 1 letter changes (safer)
+                            "prefix_length": 2           # 🔥 Increased — first 2 letters must match
                         }
                     }
                 }
@@ -75,8 +78,9 @@ async def correct_query_typos(query: str) -> tuple:
             original_word = word_data.get("text", "")
             options = word_data.get("options", [])
             
-            if options and options[0].get("score", 0) > 0.7:
-                # High confidence correction
+            # 🔥 Only accept correction if HIGH confidence (>0.85, was 0.7)
+            # AND the suggested word is significantly different (not just a casing match)
+            if options and options[0].get("score", 0) > 0.85:
                 corrected_words.append(options[0]["text"])
                 has_correction = True
             else:
