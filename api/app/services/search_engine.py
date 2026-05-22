@@ -144,7 +144,7 @@ from app.core.constants import (
 )
 logger = logging.getLogger(__name__)
 
-MIN_RELEVANCE_SCORE = 5.0  # 🔥 Lower threshold = more results. Heavy boosts at line 182 keep exact matches at top.
+MIN_RELEVANCE_SCORE = 25.0  # 🆕 Stricter threshold — removes weak vector matches
 async def execute_search(request: SearchRequest) -> dict:
     _start_time = time.perf_counter()  # 🆕 Start timing    
     request.page_size = DEFAULT_PAGE_SIZE if request.page_size != SMALL_PAGE_SIZE else SMALL_PAGE_SIZE
@@ -294,27 +294,24 @@ async def execute_search(request: SearchRequest) -> dict:
         semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": k_val, "boost": 0.3}}})    
     for item in multi_items:
         semantic_shoulds.extend([
-            # 🔥 TIER 1: PERFECT MATCH (massive boost — guarantees #1 spot)
-            {"match_phrase": {"name": {"query": item, "boost": 500.0, "slop": 0}}},  # Exact phrase, no word reordering
+            # 🔥 UNIVERSAL PHRASE BOOST: Exact word ordering gets immediate priority
+            {"match_phrase": {"name": {"query": item, "boost": 100.0, "slop": 2}}},
             
-            # 🔥 TIER 2: NEAR-EXACT (slight reordering allowed)
-            {"match_phrase": {"name": {"query": item, "boost": 200.0, "slop": 2}}},
-            
-            # 🔥 TIER 3: ALL WORDS PRESENT (strong but lower than phrase match)
-            {"multi_match": {
-                "query": item,
-                "fields": ["name^15"],
-                "type": "best_fields",
-                "operator": "and",  # all words must match
-                "boost": 100.0
-            }},
-            
-            # 🔥 TIER 4: CATEGORY ALIGNMENT (when user mentions "dress", boost Dress category)
+            # 🔥 STRONG CATEGORY-NAME ALIGNMENT
+            # Boosts products whose CATEGORY matches a key word in query.
+            # When user says "dress" → boosts products in "Dresses" category.
+            # When user says "shirt" → boosts products in "Shirts" category.
+            # When user says "watch" → boosts products in "Watches" category.
+            # Universal: works for any product type, no hardcoding.
             {"match_phrase": {"category": {"query": item, "boost": 60.0}}},
             
             {"match_phrase": {"name": {"query": item, "boost": BOOST_NAME_PHRASE}}},
             {"match_phrase": {"brand": {"query": item, "boost": BOOST_BRAND_PHRASE}}},
             {"match": {"category": {"query": item, "boost": BOOST_CATEGORY_MATCH}}},
+            
+            # 🔥 JUNK-WORD SAFETY NET: If the user adds words like "color", this heavily boosts the core product anyway
+            {"multi_match": {"query": item, "fields": ["name^10", "brand^5", "category^3"], "type": "cross_fields", "minimum_should_match": "80%", "boost": 80.0}},
+            
             {"multi_match": {"query": item, "fields": ["name^10", "brand^5", "category^3", "description"], "type": "cross_fields", "operator": "and", "boost": BOOST_CROSS_FIELDS}},
             {"multi_match": {"query": item, "fields": ["name^5", "brand^3", "category^2", "description"], "type": "best_fields", "fuzziness": "AUTO", "boost": BOOST_FUZZY_FALLBACK}}
         ])
@@ -325,7 +322,7 @@ async def execute_search(request: SearchRequest) -> dict:
             score_functions.append({"filter": {"match": {"name": acc}}, "weight": ACCESSORY_DEMOTION_WEIGHT})
             score_functions.append({"filter": {"match": {"category": acc}}, "weight": ACCESSORY_DEMOTION_WEIGHT})
     
-    # 🆕 GLOBAL DYNAMIC GATEKEEPER (Universal Fix for Short & Long Queries)
+    # 🆕 GLOBAL DYNAMIC GATEKEEPER (Amazon-Style Lenient Tiering)
     must_clauses = []
     if core_query:
         for item in multi_items:
@@ -334,7 +331,7 @@ async def execute_search(request: SearchRequest) -> dict:
                     "query": item,
                     "fields": ["name^10", "category^4", "brand^3"], 
                     "type": "cross_fields",
-                    "minimum_should_match": "60%"  # 🔥 LENIENT: 60% words must match (allows similar products). Heavy phrase boost at line 182 ranks exact match at #1.
+                    "minimum_should_match": "2<50%"  # 🔥 Accurate matches rank #1, related products fill the remaining rows!
                 }
             })
     
