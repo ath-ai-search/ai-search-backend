@@ -195,6 +195,49 @@ async def execute_search(request: SearchRequest) -> dict:
     filters = [{"term": {"in_stock": True}}]
     must_nots = []
     
+    # 🔥 AUTO-DETECT GENDER FROM QUERY TEXT (universal fix)
+    # When user types "men", "women", "kids", etc. — treat as HARD filter
+    # Also blocks opposite-gender products from showing.
+    query_lower = (query_text or "").lower()
+    query_tokens = re.findall(r'\b[a-z]+\b', query_lower)
+    
+    GENDER_PATTERNS = {
+        "men":     {"match": ["men", "mens", "male", "man", "gentleman"],     "opposite": ["women", "womens", "female", "woman", "ladies", "girls"]},
+        "women":   {"match": ["women", "womens", "female", "woman", "ladies", "lady"], "opposite": ["men", "mens", "male", "man", "boys"]},
+        "kids":    {"match": ["kids", "kid", "children", "child"],            "opposite": []},
+        "boys":    {"match": ["boys", "boy"],                                  "opposite": ["girls", "girl"]},
+        "girls":   {"match": ["girls", "girl"],                                "opposite": ["boys", "boy"]},
+        "unisex":  {"match": ["unisex"],                                       "opposite": []},
+    }
+    
+    detected_gender = None
+    for gender_label, config in GENDER_PATTERNS.items():
+        if any(word in query_tokens for word in config["match"]):
+            detected_gender = (gender_label, config)
+            break
+    
+    if detected_gender:
+        gender_label, config = detected_gender
+        # Add positive filter: product must mention this gender
+        gender_shoulds = []
+        for word in config["match"]:
+            gender_shoulds.extend([
+                {"match": {"gender": word}},
+                {"match": {"attributes.gender": word}},
+                {"match": {"attributes.Gender": word}},
+                {"match_phrase": {"category": word}},
+                {"match_phrase": {"name": word}},
+            ])
+        filters.append({"bool": {"should": gender_shoulds, "minimum_should_match": 1}})
+        
+        # Add negative filter: BLOCK opposite gender products  
+        if config["opposite"]:
+            for opp in config["opposite"]:
+                must_nots.append({"match_phrase": {"name": opp}})
+                must_nots.append({"match_phrase": {"category": opp}})
+        
+        logger.info(f"🚻 Auto-detected gender: {gender_label} (from query: '{query_text}')")
+    
     if matrix["min_price"] is not None or matrix["max_price"] is not None:
         price_range = {}
         if matrix["min_price"] is not None: price_range["gte"] = matrix["min_price"]
