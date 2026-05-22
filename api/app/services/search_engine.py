@@ -703,29 +703,29 @@ async def execute_search(request: SearchRequest) -> dict:
             # Combine for full product signal
             product_all_words = product_cat_words | product_name_words
             
-            # 🔥 STRICT ALIGNMENT CHECK — Compares product's CATEGORY (not just name) with intent
-            # The category field tells us what KIND of product it is.
-            # If user wants "iphone" but product category is "Shoes" → demote, even if name has "Apple"
+            # 🔥 STRICT ALIGNMENT CHECK with BANISH log
+            # Compares product's CATEGORY against query intent.
+            # If NO category overlap → BANISH (works for Nike Shoes vs iPhone search etc.)
             
             if dominant_category_words:
-                # Count overlap with CATEGORY only (most reliable signal)
                 category_overlap = dominant_category_words & product_cat_words
-                
-                # Count overlap with full product (name + category)
                 full_overlap = dominant_category_words & product_all_words
                 
-                # 🔥 RULE 1: No category overlap at all → BANISH
-                # Even if name has "Apple", if category is "Shoes" → wrong product
+                # 🔥 RULE 1: NO CATEGORY MATCH → BANISH
                 if not category_overlap:
-                    combined_score -= 50000.0
-                
-                # 🔥 RULE 2: Very weak match (only 1 word out of many) → moderate demote
+                    combined_score -= 100000.0  # 🔥 Massive — guaranteed to drop to bottom
+                    logger.info(
+                        f"🔻 BANISH: '{r.get('name','')[:40]}' "
+                        f"| cat={list(product_cat_words)[:3]} "
+                        f"| no overlap with {sorted(dominant_category_words)[:5]} "
+                        f"| score: {raw_anchor:.1f} → {combined_score:.1f}"
+                    )
+                # 🔥 RULE 2: Weak match — 1 word only → moderate demote
                 elif len(category_overlap) == 1 and len(dominant_category_words) >= 3:
                     combined_score -= 5000.0
-                
-                # 🔥 RULE 3: Bonus boost if category overlap is strong (≥2 matching words)
+                # 🔥 RULE 3: Strong match → bonus
                 elif len(category_overlap) >= 2:
-                    combined_score += 500.0  # reward perfectly-aligned products
+                    combined_score += 500.0
             
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
