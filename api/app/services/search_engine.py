@@ -718,6 +718,34 @@ async def execute_search(request: SearchRequest) -> dict:
         import re as _re
         from collections import Counter
         
+        # 🔥 PLURAL-AWARE WORD MATCHING (100% dynamic, no hardcoded list)
+        # 
+        # Fixes the bug where "dress" search returns 0 results because:
+        # - query word = "dress"
+        # - product category words = {"dresses"}
+        # - direct set intersection: dress ≠ dresses → empty → product banished
+        #
+        # With this helper, "dress" matches "dresses" and "shoes" matches "shoe", etc.
+        def _words_match(w1, w2):
+            """Check if two words match exactly OR as plural/singular variants."""
+            if w1 == w2:
+                return True
+            # Handle plural forms: dress↔dresses, shoe↔shoes, watch↔watches
+            short, long_w = (w1, w2) if len(w1) < len(w2) else (w2, w1)
+            if long_w == short + "s" or long_w == short + "es":
+                return True
+            return False
+        
+        def _words_intersect(set_a, set_b):
+            """Intersection that handles plurals: {dress} ∩ {dresses} = {dress}."""
+            result = set()
+            for a in set_a:
+                for b in set_b:
+                    if _words_match(a, b):
+                        result.add(a)
+                        break
+            return result
+        
         logger.debug(f"🔧 Re-ranking {len(results)} results with category guard...")
         product_ids = [r["id"] for r in results if r.get("id")]
         trending_scores = get_trending_scores(product_ids)
@@ -901,8 +929,9 @@ async def execute_search(request: SearchRequest) -> dict:
             # ═══════════════════════════════════════════════════════════════════
             failed_accessory_check = False
             if not failed_brand_check and dominant_category_words:
-                category_overlap = dominant_category_words & product_cat_words
-                name_overlap = dominant_category_words & product_name_words
+                # 🔥 Use plural-aware intersection (dress ↔ dresses, shoe ↔ shoes)
+                category_overlap = _words_intersect(dominant_category_words, product_cat_words)
+                name_overlap = _words_intersect(dominant_category_words, product_name_words)
                 
                 is_likely_accessory = (
                     len(product_cat_words) > 0 and       # has a real category
@@ -940,8 +969,9 @@ async def execute_search(request: SearchRequest) -> dict:
                     )
                 # 🔥 Strong name overlap (no exact match but most words match)
                 elif dominant_category_words:
-                    category_overlap = dominant_category_words & product_cat_words
-                    name_overlap = dominant_category_words & product_name_words
+                    # 🔥 Use plural-aware intersection
+                    category_overlap = _words_intersect(dominant_category_words, product_cat_words)
+                    name_overlap = _words_intersect(dominant_category_words, product_name_words)
                     
                     if not category_overlap and len(name_overlap) >= 2:
                         # iPhone variants without category but name matches
