@@ -507,13 +507,15 @@ async def execute_search(request: SearchRequest) -> dict:
             "trending_score": 0  
         })
     
-    # 🆕 TRENDING BOOST: Re-rank with popularity from PostgreSQL + Intent Guard
+    # 🆕 TRENDING BOOST: Re-rank with popularity from PostgreSQL + Intent & Category Guard
     if request.sort not in ["price_asc", "price_desc"] and results:
         product_ids = [r["id"] for r in results if r.get("id")]
         trending_scores = get_trending_scores(product_ids)
         
-        # Normalize search text to see if customer explicitly wants accessory
+        # 1. Normalize search text
         query_normalized = query_text.lower()
+        
+        # 2. Detect Accessory Intent
         ACCESSORY_INTENT_WORDS = [
             "case", "charger", "cable", "headphones", "earbuds", "glass", "socks", 
             "cover", "mount", "shield", "adapter", "screen protector", "watch", "belt", 
@@ -522,7 +524,10 @@ async def execute_search(request: SearchRequest) -> dict:
         ]
         user_wants_accessory = any(word in query_normalized for word in ACCESSORY_INTENT_WORDS)
         
-        # 🔥 EXPANDED ACCESSORY CATEGORIES — covers fashion accessories too
+        # 3. Detect Broad Category Intent (Hardware vs Apparel/Home)
+        user_wants_tech = any(word in query_normalized for word in ["iphone", "apple", "samsung", "phone", "laptop", "macbook", "ipad", "tablet", "electronics"])
+        user_wants_apparel = any(word in query_normalized for word in ["shirt", "dress", "pants", "shoes", "sneakers", "clothing", "jeans", "socks", "apparel"])
+        
         ACCESSORY_CATEGORY_WORDS = [
             "accessory", "accessories", "case", "headphones", "earbuds", "socks", 
             "charger", "cable", "glass", "watch", "belt", "wallet", "tie", "cufflink",
@@ -542,7 +547,7 @@ async def execute_search(request: SearchRequest) -> dict:
             import math
             combined_score = raw_anchor + (math.log1p(trending) * 1.5)
             
-            # 🔥 INTENT GUARD: demote accessories when user is searching for main product
+            # 🔥 GUARD A: Accessory Demotion (Protects Core Hardware)
             if not user_wants_accessory:
                 is_accessory_item = any(
                     any(acc_word in str(cat).lower() for acc_word in ACCESSORY_CATEGORY_WORDS)
@@ -550,8 +555,21 @@ async def execute_search(request: SearchRequest) -> dict:
                 ) or any(acc_word in r.get("name", "").lower() for acc_word in ACCESSORY_NAME_WORDS)
                 
                 if is_accessory_item:
-                    combined_score -= 1000.0  # heavy demote
+                    combined_score -= 1000.0  
             
+            # 🔥 GUARD B: Cross-Category Isolation (The Shoe Fix)
+            # If the user searches for an iPhone/Tech, we absolutely banish Shoes, Furniture, and Home goods.
+            if user_wants_tech:
+                is_unrelated = any(any(w in str(cat).lower() for w in ["shoes", "clothing", "home", "furniture", "apparel", "beauty", "kitchen", "desk", "vanity"]) for cat in r.get("category", []))
+                if is_unrelated:
+                    combined_score -= 5000.0  # Sends them 100 pages deep out of view
+            
+            # If the user searches for clothes/shoes, we absolutely banish Electronics.
+            if user_wants_apparel:
+                is_unrelated = any(any(w in str(cat).lower() for w in ["electronics", "phones", "computers", "tablets", "appliances"]) for cat in r.get("category", []))
+                if is_unrelated:
+                    combined_score -= 5000.0
+
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
         
