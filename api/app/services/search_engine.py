@@ -348,7 +348,8 @@ async def execute_search(request: SearchRequest) -> dict:
     
     semantic_shoulds = []
     if vector:
-        k_val = min(max(KNN_MIN_K, from_val + request.page_size + KNN_BUFFER), MAX_OS_WINDOW, 300)
+        # 🔥 Bigger candidate pool — more options to filter through
+        k_val = min(max(KNN_MIN_K, from_val + request.page_size + 200), MAX_OS_WINDOW, 500)
         # 🔥 Boost KNN based on query length
         # Short queries (1-5 words): KNN OFF (rely on keyword matching for precision)
         # Long queries (6+ words): KNN ON (need semantic understanding)
@@ -412,9 +413,9 @@ async def execute_search(request: SearchRequest) -> dict:
                         "query": item,
                         "fields": ["name^10", "category^10", "brand^3"], 
                         "type": "cross_fields",
-                        # 🔥 Amazon-style: lenient match so MANY products show
-                        # Color/exact words become BOOSTS not filters
-                        "minimum_should_match": "1<1 3<50%"
+                        # 🔥 Very lenient — just need 1 word match (Amazon-style)
+                        # We'll filter off-topic products via dynamic guard later
+                        "minimum_should_match": "1"
                     }
                 })
             
@@ -634,11 +635,12 @@ async def execute_search(request: SearchRequest) -> dict:
             "men", "women", "kids", "boys", "girls", "unisex",  # gender, handled separately
         }
         
-        # ---- 1. Find DOMINANT category words from TOP 3 results ONLY ----
-        # Top 3 have the highest match scores, so they best represent user intent.
-        # If user searches "iphone 11 white" → top 3 are iPhones → categories: Cell Phones, Apple iPhone, Phones
+        # ---- 1. Find DOMINANT category words from TOP 5 results ----
+        # Top 5 have strongest match — they tell us what category user really wants.
+        # Example: "iphone 11 white" → top 5 are iPhones → category words: phones, cell, apple, iphone
+        # Then any product whose category doesn't overlap with these = OFF-TOPIC = banish
         top_results_categories = []
-        for r in results[:3]:  # 🔥 Only top 3, not top 10 (stricter signal)
+        for r in results[:5]:  # 🔥 Top 5 for better signal
             for cat in r.get("category", []):
                 if cat:
                     cat_clean = str(cat).strip().lower()
@@ -743,9 +745,22 @@ async def execute_search(request: SearchRequest) -> dict:
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
         
-        # Sort by combined_score — banished products sink to bottom but stay visible
-        # Amazon-style: exact match first, similar products fill the page
+        # Sort by combined_score — exact matches at top, similar products below
         results.sort(key=lambda x: x.get("combined_score", 0), reverse=True)
+        
+        # 🚫 REMOVE BANISHED PRODUCTS (off-topic items)
+        # iPhone search should NEVER show shoes. Shoes search should NEVER show phones.
+        # The dynamic guard banishes off-topic products with -100000 penalty.
+        # We filter them out here so user only sees products in the right category.
+        original_count = len(results)
+        results = [r for r in results if r.get("combined_score", 0) > -10000]
+        banished_count = original_count - len(results)
+        
+        if banished_count > 0:
+            logger.info(f"🚫 Removed {banished_count} off-topic products (kept {len(results)} relevant)")
+            total_hits = max(0, total_hits - banished_count)
+            raw_total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
+            total_pages = min(raw_total_pages, max_safe_page)
         
         for r in results:
             r.pop("combined_score", None)
