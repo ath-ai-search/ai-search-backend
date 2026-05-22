@@ -32,6 +32,68 @@ DB_CONFIG_TRENDING = {
 }
 
 
+async def correct_query_typos(query: str) -> tuple:
+    """
+    🔤 TYPO CORRECTION using OpenSearch's TERM SUGGESTER (unsupervised learning).
+    Auto-learns spellings from your product catalog — no hardcoded dictionary.
+    
+    Examples:
+      "ihpone 11"   → "iphone 11"
+      "samsng glax" → "samsung galaxy"
+      "nikr shoe"   → "nike shoes"
+    
+    Returns: (corrected_query: str, was_corrected: bool)
+    """
+    if not query or len(query.strip()) < 3:
+        return query, False
+    
+    try:
+        resp = os_client.search(
+            index=INDEX_NAME,
+            body={
+                "size": 0,
+                "suggest": {
+                    "fix_typos": {
+                        "text": query,
+                        "term": {
+                            "field": "name",
+                            "suggest_mode": "popular",   # only suggest words from popular products
+                            "min_word_length": 3,        # don't correct tiny words
+                            "max_edits": 2,              # up to 2 letter changes per word
+                            "prefix_length": 1           # first letter must match (prevents wild corrections)
+                        }
+                    }
+                }
+            }
+        )
+        
+        suggestions = resp.get("suggest", {}).get("fix_typos", [])
+        corrected_words = []
+        has_correction = False
+        
+        for word_data in suggestions:
+            original_word = word_data.get("text", "")
+            options = word_data.get("options", [])
+            
+            if options and options[0].get("score", 0) > 0.7:
+                # High confidence correction
+                corrected_words.append(options[0]["text"])
+                has_correction = True
+            else:
+                # Keep original word
+                corrected_words.append(original_word)
+        
+        if has_correction:
+            corrected = " ".join(corrected_words)
+            logger.info(f"🔤 Typo correction: '{query}' → '{corrected}'")
+            return corrected, True
+        
+        return query, False
+    except Exception as e:
+        logger.error(f"❌ Typo correction failed: {e}")
+        return query, False
+
+
 def get_trending_scores(product_ids: list) -> dict:
     """🆕 Fetch trending scores from PostgreSQL for given products."""
     if not product_ids:
@@ -67,6 +129,7 @@ def get_trending_scores(product_ids: list) -> dict:
         logger.error(f"❌ Trending fetch failed: {e}")
         return {}
 
+
 from app.core.constants import (
     MAX_OS_WINDOW, DEFAULT_PAGE_SIZE, SMALL_PAGE_SIZE,
     BOOST_NAME_PHRASE, BOOST_BRAND_PHRASE, BOOST_CATEGORY_MATCH,
@@ -101,6 +164,16 @@ async def execute_search(request: SearchRequest) -> dict:
     from_val = (request.page - 1) * request.page_size
     
     query_text = request.query.strip() if request.query else ""
+    
+    # 🔤 STAGE 1: Auto-correct typos using OpenSearch's term suggester
+    # "ihpone 11" → "iphone 11" before searching
+    was_corrected = False
+    original_query_for_log = query_text
+    if query_text and len(query_text) >= 3:
+        corrected_query, was_corrected = await correct_query_typos(query_text)
+        if was_corrected:
+            query_text = corrected_query
+    
     matrix = extract_semantic_matrix(query_text)
     core_query = matrix["core_query"]
     
@@ -202,7 +275,7 @@ async def execute_search(request: SearchRequest) -> dict:
                     "query": item,
                     "fields": ["name^10", "category^4", "brand^3"], 
                     "type": "cross_fields",
-                    "minimum_should_match": "2<75%"  # 🔥 Exact matches rank #1, alternatives (3/4 words) show below, irrelevant items are blocked
+                    "minimum_should_match": "3<-1 6<-2 10<70%"  # 🔥 Scales with query length: ≤3→ALL, 4-6→allow 1 missing, 7-10→allow 2 missing, 11+→70% lenient
                 }
             })
     
@@ -271,6 +344,71 @@ async def execute_search(request: SearchRequest) -> dict:
     
     hits = response.get("hits", {})
     total_hits = actual_total_hits if (use_min_score and actual_total_hits > 0) else hits.get("total", {}).get("value", 0)
+    
+    # 🛡️ ZERO-RESULT FALLBACK CHAIN — guarantees we NEVER show empty results
+    # If strict search returned nothing, gracefully relax to find similar products
+    if total_hits == 0 and core_query and request.page == 1:
+        logger.warning(f"⚠️ Zero results for '{query_text}' — trying smart fallback")
+        
+        # 🔄 FALLBACK 1: Pure semantic vector search (finds similar items even if exact words don't match)
+        if vector:
+            try:
+                fallback_query = {
+                    "from": 0,
+                    "size": request.page_size,
+                    "query": {
+                        "bool": {
+                            "must": [
+                                {"knn": {"embedding": {"vector": vector, "k": 50}}}
+                            ],
+                            "filter": [{"term": {"in_stock": True}}]
+                        }
+                    },
+                    "track_total_hits": True
+                }
+                fallback_resp = os_client.search(index=INDEX_NAME, body=fallback_query)
+                fallback_hits_data = fallback_resp.get("hits", {}).get("hits", [])
+                
+                if fallback_hits_data:
+                    logger.info(f"✅ Vector fallback found {len(fallback_hits_data)} similar products")
+                    response = fallback_resp
+                    hits = response.get("hits", {})
+                    total_hits = hits.get("total", {}).get("value", 0)
+            except Exception as e:
+                logger.error(f"❌ Vector fallback failed: {e}")
+        
+        # 🔄 FALLBACK 2: If vector fallback also empty, try loose OR-based match
+        if total_hits == 0:
+            try:
+                loose_query = {
+                    "from": 0,
+                    "size": request.page_size,
+                    "query": {
+                        "bool": {
+                            "should": [
+                                {"multi_match": {
+                                    "query": core_query,
+                                    "fields": ["name^3", "category", "brand"],
+                                    "fuzziness": "AUTO",
+                                    "operator": "or"
+                                }}
+                            ],
+                            "filter": [{"term": {"in_stock": True}}],
+                            "minimum_should_match": 1
+                        }
+                    },
+                    "track_total_hits": True
+                }
+                loose_resp = os_client.search(index=INDEX_NAME, body=loose_query)
+                loose_hits_data = loose_resp.get("hits", {}).get("hits", [])
+                
+                if loose_hits_data:
+                    logger.info(f"✅ Loose fallback found {len(loose_hits_data)} products")
+                    response = loose_resp
+                    hits = response.get("hits", {})
+                    total_hits = hits.get("total", {}).get("value", 0)
+            except Exception as e:
+                logger.error(f"❌ Loose fallback failed: {e}")
     
     raw_total_pages = (total_hits + request.page_size - 1) // request.page_size if total_hits > 0 else 0
     total_pages = min(raw_total_pages, max_safe_page)
