@@ -599,6 +599,11 @@ async def execute_search(request: SearchRequest) -> dict:
     
     # 🆕 TRENDING BOOST: Re-rank with popularity from PostgreSQL + Intent & Category Guard
     if request.sort not in ["price_asc", "price_desc"] and results:
+        # 🔥 IMPORTS FIRST — must come BEFORE any use of _re/math/Counter
+        import math
+        import re as _re
+        from collections import Counter
+        
         logger.info(f"🔧 Re-ranking {len(results)} results with category guard...")
         product_ids = [r["id"] for r in results if r.get("id")]
         trending_scores = get_trending_scores(product_ids)
@@ -614,10 +619,6 @@ async def execute_search(request: SearchRequest) -> dict:
         # Look at the TOP 3 highest-scoring products (they have the strongest signal)
         # and use THEIR categories as the gold standard. Anything different = demoted.
         # 100% dynamic, works for any product type, no hardcoded lists.
-        
-        import math
-        import re as _re
-        from collections import Counter
         
         # Common "stopword" category words to ignore (too generic)
         CATEGORY_STOPWORDS = {
