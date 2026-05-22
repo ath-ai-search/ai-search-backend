@@ -265,18 +265,9 @@ async def process_ai_assistant(
         # STEP 7: APPLY INTERCEPTORS (Bulletproof Fixes)
         # =====================================================================
         
-        # ---------------- MENSWEAR INTERCEPTOR ----------------
-        # Fixes: "men's dress" → "suits | dress shirts"
-        menswear_result = apply_menswear_interceptor(
-            query=updated_request.query,
-            genders=getattr(new_filters_obj, "gender", []),
-            ai_message=parsed_intent.get("ai_message", ""),
-            suggestions=parsed_intent.get("suggestions", [])
-        )
-        # Update values (if interceptor didn't trigger, values are unchanged)
-        updated_request.query = menswear_result["query"]
-        parsed_intent["ai_message"] = menswear_result["ai_message"]
-        parsed_intent["suggestions"] = menswear_result["suggestions"]
+        # ---------------- MENSWEAR INTERCEPTOR REMOVED ----------------
+        # We removed the hardcoded menswear interceptor because our search engine's 
+        # dynamic AI and Gender Guards are now smart enough to handle this natively!
         
         # ---------------- APPLE INTERCEPTOR ----------------
         # Fixes: "apple" → force brand=Apple (tech company, not fruit)

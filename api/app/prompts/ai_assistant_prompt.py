@@ -60,7 +60,7 @@ def build_ai_assistant_prompt(
 
     🔥 CRITICAL LOGIC RULES:
     1. FILTERING (Refine): If the user types a color, size, price (e.g., "under 50"), GENDER, or SORT ORDER and DOES NOT name a completely different product, set intent to "refine". KEEP the 'search_query' exactly as "{current_query}" and extract the variables.
-    2. NEW SEARCH: If the user types a new product (e.g., current context is "shoes" but they type "iphone"), set intent to "new_search". Change 'search_query' to the new product and clear old filters.
+    2. NEW SEARCH: If the user types a new product, set intent to "new_search". Change 'search_query' to EXACTLY what the user typed and clear old filters. NEVER re-write, assume, or translate their intent. (e.g., if they ask for "formal red dresses for men", set the query to exactly "formal red dresses for men" — do NOT change it to "suits").
     3. BRAND AWARENESS: "Apple" ALWAYS refers to the technology company (MacBook, iPhone, iPad). NEVER treat it as a fruit.
     4. PRICE PARSING: Extract numerical limits only. NO $ signs.
     5. SORT DETECTION: Detect sort intent in user's words and set the "sort" field accordingly. Use exactly these values:

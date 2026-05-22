@@ -258,9 +258,57 @@ async def execute_search(request: SearchRequest) -> dict:
             size_shoulds = [{"multi_match": {"query": str(s).strip() if "size" in str(s).lower() else f"size {str(s).strip()} {str(s).strip()}", "fields": ["size", "sizes", "name"], "type": "best_fields"}} for s in request.filters.size[:MAX_SIZE_FILTERS]]
             filters.append({"bool": {"should": size_shoulds, "minimum_should_match": 1}})
         if getattr(request.filters, "gender", None):
-            # Added case variations for custom fields ('attributes.Gender') to ensure matches across all synced datasets
-            gender_shoulds = [{"multi_match": {"query": str(g).strip(), "fields": ["gender", "attributes.gender", "attributes.Gender", "category", "name"], "type": "best_fields", "fuzziness": "AUTO"}} for g in request.filters.gender[:MAX_GENDER_FILTERS]]
-            filters.append({"bool": {"should": gender_shoulds, "minimum_should_match": 1}})
+            # 🔥 STRICT GENDER FILTER (no fuzziness — "men" must not match "women")
+            # Also blocks opposite gender via must_not for hard isolation.
+            FILTER_GENDER_PATTERNS = {
+                "men":     {"match": ["men", "mens", "male", "man", "gentleman"],     "opposite": ["women", "womens", "female", "woman", "ladies", "lady", "girls"]},
+                "women":   {"match": ["women", "womens", "female", "woman", "ladies", "lady"], "opposite": ["men", "mens", "male", "man", "gentleman", "boys"]},
+                "kids":    {"match": ["kids", "kid", "children", "child"],            "opposite": []},
+                "boys":    {"match": ["boys", "boy"],                                  "opposite": ["girls", "girl"]},
+                "girls":   {"match": ["girls", "girl"],                                "opposite": ["boys", "boy"]},
+                "unisex":  {"match": ["unisex"],                                       "opposite": []},
+            }
+            
+            gender_shoulds = []
+            blocked_opposites = set()
+            
+            for g in request.filters.gender[:MAX_GENDER_FILTERS]:
+                g_clean = str(g).strip().lower()
+                config = FILTER_GENDER_PATTERNS.get(g_clean)
+                
+                if config:
+                    # Build POSITIVE match for this gender + variants (NO fuzziness)
+                    for word in config["match"]:
+                        gender_shoulds.extend([
+                            {"match": {"gender": word}},
+                            {"match": {"attributes.gender": word}},
+                            {"match": {"attributes.Gender": word}},
+                            {"match_phrase": {"category": word}},
+                            {"match_phrase": {"name": word}},
+                        ])
+                    # Collect opposite-gender words to block
+                    for opp in config["opposite"]:
+                        blocked_opposites.add(opp)
+                else:
+                    # Fallback: unknown gender label, basic match (no fuzziness)
+                    gender_shoulds.extend([
+                        {"match": {"gender": g_clean}},
+                        {"match": {"attributes.gender": g_clean}},
+                        {"match": {"attributes.Gender": g_clean}},
+                        {"match_phrase": {"category": g_clean}},
+                        {"match_phrase": {"name": g_clean}},
+                    ])
+            
+            if gender_shoulds:
+                filters.append({"bool": {"should": gender_shoulds, "minimum_should_match": 1}})
+            
+            # 🚫 BLOCK opposite-gender products at must_not level (HARD BLOCK)
+            for opp in blocked_opposites:
+                must_nots.append({"match_phrase": {"name": opp}})
+                must_nots.append({"match_phrase": {"category": opp}})
+            
+            if blocked_opposites:
+                logger.info(f"🚻 Filter gender: {request.filters.gender} → blocking opposites: {blocked_opposites}")
         if getattr(request.filters, "brand", None):
             brand_shoulds = []
             for b in request.filters.brand[:MAX_BRAND_FILTERS]:
