@@ -144,8 +144,8 @@ from app.core.constants import (
 )
 logger = logging.getLogger(__name__)
 
-MIN_RELEVANCE_SCORE = 5.0          # Strict threshold for keyword queries
-MIN_RELEVANCE_SCORE_CONVERSATIONAL = 2.0  # 🔥 Much lower for AI/vector queries — vector scores are smaller than keyword scores
+MIN_RELEVANCE_SCORE = 1.0          # 🔥 Very lenient — let dynamic guard do the filtering (smarter than fixed score threshold)
+MIN_RELEVANCE_SCORE_CONVERSATIONAL = 0.5  # 🔥 Same idea — trust dynamic guard
 async def execute_search(request: SearchRequest) -> dict:
     _start_time = time.perf_counter()  # 🆕 Start timing    
     request.page_size = DEFAULT_PAGE_SIZE if request.page_size != SMALL_PAGE_SIZE else SMALL_PAGE_SIZE
@@ -353,7 +353,7 @@ async def execute_search(request: SearchRequest) -> dict:
         if is_conversational:
             knn_boost = 3.0  # Long conversational queries — semantic dominates
         else:
-            knn_boost = 0.1  # Short queries — minimal influence, prevents false matches
+            knn_boost = 0.5  # Short queries — balanced (was 0.1, too low; was 0.3, too high for false matches)
         semantic_shoulds.append({"knn": {"embedding": {"vector": vector, "k": k_val, "boost": knn_boost}}})
         
         if is_conversational:
