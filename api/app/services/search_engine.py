@@ -709,18 +709,31 @@ async def execute_search(request: SearchRequest) -> dict:
             # Combine for full product signal
             product_all_words = product_cat_words | product_name_words
             
-            # 🔥 SMART ALIGNMENT CHECK
-            # Category is preferred signal. But if category is empty/uninformative,
-            # check if NAME has STRONG overlap (≥2 dominant words) — that's also valid.
-            # This handles products with category="Amazon" but name="Apple iPhone 11 White"
+            # 🔥 SMART ALIGNMENT CHECK with EXACT PRODUCT BOOST
+            # The user typed specific words — products that match ALL of them are the EXACT product.
+            # Products that match only some are RELATED (related models, accessories, etc.)
+            
+            # 🎯 Calculate query match ratio (how many query words appear in this product's name)
+            # "iphone 14 plus starlight" → query_intent_words = {iphone, plus, starlight}
+            # Apple iPhone 14 Plus Starlight: name has all 3 → ratio = 1.0 → EXACT MATCH
+            # OtterBox Defender for iPhone 14: name has only "iphone" → ratio = 0.33 → ACCESSORY
+            query_match_count = len(query_intent_words & product_name_words)
+            query_match_ratio = query_match_count / len(query_intent_words) if query_intent_words else 0
+            
+            # 🔥 RULE 0: EXACT PRODUCT MATCH (all query words in name) → MASSIVE BOOST
+            # This is the product the user is searching for. Rank it #1.
+            if query_match_ratio >= 1.0 and len(query_intent_words) >= 2:
+                combined_score += 50000.0  # 🎯 GUARANTEED top ranking
+                logger.info(
+                    f"🎯 EXACT MATCH: '{r.get('name','')[:40]}' "
+                    f"| has all query words: {sorted(query_intent_words)}"
+                )
             
             if dominant_category_words:
                 category_overlap = dominant_category_words & product_cat_words
                 name_overlap = dominant_category_words & product_name_words
                 
                 # 🔥 RULE 1: NO category AND weak name match → BANISH
-                # E.g. Cuisinart cookware: name has "white" + "11" (2 words) but category is "Cookware"
-                # If product name needs ≥3 words of overlap to count as iPhone-like
                 if not category_overlap and len(name_overlap) < 3:
                     combined_score -= 100000.0
                     logger.info(
@@ -729,13 +742,20 @@ async def execute_search(request: SearchRequest) -> dict:
                         f"| weak name overlap={list(name_overlap)[:3]}"
                     )
                 # 🔥 RULE 2: No category but STRONG name overlap (3+ words) → KEEP
-                # E.g. "Apple iPhone 11 Pro White" — name has apple, iphone, white, pro = 4 words
-                # This is clearly an iPhone even if category is "Amazon"
                 elif not category_overlap and len(name_overlap) >= 3:
-                    combined_score += 1000.0  # Strong name match — promote!
-                # 🔥 RULE 3: Weak category match (1 word) → moderate demote
+                    combined_score += 1000.0
+                # 🔥 RULE 3: Weak category match → demote (likely accessory/related)
+                # If query_match_ratio is low, this is probably an accessory → bigger demote
                 elif len(category_overlap) == 1 and len(dominant_category_words) >= 3:
-                    combined_score -= 5000.0
+                    if query_match_ratio < 0.5:
+                        # Low match ratio + weak category = likely accessory → bigger demote
+                        combined_score -= 20000.0
+                        logger.info(
+                            f"⬇️ ACCESSORY-LIKE: '{r.get('name','')[:40]}' "
+                            f"| match ratio: {query_match_ratio:.2f}"
+                        )
+                    else:
+                        combined_score -= 5000.0
                 # 🔥 RULE 4: Strong category match → bonus
                 elif len(category_overlap) >= 2:
                     combined_score += 500.0
