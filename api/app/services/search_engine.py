@@ -144,7 +144,7 @@ from app.core.constants import (
 )
 logger = logging.getLogger(__name__)
 
-MIN_RELEVANCE_SCORE = 25.0          # Strict threshold for keyword queries
+MIN_RELEVANCE_SCORE = 5.0          # Strict threshold for keyword queries
 MIN_RELEVANCE_SCORE_CONVERSATIONAL = 2.0  # 🔥 Much lower for AI/vector queries — vector scores are smaller than keyword scores
 async def execute_search(request: SearchRequest) -> dict:
     _start_time = time.perf_counter()  # 🆕 Start timing    
@@ -357,23 +357,28 @@ async def execute_search(request: SearchRequest) -> dict:
             # 🔥 UNIVERSAL PHRASE BOOST: Exact word ordering gets immediate priority
             {"match_phrase": {"name": {"query": item, "boost": 100.0, "slop": 2}}},
             
-            # 🔥 STRONG CATEGORY-NAME ALIGNMENT
-            # Boosts products whose CATEGORY matches a key word in query.
-            # When user says "dress" → boosts products in "Dresses" category.
-            # When user says "shirt" → boosts products in "Shirts" category.
-            # When user says "watch" → boosts products in "Watches" category.
-            # Universal: works for any product type, no hardcoding.
+            # 🔥 CATEGORY ALIGNMENT
             {"match_phrase": {"category": {"query": item, "boost": 60.0}}},
             
             {"match_phrase": {"name": {"query": item, "boost": BOOST_NAME_PHRASE}}},
             {"match_phrase": {"brand": {"query": item, "boost": BOOST_BRAND_PHRASE}}},
             {"match": {"category": {"query": item, "boost": BOOST_CATEGORY_MATCH}}},
             
-            # 🔥 JUNK-WORD SAFETY NET: If the user adds words like "color", this heavily boosts the core product anyway
+            # 🎨 COLOR ATTRIBUTE BOOST (handles BigCommerce variant colors)
+            # If "white" is in query and product has attributes.Color = "White", boost it.
+            # Uses SEPARATE clauses (not cross_fields) so single-word color matches still work.
+            {"match": {"color": {"query": item, "boost": 30.0}}},
+            {"match": {"colors": {"query": item, "boost": 30.0}}},
+            {"match": {"attributes.color": {"query": item, "boost": 30.0}}},
+            {"match": {"attributes.Color": {"query": item, "boost": 30.0}}},
+            
+            # 🔥 STRICT MATCH (all words must appear across main fields)
             {"multi_match": {"query": item, "fields": ["name^10", "brand^5", "category^3"], "type": "cross_fields", "minimum_should_match": "80%", "boost": 80.0}},
             
-            # 🚫 Removed 'description' from fields below to stop irrelevant items (like clown costumes) from sneaking in
+            # Standard cross_fields with AND
             {"multi_match": {"query": item, "fields": ["name^10", "brand^5", "category^3"], "type": "cross_fields", "operator": "and", "boost": BOOST_CROSS_FIELDS}},
+            
+            # Fuzzy fallback
             {"multi_match": {"query": item, "fields": ["name^5", "brand^3", "category^2"], "type": "best_fields", "fuzziness": "AUTO", "boost": BOOST_FUZZY_FALLBACK}}
         ])
     
@@ -390,11 +395,13 @@ async def execute_search(request: SearchRequest) -> dict:
             # 1. Count how many words the user typed
             word_count = len(item.split())
             
-            # 2. STANDARD COMMERCE MODE (1 to 5 words)
+         # 2. STANDARD COMMERCE MODE (1 to 5 words)
             if word_count <= 5:
                 must_clauses.append({
                     "multi_match": {
                         "query": item,
+                        # ⚠️ KEEP only main searchable text fields here
+                        # Color attributes are boosted via semantic_shoulds (above), NOT used as gatekeeper
                         "fields": ["name^10", "category^4", "brand^3"], 
                         "type": "cross_fields",
                         "minimum_should_match": "2<-1 4<60%"  
@@ -589,85 +596,66 @@ async def execute_search(request: SearchRequest) -> dict:
         product_ids = [r["id"] for r in results if r.get("id")]
         trending_scores = get_trending_scores(product_ids)
         
-        # 1. Normalize search text
-        query_normalized = query_text.lower()
+        # 🔥 DYNAMIC CATEGORY-BASED RELEVANCE
+        # Instead of hardcoded "if iphone then exclude shoes" logic, we use a 
+        # data-driven approach: determine the DOMINANT category from the top 
+        # search results, then demote products that don't fit that category.
+        # This works for ANY product type — no hardcoded lists needed.
         
-        # 2. Detect Accessory Intent
-        ACCESSORY_INTENT_WORDS = [
-            "case", "charger", "cable", "headphones", "earbuds", "glass", "socks", 
-            "cover", "mount", "shield", "adapter", "screen protector", "watch", "belt", 
-            "wallet", "tie", "cufflink", "bracelet", "ring", "necklace", "earring", "sunglasses",
-            "hat", "cap", "bag", "backpack", "purse"
-        ]
-        user_wants_accessory = any(word in query_normalized for word in ACCESSORY_INTENT_WORDS)
+        import math
+        import re as _re
         
-        # 3. Detect Broad Category Intent (Hardware vs Apparel/Home)
-        user_wants_tech = any(word in query_normalized for word in ["iphone", "apple", "samsung", "phone", "laptop", "macbook", "ipad", "tablet", "electronics"])
-        user_wants_apparel = any(word in query_normalized for word in ["shirt", "dress", "pants", "shoes", "sneakers", "clothing", "jeans", "socks", "apparel"])
+        # ---- 1. Find the DOMINANT category from top 10 results ----
+        # If user searches "iphone" → top 10 are mostly "Cell Phones" → that's the dominant category
+        # If user searches "dress" → top 10 are mostly "Dresses" → that's dominant
+        # Products NOT in the dominant category tree get demoted.
         
-        ACCESSORY_CATEGORY_WORDS = [
-            "accessory", "accessories", "case", "headphones", "earbuds", "socks", 
-            "charger", "cable", "glass", "watch", "belt", "wallet", "tie", "cufflink",
-            "bracelet", "ring", "necklace", "earring", "sunglass", "hat", "cap",
-            "bag", "backpack", "purse", "handbag", "jewelry"
-        ]
-        ACCESSORY_NAME_WORDS = [
-            "case", "cover", "magsafe", "socks", "headphones", "earbuds", "charger", 
-            "cable", "adapter", "screen protector", "watch", "belt", "wallet", "tie",
-            "cufflink", "bracelet", "ring", "necklace", "earring", "sunglass"
-        ]
+        top_10_categories = []
+        for r in results[:10]:
+            for cat in r.get("category", []):
+                if cat:
+                    cat_clean = str(cat).strip().lower()
+                    if cat_clean and cat_clean not in ["uncategorized", "none"]:
+                        # Tokenize category into words for matching
+                        cat_words = _re.findall(r'\b[a-z]+\b', cat_clean)
+                        top_10_categories.extend(cat_words)
         
+        # Count word frequency
+        from collections import Counter
+        category_word_counts = Counter(top_10_categories)
+        
+        # The most common category words define the user's intent
+        # Take top 5 most common words (with min frequency 3)
+        dominant_category_words = set()
+        for word, count in category_word_counts.most_common(10):
+            if count >= 3 and len(word) >= 3:
+                dominant_category_words.add(word)
+        
+        if dominant_category_words:
+            logger.info(f"🎯 Dynamic category detection: dominant words = {list(dominant_category_words)[:5]}")
+        
+        # ---- 2. Score each product based on category alignment ----
         for r in results:
             raw_anchor = r.pop("_raw_score_anchor", 0)
             trending = trending_scores.get(r["id"], 0)
-            
-            import math
             combined_score = raw_anchor + (math.log1p(trending) * 1.5)
             
-            # 🔥 GUARD A: Accessory Demotion (Protects Core Hardware)
-            if not user_wants_accessory:
-                is_accessory_item = any(
-                    any(acc_word in str(cat).lower() for acc_word in ACCESSORY_CATEGORY_WORDS)
-                    for cat in r.get("category", [])
-                ) or any(acc_word in r.get("name", "").lower() for acc_word in ACCESSORY_NAME_WORDS)
-                
-                if is_accessory_item:
-                    combined_score -= 1000.0  
+            # Get product category words
+            product_cat_words = set()
+            for cat in r.get("category", []):
+                if cat:
+                    cat_words = _re.findall(r'\b[a-z]+\b', str(cat).lower())
+                    product_cat_words.update(cat_words)
             
-            # 🔥 GUARD B: Cross-Category Isolation (The Shoe Fix)
-            # If the user searches for an iPhone/Tech, we absolutely banish Shoes, Furniture, and Home goods.
-            if user_wants_tech:
-                is_unrelated = any(any(w in str(cat).lower() for w in ["shoes", "clothing", "home", "furniture", "apparel", "beauty", "kitchen", "desk", "vanity"]) for cat in r.get("category", []))
-                if is_unrelated:
-                    combined_score -= 5000.0  # Sends them 100 pages deep out of view
+            # 🔥 ALIGNMENT CHECK
+            # If we found dominant category words AND this product has ZERO overlap → demote
+            # This is dynamic: works for any product type without hardcoding
+            if dominant_category_words and product_cat_words:
+                overlap = dominant_category_words & product_cat_words
+                if not overlap:
+                    # No category overlap with the top results — this product is off-topic
+                    combined_score -= 5000.0
             
-            # 🔥 GUARD C: Grooming/Beauty/Electronics Banishment (Expanded)
-            # When user searches clothing/shoes, banish ALL unrelated categories.
-            if user_wants_apparel:
-                UNRELATED_CATEGORIES = [
-                    "electronics", "phones", "computers", "tablets", "appliances",
-                    "beauty", "grooming", "health", "personal care", "fragrance",
-                    "shaving", "skincare", "haircare", "makeup", "cologne",
-                    "kitchen", "furniture", "home decor", "office", "stationery"
-                ]
-                UNRELATED_NAME_WORDS = [
-                    "trimmer", "perfume", "cologne", "balm", "razor", "shaver",
-                    "shampoo", "conditioner", "beard oil", "shaving cream", "shaving foam",
-                    "deodorant", "lotion", "aftershave", "moisturizer", "fragrance",
-                    "cream", "serum", "wax", "scissors", "clipper", "grooming"
-                ]
-                
-                cat_str = " ".join([str(c).lower() for c in r.get("category", [])])
-                name_str = r.get("name", "").lower()
-                
-                is_unrelated = (
-                    any(w in cat_str for w in UNRELATED_CATEGORIES) or
-                    any(w in name_str for w in UNRELATED_NAME_WORDS)
-                )
-                
-                if is_unrelated:
-                    combined_score -= 5000.0  # Banished far below all relevant products
-
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
         
