@@ -610,33 +610,29 @@ async def execute_search(request: SearchRequest) -> dict:
             if count >= 2:  # appears in at least 2 of top 3
                 dominant_category_words.add(word)
         
-        # 🎯 ESSENTIAL WORDS DETECTION (100% dynamic, from top 3 product NAMES)
-        # Find words that appear in ALL OR MOST of top 3 names.
-        # These are the "product identifier" words — required for any result to be relevant.
-        # Example: "iphone 11 white" → top 3 names all have "apple", "iphone", "11"
-        # → essential words = {apple, iphone, 11}
-        # → PRIOKNIKO Socks (no "iphone") → BANISHED
-        essential_words = set()
-        if len(results) >= 2:
-            top_name_word_sets = []
-            for r in results[:3]:
-                name_clean = r.get("name", "").lower()
-                name_tokens = set(_re.findall(r'\b[a-z0-9]+\b', name_clean))
-                # Keep meaningful words (≥3 chars), exclude generic noise
-                meaningful_name_words = {
-                    w for w in name_tokens 
-                    if len(w) >= 3 and w not in CATEGORY_STOPWORDS
-                }
-                if meaningful_name_words:
-                    top_name_word_sets.append(meaningful_name_words)
-            
-            # Essential = words appearing in ALL top 3 names (intersection)
-            if len(top_name_word_sets) >= 2:
-                essential_words = set.intersection(*top_name_word_sets)
-                # Only keep words also in user's query — these are the user's intent
-                essential_words = essential_words & query_intent_words
-                if essential_words:
-                    logger.info(f"🎯 Essential words (must be in name): {sorted(essential_words)}")
+        # 🎯 ESSENTIAL BRAND DETECTION (100% dynamic, from top 3 product BRAND fields)
+        # If 2+ of top 3 results share a brand, that's the user's product type.
+        # All relevant products should have this brand in their name or brand field.
+        # 
+        # Example: "iphone 11 white" → top 3 brands = [Apple, Apple, Apple] → essential = "apple"
+        # → PRIOKNIKO Socks (brand=PRIOKNIKO, no "apple" in name) → BANISHED
+        # → Rice Paper (brand=pizety, no "apple") → BANISHED
+        # 
+        # For multi-brand queries like "running shoes": top 3 brands might be Nike, Adidas, Puma
+        # → no common brand → no brand filter → all shoes shown (correct!)
+        essential_brand = None
+        top_brands = []
+        for r in results[:3]:
+            brand = (r.get("brand") or "").lower().strip()
+            if brand and len(brand) >= 3 and brand not in {"none", "default", "uncategorized"}:
+                top_brands.append(brand)
+        
+        if len(top_brands) >= 2:
+            brand_counts = Counter(top_brands)
+            most_common_brand, count = brand_counts.most_common(1)[0]
+            if count >= 2:  # at least 2 of top 3 share this brand
+                essential_brand = most_common_brand
+                logger.info(f"🏷️ Essential brand detected: '{essential_brand}' (in {count}/3 top results)")
         
         # 🔥 STRONGER: Always add query intent words FIRST — they're the most reliable signal
         # User TYPED these words — they know what they want.
@@ -694,79 +690,86 @@ async def execute_search(request: SearchRequest) -> dict:
             
             # Debug log removed — was for troubleshooting Starlight tokenization
             
-            # 🎯 RULE 0: EXACT PRODUCT MATCH → GUARANTEED #1
-            is_exact_match = False
-            if query_match_ratio >= 1.0 and len(query_intent_words) >= 2:
-                combined_score = 1_000_000.0 + raw_anchor
-                is_exact_match = True
-                logger.info(
-                    f"🎯 EXACT #1: '{r.get('name','')[:40]}' "
-                    f"| matches all: {sorted(query_intent_words)[:6]}"
+            # ═══════════════════════════════════════════════════════════════════
+            # 🛡️ STEP 1: BRAND CHECK (run BEFORE exact match)
+            # If essential_brand is set (top 3 share a brand), product must have it.
+            # ═══════════════════════════════════════════════════════════════════
+            failed_brand_check = False
+            if essential_brand:
+                product_brand_str = (r.get("brand") or "").lower()
+                product_name_lower = (r.get("name") or "").lower()
+                has_essential_brand = (
+                    essential_brand in product_brand_str or 
+                    essential_brand in product_name_lower
                 )
-            
-            # 🎯 ESSENTIAL WORD CHECK (100% dynamic)
-            # If essential words exist (extracted from top 3 names + query),
-            # the product MUST contain at least one — otherwise it's off-topic.
-            # Example: For iPhone search, essential = {iphone}.
-            # PRIOKNIKO Socks has no "iphone" → BANISH (even if "11" and "white" match)
-            if not is_exact_match and essential_words:
-                has_essential = bool(essential_words & product_name_words)
-                if not has_essential:
+                if not has_essential_brand:
                     combined_score -= 100000.0
+                    failed_brand_check = True
                     logger.info(
-                        f"🔻 BANISH (no essential): '{r.get('name','')[:40]}' "
-                        f"| essential={sorted(essential_words)[:5]} "
-                        f"| name has none of them"
+                        f"🔻 BANISH (wrong brand): '{r.get('name','')[:40]}' "
+                        f"| brand='{product_brand_str}' | expected '{essential_brand}'"
                     )
             
-            if not is_exact_match and dominant_category_words:
+            # ═══════════════════════════════════════════════════════════════════
+            # 🛡️ STEP 2: ACCESSORY CHECK (run BEFORE exact match)
+            # Off-category product mentioning the brand → it's an accessory.
+            # E.g. HAWSON Trackpad for MacBook → cat="Computer Accessories" not laptop
+            # Even if name has "macbook pro 16", it's NOT a laptop → BANISH
+            # ═══════════════════════════════════════════════════════════════════
+            failed_accessory_check = False
+            if not failed_brand_check and dominant_category_words:
                 category_overlap = dominant_category_words & product_cat_words
                 name_overlap = dominant_category_words & product_name_words
-                
-                # 🎯 100% DYNAMIC accessory detection
-                # An "accessory" is a product whose CATEGORY doesn't match the dominant
-                # category of top results, but its NAME mentions the same brand/model.
-                # Example: iMangoo Headphones — category="Headphones" (different from iPhone categories)
-                # but name has "iphone" (same brand). Detected as accessory dynamically.
-                # 
-                # NO hardcoded lists. Uses the catalog's own category hierarchy.
                 
                 is_likely_accessory = (
                     len(product_cat_words) > 0 and       # has a real category
                     len(category_overlap) == 0 and       # but doesn't match dominant
-                    len(name_overlap) >= 1               # name has some query words (mentions brand/model)
+                    len(name_overlap) >= 1               # name has some query words
                 )
                 
-                # 🔻 RULE 1: ACCESSORY (off-category but name mentions product) → BANISH
-                # iPhone search → headphones/cases/cables disappear (different category)
-                # User explicitly asking accessory still works (query intent gets matched in name)
                 if is_likely_accessory:
                     combined_score -= 100000.0
+                    failed_accessory_check = True
                     logger.info(
                         f"🔻 BANISH ACCESSORY: '{r.get('name','')[:40]}' "
                         f"| cat={list(product_cat_words)[:3]} "
                         f"| not in dominant: {sorted(dominant_category_words)[:5]}"
                     )
-                # 🔻 RULE 2: NO category AND weak name match → BANISH (completely off-topic)
                 elif not category_overlap and len(name_overlap) < 2:
                     combined_score -= 100000.0
+                    failed_accessory_check = True
                     logger.info(
                         f"🔻 BANISH OFF-TOPIC: '{r.get('name','')[:40]}' "
                         f"| weak overlap"
                     )
-                # 🔥 RULE 3: Strong name overlap (no category, but name has 2+ query words)
-                # E.g. iPhone variants with category="Amazon" filtered out but name="Apple iPhone 11 White"
-                elif not category_overlap and len(name_overlap) >= 2:
-                    combined_score += 1000.0 + (query_match_ratio * 5000.0)
-                # 🔥 RULE 4: Strong category match (≥2 dominant words in category) → bonus
-                elif len(category_overlap) >= 2:
-                    combined_score += 500.0 + (query_match_ratio * 2000.0)
-                # 🔥 RULE 5: Weak category match (1 word)
-                elif len(category_overlap) == 1 and len(dominant_category_words) >= 3:
-                    if query_match_ratio < 0.5:
-                        combined_score -= 20000.0
-                    else:
-                        combined_score += (query_match_ratio * 1000.0)
+            
+            # ═══════════════════════════════════════════════════════════════════
+            # 🎯 STEP 3: EXACT MATCH (only for products that passed checks 1 & 2)
+            # ═══════════════════════════════════════════════════════════════════
+            is_exact_match = False
+            if not failed_brand_check and not failed_accessory_check:
+                if query_match_ratio >= 1.0 and len(query_intent_words) >= 2:
+                    combined_score = 1_000_000.0 + raw_anchor
+                    is_exact_match = True
+                    logger.info(
+                        f"🎯 EXACT #1: '{r.get('name','')[:40]}' "
+                        f"| matches all: {sorted(query_intent_words)[:6]}"
+                    )
+                # 🔥 Strong name overlap (no exact match but most words match)
+                elif dominant_category_words:
+                    category_overlap = dominant_category_words & product_cat_words
+                    name_overlap = dominant_category_words & product_name_words
+                    
+                    if not category_overlap and len(name_overlap) >= 2:
+                        # iPhone variants without category but name matches
+                        combined_score += 1000.0 + (query_match_ratio * 5000.0)
+                    elif len(category_overlap) >= 2:
+                        combined_score += 500.0 + (query_match_ratio * 2000.0)
+                    elif len(category_overlap) == 1 and len(dominant_category_words) >= 3:
+                        if query_match_ratio < 0.5:
+                            combined_score -= 20000.0
+                        else:
+                            combined_score += (query_match_ratio * 1000.0)
             
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
