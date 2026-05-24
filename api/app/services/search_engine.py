@@ -51,11 +51,12 @@ async def correct_query_typos(query: str, aggressive: bool = False) -> tuple:
     try:
         # Choose mode
         if aggressive:
-            suggest_mode = "always"      # Try to correct even valid words
-            threshold = 0.4              # Lower confidence threshold
+            suggest_mode = "always"      
+            threshold = 0.3              
         else:
-            suggest_mode = "missing"     # Only words not in catalog
-            threshold = 0.7              # Higher confidence
+            # 🔥 FIX: 'popular' catches 'appl' -> 'apple' even if 'appl' already exists in the catalog
+            suggest_mode = "popular"     
+            threshold = 0.5              # 🔥 FIX: Lowered to 0.5 to catch more obvious typos natively
         
         resp = os_client.search(
             index=INDEX_NAME,
@@ -67,7 +68,7 @@ async def correct_query_typos(query: str, aggressive: bool = False) -> tuple:
                         "term": {
                             "field": "name",
                             "suggest_mode": suggest_mode,
-                            "min_word_length": 4,
+                            "min_word_length": 3,  # 🔥 FIX: Lowered to 3 to catch short typos
                             "max_edits": 2,
                             "prefix_length": 1
                         }
@@ -947,9 +948,10 @@ async def execute_search(request: SearchRequest) -> dict:
             product_name_words = set()
             name_clean = r.get("name", "").lower()
             name_words = _re.findall(r'\b[a-z0-9]+\b', name_clean)
+            BASIC_STOPWORDS = {"and", "the", "for", "with", "all", "color", "size", "by", "of", "in"}
             for w in name_words:
-                # Allow ≥2 to keep model numbers (11, 14, s24, m1, etc.)
-                if len(w) >= 2 and w not in CATEGORY_STOPWORDS:
+                # 🔥 FIX: Use basic stopwords so vital intent words (like men/women) are preserved dynamically!
+                if len(w) >= 2 and w not in BASIC_STOPWORDS:
                     product_name_words.add(w)
             
             # Combine for full product signal
@@ -1088,6 +1090,14 @@ async def execute_search(request: SearchRequest) -> dict:
                     f"🔻 BANISH OFF-TOPIC: '{r.get('name','')[:40]}' "
                     f"| cat={list(product_cat_words)[:2]}"
                 )
+                
+            # 🔥 NEW DYNAMIC INTENT GUARD: Penalize for every missing query word
+            # Perfectly pushes 'Women' down when 'Men' is searched, 100% dynamically without hardcoded lists!
+            missing_intent_words = query_intent_words - product_all_words
+            if missing_intent_words and combined_score > 0:
+                penalty = len(missing_intent_words) * 20000.0
+                combined_score -= penalty
+                logger.info(f"🔻 DYNAMIC PENALTY: -{penalty} for missing intent words: {missing_intent_words}")
             
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
