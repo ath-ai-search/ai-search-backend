@@ -1153,11 +1153,15 @@ async def execute_search(request: SearchRequest) -> dict:
                     logger.debug(f"🔓 UNDEMOTED (main product): '{r.get('name','')[:40]}' (noun_in_cat={noun_in_product_cat}, brand_match={shares_top_brand})")
             
             # 🎯 DETECT IF USER WANTS ACCESSORY (e.g. searched "iphone case")
-            # When user types accessory-type word AND it matches the dominant category,
-            # they explicitly want the accessory — show it at TIER 1.
+            # User explicitly wants accessory ONLY if their QUERY contains an
+            # accessory marker word (case, charger, cover, accessories, etc).
+            # 
+            # We check the query words directly against dynamic_accessory_markers,
+            # NOT against dominant_category_words (which may contain product nouns
+            # like "iphone" that would falsely trigger this).
             wants_accessory_search = False
-            if query_product_noun and dominant_category_words:
-                if any(_words_match(query_product_noun, dw) for dw in dominant_category_words):
+            if dynamic_accessory_markers:
+                if set(query_words_list) & dynamic_accessory_markers:
                     wants_accessory_search = True
             
             combined_score = raw_anchor
