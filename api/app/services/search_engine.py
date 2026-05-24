@@ -841,8 +841,6 @@ async def execute_search(request: SearchRequest) -> dict:
             if count >= 2:  
                 dominant_category_words.add(word)
 
-                # 🔥 DYNAMIC ATTRIBUTE WORDS (100% from catalog aggregations)
-        # 
         # Extract attribute/color/size words from YOUR catalog's aggregations.
         # These are words that describe products (colors, sizes) — NOT product nouns.
         # 
@@ -850,18 +848,16 @@ async def execute_search(request: SearchRequest) -> dict:
         #   - Adds new colors when you add new products with new colors
         #   - Works for any language (Spanish "rojo", French "rouge", etc.)
         #   - No maintenance — pulls from your live catalog
+        # 🔥 DYNAMIC ATTRIBUTE WORDS (100% from catalog aggregations)
         dynamic_attribute_words = set()
         
-        # Pull colors from global_colors aggregation
         global_colors_buckets = response.get("aggregations", {}).get("global_colors", {}).get("buckets", [])
         for bucket in global_colors_buckets:
             color_val = str(bucket.get("key", "")).lower().strip()
-            # Split multi-word colors like "rose gold" into ["rose", "gold"]
             for word in _re.findall(r'\b[a-z]+\b', color_val):
                 if len(word) >= 4:
                     dynamic_attribute_words.add(word)
         
-        # Pull sizes from global_sizes aggregation
         global_sizes_buckets = response.get("aggregations", {}).get("global_sizes", {}).get("buckets", [])
         for bucket in global_sizes_buckets:
             size_val = str(bucket.get("key", "")).lower().strip()
@@ -870,10 +866,33 @@ async def execute_search(request: SearchRequest) -> dict:
                     dynamic_attribute_words.add(word)
         
         if dynamic_attribute_words:
-            logger.info(f"🎨 Dynamic attributes from catalog: {sorted(list(dynamic_attribute_words))[:15]}")
+            logger.info(f"🎨 Dynamic attributes: {sorted(list(dynamic_attribute_words))[:15]}")
         
-        # ---- 2. Score each product based on Pure Intent & Set Theory ----
-        # This is the 100% dynamic, fatal reranking engine. No hardcoded tiers.
+        # 🎯 DETECT QUERY PRODUCT NOUN (once, before the loop)
+        query_product_noun = None
+        query_words_list = [
+            ''.join(c for c in w if c.isalnum()).lower()
+            for w in (query_text or "").lower().split()
+        ]
+        
+        candidates = [
+            w for w in query_words_list
+            if len(w) >= 4
+            and w not in CATEGORY_STOPWORDS
+            and w not in dynamic_attribute_words
+            and not w.isdigit()
+        ]
+        
+        if candidates:
+            query_product_noun = max(candidates, key=len)
+            logger.info(f"🎯 Query product noun: '{query_product_noun}' (from candidates: {candidates})")
+        else:
+            logger.info(f"🎯 No product noun found (all words are attributes/stopwords)")
+        
+        query_word_count = len(query_intent_words)
+        is_short_query = query_word_count <= 3
+        
+        # ---- Score each product ----
         for r in results:
             raw_anchor = r.pop("_raw_score_anchor", 0)
             trending = trending_scores.get(r["id"], 0)
@@ -881,238 +900,129 @@ async def execute_search(request: SearchRequest) -> dict:
             product_cat_words = set()
             for cat in r.get("category", []):
                 if cat:
-                    product_cat_words.update([w for w in _re.findall(r'\b[a-z]+\b', str(cat).lower()) if len(w) >= 3])
-                    
+                    product_cat_words.update([
+                        w for w in _re.findall(r'\b[a-z]+\b', str(cat).lower()) 
+                        if len(w) >= 3 and w not in CATEGORY_STOPWORDS
+                    ])
+            
             product_name_words = set()
             name_clean = r.get("name", "").lower()
-            name_words = _re.findall(r'\b[a-z0-9]+\b', name_clean)
+            name_words_raw = _re.findall(r'\b[a-z0-9]+\b', name_clean)
             BASIC_STOPWORDS = {"and", "the", "for", "with", "all", "color", "size", "by", "of", "in", "pack", "pcs"}
-            for w in name_words:
+            for w in name_words_raw:
                 if len(w) >= 2 and w not in BASIC_STOPWORDS:
                     product_name_words.add(w)
-                    
+            
             product_brand_str = (r.get("brand") or "").lower()
             product_all_words = product_cat_words | product_name_words | {product_brand_str}
             
-            # 🔥 INTENT MATCHING 
             matched_intent_words = _words_intersect(query_intent_words, product_all_words)
             match_count = len(matched_intent_words)
-            query_word_count = len(query_intent_words)
             match_ratio = match_count / query_word_count if query_word_count > 0 else 0
             
-            # 🔥 ACCESSORY DEMOTION — 100% DYNAMIC (no hardcoded lists)
-            # 
-            # An "accessory" is a product whose CATEGORY differs from the DOMINANT
-            # category of top-matching products. It only matches the query because
-            # it mentions a query word as a compatibility hint (e.g. "iPhone Case"
-            # mentions "iphone" but is a CASE, not an iPhone).
-            #
-            # Detection signal: product_cat_words have NO overlap with the dominant
-            # categories from valid_noun_products (top matchers we identified earlier).
-            #
-            # Example: "iphone" search
-            #   valid_noun_products = Apple iPhones (cat=Amazon → empty after filter)
-            #   → dominant_category_words extracted from these = {iphone} (query intent)
-            #   OtterBox case → product_cat_words = {cases, holsters, sleeves}
-            #   → ZERO overlap with dominant → IS accessory → DEMOTE
-            #   Apple iPhone → product_cat_words = {} (empty) → NOT considered accessory
-            #
-            # Example: "iphone case" search  
-            #   valid_noun_products = cases (cat=Cases)
-            #   → dominant_category_words includes {cases}
-            #   OtterBox case → product_cat_words = {cases} → overlap exists → NOT accessory
-            #   → cases stay at TIER 1 ✓
-            
-            # 🔥 ACCESSORY DETECTION — 100% DYNAMIC (no hardcoded lists)
-            # 
-            # Strategy 1: Different category than dominant
-            # Strategy 2: Product has MORE category words than dominant (accessories
-            #             usually have detailed cats: "Cases, Holsters & Sleeves")
-            #
-            # Example: For "iphone" query
-            #   dominant_category_words might be empty (Apple iPhones have cat=Amazon filtered)
-            #   OtterBox case has product_cat_words = {cases, holsters, sleeves} (3 words!)
-            #   → Significantly more cat detail → likely accessory
-            
-            is_accessory_product = False
-            if product_cat_words:
-                # Strategy 1: Has real category but no overlap with dominant
-                if dominant_category_words:
-                    cat_overlap_for_accessory = _words_intersect(dominant_category_words, product_cat_words)
-                    meaningful_dominant = {w for w in dominant_category_words if len(w) >= 4}
-                    if not cat_overlap_for_accessory and meaningful_dominant:
-                        is_accessory_product = True
-                
-                # Strategy 2: Product has DETAILED category but dominant is simple/empty
-                # (Main products tend to have cat=Amazon=filtered=empty;
-                # accessories have specific cats like "Cases, Holsters & Sleeves")
-                if not is_accessory_product:
-                    # Get the "empty cat" sample size from dominant source
-                    empty_cat_in_dominant = sum(
-                        1 for r2 in source_for_categories
-                        if not any(
-                            w for cat in r2.get("category", [])
-                            for w in _re.findall(r'\b[a-z]+\b', str(cat).lower())
-                            if w not in CATEGORY_STOPWORDS and len(w) >= 3
-                        )
-                    )
-                    # If majority of dominant products have EMPTY cats (e.g. iPhones with cat=Amazon),
-                    # and this product has REAL cats, it's an accessory
-                    if empty_cat_in_dominant >= len(source_for_categories) * 0.5 and len(product_cat_words) >= 2:
-                        is_accessory_product = True
-            
-            # Tag the product (used in tier scoring below) — DON'T modify match_ratio
-            # The tier scoring will use this flag to demote accessories to a lower band
-            r["_is_accessory"] = is_accessory_product
-            
-            combined_score = raw_anchor
-            is_accessory = r.pop("_is_accessory", False)
-            
-            # 🔥 MODEL NUMBER EXACT-MATCH CHECK
-            # If query has numeric words (like "12", "14", "s24") AND product is missing
-            # any of them, it's a DIFFERENT model — heavy penalty.
-            query_numbers = {w for w in query_intent_words if w.isdigit() or any(c.isdigit() for c in w)}
-            product_numbers = {w for w in product_name_words if w.isdigit() or any(c.isdigit() for c in w)}
-            
-            missing_numbers = set()
-            for qn in query_numbers:
-                if not any(qn == pn for pn in product_numbers):
-                    missing_numbers.add(qn)
-            
-            has_wrong_model = bool(missing_numbers)
-            
-            # 🔥 PRODUCT NOUN CHECK (100% DYNAMIC from catalog aggregations)
-            # 
-            # The "product noun" is the CORE word identifying what user wants.
-            # We dynamically detect attributes (colors, sizes, etc.) from YOUR OWN
-            # OpenSearch aggregations — not a hardcoded list.
-            #
-            # Sources of dynamic attribute detection:
-            #   1. global_colors aggregation → all color values in catalog (white, midnight, etc.)
-            #   2. global_sizes aggregation → all size values
-            #   3. Common short words (≤4 chars) and numbers
-            #
-            # Strategy: 
-            #   - Skip words that are catalog colors/sizes (dynamic, not hardcoded)
-            #   - Pick the LONGEST remaining word as the product noun
-            #
-            # Examples on YOUR catalog:
-            #   "white iphone 12"     → white is in global_colors → skip → noun = "iphone"
-            #   "wireless headphones" → wireless rare in colors → noun = "headphones" (longer)
-            #   "iphone 14 plus midnight" → midnight in global_colors → skip → noun = "iphone"
-            #   "macbook pro 16"      → noun = "macbook" (longest non-attribute)
-            
-            query_product_noun = None
-            query_words_list = [
-                ''.join(c for c in w if c.isalnum()).lower()
-                for w in (query_text or "").lower().split()
-            ]
-            
-            # Pick LONGEST non-attribute word (longest = most specific product identifier)
-            candidates = [
-                w for w in query_words_list
-                if len(w) >= 4
-                and w not in CATEGORY_STOPWORDS
-                and w not in dynamic_attribute_words   # 🔥 dynamic from catalog
-                and not w.isdigit()
-            ]
-            
-            if candidates:
-                # Use the LONGEST candidate (most specific product identifier)
-                query_product_noun = max(candidates, key=len)
-            
-            has_product_noun = True  # default if no noun in query
+            # 🔥 PRODUCT NOUN CHECK
+            has_product_noun = True
             if query_product_noun:
                 has_product_noun = any(
                     _words_match(query_product_noun, nw) for nw in product_name_words
                 )
             
-            # 🔥 MISSING PRODUCT NOUN = NOT RELATED (but only for short, specific queries)
-            # 
-            # For 1-3 word queries (typical product search like "iphone 12 pro"):
-            #   - Product MUST have the noun ("iphone")
-            #
-            # For 4+ word queries (conversational like "something for rainy day"):
-            #   - Don't apply this rule — KNN semantic search handles it
-            #   - Avoids banishing all results for natural-language queries
-            is_short_query = query_word_count <= 3
             missing_product_noun = (
                 is_short_query 
                 and query_product_noun is not None 
                 and not has_product_noun
             )
             
-            # 🔻 BANISH FIRST: missing product noun = unrelated product
-            # E.g. "Wrenbury Pro 12 Cup Muffin Pan" lacks "iphone" → not related to iPhone search
+            # 🔥 MODEL NUMBER CHECK
+            query_numbers = {w for w in query_intent_words if w.isdigit()}
+            product_numbers = {w for w in product_name_words if w.isdigit()}
+            missing_numbers = query_numbers - product_numbers
+            has_wrong_model = bool(missing_numbers)
+            
+            # 🔥 ACCESSORY DETECTION
+            is_accessory = False
+            if dominant_category_words and product_cat_words:
+                cat_overlap_acc = _words_intersect(dominant_category_words, product_cat_words)
+                meaningful_dom = {w for w in dominant_category_words if len(w) >= 4}
+                if not cat_overlap_acc and meaningful_dom:
+                    is_accessory = True
+            
+            combined_score = raw_anchor
+            
+            # 🔻 BANISH FIRST: Missing product noun (for short queries)
             if missing_product_noun:
                 combined_score = -1000000.0
+                logger.info(f"🔻 BANISH NO-NOUN: '{r.get('name','')[:40]}' missing '{query_product_noun}'")
             
-            # 🥇 TIER 1: EXACT MATCH — main product (not accessory, no wrong model)
+            # 🥇 TIER 1: Exact match, no accessory, no wrong model
             elif match_ratio >= 1.0 and not is_accessory and not has_wrong_model:
                 combined_score = 1_000_000.0 + raw_anchor
-                
-            # 🥈 TIER 2: HIGH MATCH (Missed max 1 NON-NUMERIC word) — main product
+            
+            # 🥈 TIER 2: High match (n-1 words), no accessory, no wrong model
             elif query_word_count >= 3 and match_count >= query_word_count - 1 and not is_accessory and not has_wrong_model:
                 combined_score = 500_000.0 + (match_ratio * 10000.0) + raw_anchor
             
-            # 🎯 TIER 1-ACCESSORY: Exact match BUT it's an accessory — sit BELOW main products
+            # 🎯 TIER 1-ACCESSORY: Exact match but accessory (cases for "iphone case" search)
             elif match_ratio >= 1.0 and is_accessory:
                 combined_score = 200_000.0 + raw_anchor
-                
-            # 🎯 TIER 2-ACCESSORY: High match but accessory
+            
+            # 🎯 TIER 2-ACCESSORY
             elif query_word_count >= 3 and match_count >= query_word_count - 1 and is_accessory:
                 combined_score = 150_000.0 + (match_ratio * 5000.0) + raw_anchor
-                
-            # 🥉 TIER 3: PARTIAL MATCH (Matched at least half)
+            
+            # 🥉 TIER 3: Partial match (≥50%)
             elif match_ratio >= 0.5 or query_word_count == 0:
                 combined_score = 100_000.0 + (match_ratio * 5000.0) + raw_anchor
-                
-            # 🔻 BANISH TIER: Below 50% match
+            
+            # 🔻 BANISH: Below 50% match
             else:
                 combined_score = -1000000.0
-                
+            
             # 🔥 SMART GENDER GUARD
-            # Completely fatal to mismatched genders
             is_mens_search = bool({"men", "mens", "male", "boys"} & query_intent_words)
             is_womens_search = bool({"women", "womens", "female", "girls", "ladies"} & query_intent_words)
             
             if is_mens_search and not is_womens_search:
                 if bool({"women", "womens", "female", "girls", "ladies"} & product_all_words):
                     if not bool({"unisex", "couples", "matching"} & product_all_words):
-                        combined_score = -1000000.0 
-                        
+                        combined_score = -1000000.0
             elif is_womens_search and not is_mens_search:
                 if bool({"men", "mens", "male", "boys"} & product_all_words):
                     if not bool({"unisex", "couples", "matching"} & product_all_words):
                         combined_score = -1000000.0
-                        
-            # 🔥 CATEGORY ALIGNMENT PENALTY (with protection for empty categories)
-            # If the product's categories have ZERO overlap with the dominant categories 
-            # and it is NOT an exact match, banish it.
-            #
-            # CRITICAL FIX: Don't banish products with EMPTY product_cat_words.
-            # Apple iPhones often have cat=Amazon which gets filtered → empty cat_words.
-            # If we banish empty-cat products, we banish all iPhones!
-            #
-            # Also: this penalty only fires when product has REAL category that DIFFERS.
-            # Empty cat = "uncategorized" = don't punish.
+            
+            # 🔥 CATEGORY ALIGNMENT PENALTY (only for products with REAL categories)
             if dominant_category_words and combined_score > 0 and product_cat_words:
                 cat_overlap = _words_intersect(dominant_category_words, product_cat_words)
                 if not cat_overlap and match_ratio < 1.0:
                     combined_score = -1000000.0
-
+            
             r["combined_score"] = combined_score
-            r["trending_score"] = round(trending, 1)  
+            r["trending_score"] = round(trending, 1)
         
         # Sort by combined_score — exact matches at top, similar products below
         results.sort(key=lambda x: x.get("combined_score", 0), reverse=True)
         
         # 🚫 REMOVE BANISHED PRODUCTS (off-topic items)
-        # iPhone search should NEVER show shoes. Shoes search should NEVER show phones.
-        # The dynamic guard banishes off-topic products with -100000 penalty.
         original_count = len(results)
+        all_results_before_banish = list(results)  # 🔥 keep backup
         results = [r for r in results if r.get("combined_score", 0) > -10000]
         banished_count = original_count - len(results)
+        
+        # 🔥 SAFETY: If banish removed EVERYTHING (over-aggressive),
+        # restore top results for conversational queries
+        if len(results) == 0 and len(all_results_before_banish) > 0:
+            logger.warning(f"⚠️ All products banished! Restoring top results as fallback.")
+            # Sort by raw score (not combined) as fallback
+            results = sorted(
+                all_results_before_banish,
+                key=lambda x: x.get("combined_score", 0),
+                reverse=True
+            )[:request.page_size * 5]
+            # Reset banished scores to 0 so they show
+            for r in results:
+                if r.get("combined_score", 0) < 0:
+                    r["combined_score"] = 1.0
         
         if banished_count > 0:
             logger.info(f"🚫 Removed {banished_count} off-topic products from {original_count} → {len(results)} clean")
