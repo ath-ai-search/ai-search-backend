@@ -953,20 +953,22 @@ async def execute_search(request: SearchRequest) -> dict:
                 # SAFETY SIGNALS (computed FIRST, used at the end)
                 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 
-                # SAFETY A: Does product's category contain product_noun?
+                # SAFETY A: Does product's category EXACTLY contain product_noun?
                 # E.g. Apple iPhone with cat=['iphone'] → True → it's a main product
-                # Also substring: cat=['phones'] for "iphone" query → True (phones in iphone)
+                # 
+                # We use EXACT match only (with plural support via _words_match).
+                # We do NOT use substring matching — that catches false positives
+                # like "phone" being a substring of "iphone", which would
+                # incorrectly protect "Cell Phone Accessories" from demotion.
+                #
+                # For cases like Apple iPhone XS with cat=['phones'] (no exact match),
+                # Safety B (brand match with top products) protects them instead.
                 noun_in_product_cat = False
                 if query_product_noun:
                     for cw in product_cat_words:
                         if _words_match(query_product_noun, cw):
                             noun_in_product_cat = True
                             break
-                        # Substring relationship handles "phone" ⊂ "iphone" etc.
-                        if len(cw) >= 4 and len(query_product_noun) >= 4:
-                            if cw in query_product_noun or query_product_noun in cw:
-                                noun_in_product_cat = True
-                                break
                 
                 # SAFETY B: Does product share brand/maker with TOP products?
                 # E.g. for "iphone" search, top 5 = Apple → other Apple products are iPhones
@@ -1066,6 +1068,18 @@ async def execute_search(request: SearchRequest) -> dict:
             # 🎯 ACCESSORY high-match (compatibility only)
             elif query_word_count >= 3 and match_count >= query_word_count - 1 and is_accessory:
                 combined_score = 30_000.0 + (match_ratio * 1000.0) + raw_anchor
+            
+            # 🎯 WRONG MODEL: Has product noun but wrong number (e.g. iPhone 14 case for "iphone 12 pro")
+            # Demote BELOW main products but keep visible as similar items
+            elif match_ratio >= 0.5 and has_wrong_model:
+                combined_score = 40_000.0 + (match_ratio * 1000.0) + raw_anchor
+                logger.info(f"🔢 WRONG-MODEL DEMOTED: '{r.get('name','')[:40]}' missing numbers {missing_numbers}")
+            
+            # 🎯 WRONG MODEL: Has product noun but wrong number (e.g. iPhone 14 case for "iphone 12 pro")
+            # Demote BELOW main products but keep visible as similar items
+            elif match_ratio >= 0.5 and has_wrong_model:
+                combined_score = 40_000.0 + (match_ratio * 1000.0) + raw_anchor
+                logger.info(f"🔢 WRONG-MODEL DEMOTED: '{r.get('name','')[:40]}' missing numbers {missing_numbers}")
             
             # 🥉 TIER 3: Partial match (≥50%)
             elif match_ratio >= 0.5 or query_word_count == 0:
