@@ -939,13 +939,51 @@ async def execute_search(request: SearchRequest) -> dict:
             missing_numbers = query_numbers - product_numbers
             has_wrong_model = bool(missing_numbers)
             
-            # 🔥 ACCESSORY DETECTION
+            # 🔥 ACCESSORY DETECTION (TWO STRATEGIES — fully dynamic)
+            #
+            # Strategy 1: Different category than dominant (the normal case)
+            # 
+            # Strategy 2: Product has DETAILED category words while main products 
+            #             (in source_for_categories) have SIMPLE/EMPTY categories.
+            #             Example: For "iphone" search, Apple iPhones have cat=Amazon
+            #             (filtered to empty), but OtterBox cases have cat=Cases,
+            #             Holsters & Sleeves (3 detailed words). Cases = accessory!
             is_accessory = False
-            if dominant_category_words and product_cat_words:
-                cat_overlap_acc = _words_intersect(dominant_category_words, product_cat_words)
-                meaningful_dom = {w for w in dominant_category_words if len(w) >= 4}
-                if not cat_overlap_acc and meaningful_dom:
-                    is_accessory = True
+            if product_cat_words:
+                # Strategy 1: doesn't overlap with dominant
+                if dominant_category_words:
+                    cat_overlap_acc = _words_intersect(dominant_category_words, product_cat_words)
+                    meaningful_dom = {w for w in dominant_category_words if len(w) >= 4}
+                    if not cat_overlap_acc and meaningful_dom:
+                        is_accessory = True
+                
+                # Strategy 2: detailed category when dominant products have empty cat
+                if not is_accessory and source_for_categories:
+                    # Count how many top products have EMPTY filtered categories
+                    empty_cat_count = 0
+                    for top_r in source_for_categories:
+                        top_cat_words = set()
+                        for cat in top_r.get("category", []):
+                            top_cat_words.update([
+                                w for w in _re.findall(r'\b[a-z]+\b', str(cat).lower())
+                                if len(w) >= 3 and w not in CATEGORY_STOPWORDS
+                            ])
+                        if not top_cat_words:
+                            empty_cat_count += 1
+                    
+                    # If majority of top products have empty cats (iPhones, MacBooks etc.)
+                    # AND this product has DETAILED category (≥2 words) → accessory
+                    if (empty_cat_count >= len(source_for_categories) * 0.5 
+                        and len(product_cat_words) >= 2):
+                        is_accessory = True
+            
+            # 🎯 DETECT IF USER WANTS ACCESSORY (e.g. searched "iphone case")
+            # When user types accessory-type word AND it matches the dominant category,
+            # they explicitly want the accessory — show it at TIER 1.
+            wants_accessory_search = False
+            if query_product_noun and dominant_category_words:
+                if any(_words_match(query_product_noun, dw) for dw in dominant_category_words):
+                    wants_accessory_search = True
             
             combined_score = raw_anchor
             
@@ -954,21 +992,23 @@ async def execute_search(request: SearchRequest) -> dict:
                 combined_score = -1000000.0
                 logger.info(f"🔻 BANISH NO-NOUN: '{r.get('name','')[:40]}' missing '{query_product_noun}'")
             
-            # 🥇 TIER 1: Exact match, no accessory, no wrong model
-            elif match_ratio >= 1.0 and not is_accessory and not has_wrong_model:
+            # 🥇 TIER 1: Exact match — main product OR user-wanted accessory
+            elif match_ratio >= 1.0 and not has_wrong_model and (not is_accessory or wants_accessory_search):
                 combined_score = 1_000_000.0 + raw_anchor
             
-            # 🥈 TIER 2: High match (n-1 words), no accessory, no wrong model
-            elif query_word_count >= 3 and match_count >= query_word_count - 1 and not is_accessory and not has_wrong_model:
+            # 🥈 TIER 2: High match (n-1 words) — main product OR user-wanted accessory
+            elif query_word_count >= 3 and match_count >= query_word_count - 1 and not has_wrong_model and (not is_accessory or wants_accessory_search):
                 combined_score = 500_000.0 + (match_ratio * 10000.0) + raw_anchor
             
-            # 🎯 TIER 1-ACCESSORY: Exact match but accessory (cases for "iphone case" search)
+            # 🎯 ACCESSORY (compatibility only) — show BELOW main products
+            # Even exact-match accessories rank below main products
             elif match_ratio >= 1.0 and is_accessory:
-                combined_score = 200_000.0 + raw_anchor
+                combined_score = 50_000.0 + raw_anchor
+                logger.info(f"🔽 ACCESSORY DEMOTED: '{r.get('name','')[:40]}' (cat={list(product_cat_words)[:2]})")
             
-            # 🎯 TIER 2-ACCESSORY
+            # 🎯 ACCESSORY high-match (compatibility only)
             elif query_word_count >= 3 and match_count >= query_word_count - 1 and is_accessory:
-                combined_score = 150_000.0 + (match_ratio * 5000.0) + raw_anchor
+                combined_score = 30_000.0 + (match_ratio * 1000.0) + raw_anchor
             
             # 🥉 TIER 3: Partial match (≥50%)
             elif match_ratio >= 0.5 or query_word_count == 0:
