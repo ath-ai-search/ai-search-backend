@@ -791,14 +791,36 @@ async def execute_search(request: SearchRequest) -> dict:
                 if len(_words_intersect(query_intent_words, words)) >= max(1, len(query_intent_words) // 2):
                     valid_noun_products.append(r)
                     
-        # 🔥 DYNAMIC DOMINANT CATEGORY (revert to score-based + accessory filter)
+        # 🔥 DOMINANT CATEGORY — From products with EMPTY or PRIMARY category
         # 
-        # Use top valid_noun_products from OpenSearch ranking, but EXCLUDE products
-        # whose category looks accessory-ish (when query is for main product).
+        # KEY INSIGHT: For queries like "iphone", actual iPhones have cat=Amazon
+        # (filtered to empty) while OtterBox cases have cat=Cases/Holsters/Sleeves.
+        # 
+        # If we use OtterBox categories as dominant, OTHER OtterBox cases match it
+        # and DON'T get classified as accessory → all cases get TIER 1.
         #
-        # No price sorting (causes Gaming PCs to outrank iPhones for "iphone 11 white"
-        # because Windows 11 PCs cost $1000+ while iPhone 11 costs $300).
-        source_for_categories = valid_noun_products[:5] if valid_noun_products else results[:3]
+        # SOLUTION: Prefer products with FEWER category words (often the main product
+        # has minimal cat info like cat=Amazon, while accessories have detailed cats
+        # like "Cases, Holsters & Sleeves"). 
+        #
+        # Sort valid_noun_products by: (1) empty/minimal cat first, then (2) score.
+        if valid_noun_products:
+            def _cat_complexity(r):
+                """Lower = simpler category = more likely main product."""
+                cat_word_count = 0
+                for cat in r.get("category", []):
+                    if cat:
+                        words = _re.findall(r'\b[a-z]+\b', str(cat).lower())
+                        cat_word_count += len([w for w in words if w not in CATEGORY_STOPWORDS and len(w) >= 3])
+                return cat_word_count
+            
+            sorted_by_cat_simplicity = sorted(
+                valid_noun_products,
+                key=lambda r: _cat_complexity(r)
+            )
+            source_for_categories = sorted_by_cat_simplicity[:5]
+        else:
+            source_for_categories = results[:3]
 
         top_results_categories = []
         for r in source_for_categories: 
@@ -872,18 +894,41 @@ async def execute_search(request: SearchRequest) -> dict:
             
             # 🔥 ACCESSORY DETECTION — 100% DYNAMIC (no hardcoded lists)
             # 
-            # An "accessory" is a product whose category DIFFERS from the dominant
-            # category of valid matchers. It's compatible with the search (has the
-            # query word) but it's NOT the main product.
+            # Strategy 1: Different category than dominant
+            # Strategy 2: Product has MORE category words than dominant (accessories
+            #             usually have detailed cats: "Cases, Holsters & Sleeves")
             #
-            # Strategy: KEEP accessories in results but RANK THEM BELOW main products.
-            # User can scroll past iPhones to find cases/chargers.
+            # Example: For "iphone" query
+            #   dominant_category_words might be empty (Apple iPhones have cat=Amazon filtered)
+            #   OtterBox case has product_cat_words = {cases, holsters, sleeves} (3 words!)
+            #   → Significantly more cat detail → likely accessory
+            
             is_accessory_product = False
-            if dominant_category_words and product_cat_words:
-                cat_overlap_for_accessory = _words_intersect(dominant_category_words, product_cat_words)
-                meaningful_dominant = {w for w in dominant_category_words if len(w) >= 4}
-                if not cat_overlap_for_accessory and meaningful_dominant:
-                    is_accessory_product = True
+            if product_cat_words:
+                # Strategy 1: Has real category but no overlap with dominant
+                if dominant_category_words:
+                    cat_overlap_for_accessory = _words_intersect(dominant_category_words, product_cat_words)
+                    meaningful_dominant = {w for w in dominant_category_words if len(w) >= 4}
+                    if not cat_overlap_for_accessory and meaningful_dominant:
+                        is_accessory_product = True
+                
+                # Strategy 2: Product has DETAILED category but dominant is simple/empty
+                # (Main products tend to have cat=Amazon=filtered=empty;
+                # accessories have specific cats like "Cases, Holsters & Sleeves")
+                if not is_accessory_product:
+                    # Get the "empty cat" sample size from dominant source
+                    empty_cat_in_dominant = sum(
+                        1 for r2 in source_for_categories
+                        if not any(
+                            w for cat in r2.get("category", [])
+                            for w in _re.findall(r'\b[a-z]+\b', str(cat).lower())
+                            if w not in CATEGORY_STOPWORDS and len(w) >= 3
+                        )
+                    )
+                    # If majority of dominant products have EMPTY cats (e.g. iPhones with cat=Amazon),
+                    # and this product has REAL cats, it's an accessory
+                    if empty_cat_in_dominant >= len(source_for_categories) * 0.5 and len(product_cat_words) >= 2:
+                        is_accessory_product = True
             
             # Tag the product (used in tier scoring below) — DON'T modify match_ratio
             # The tier scoring will use this flag to demote accessories to a lower band
