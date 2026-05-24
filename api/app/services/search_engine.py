@@ -54,9 +54,8 @@ async def correct_query_typos(query: str, aggressive: bool = False) -> tuple:
             suggest_mode = "always"      
             threshold = 0.3              
         else:
-            # 🔥 FIX: 'popular' catches 'appl' -> 'apple' even if 'appl' already exists in the catalog
-            suggest_mode = "popular"     
-            threshold = 0.5              # 🔥 FIX: Lowered to 0.5 to catch more obvious typos natively
+            suggest_mode = "always"      # 🔥 FIX: Force "always" for all searches to aggressively correct 'appl'
+            threshold = 0.4              # 🔥 FIX: Slightly relaxed threshold
         
         resp = os_client.search(
             index=INDEX_NAME,
@@ -68,9 +67,9 @@ async def correct_query_typos(query: str, aggressive: bool = False) -> tuple:
                         "term": {
                             "field": "name",
                             "suggest_mode": suggest_mode,
-                            "min_word_length": 3,  # 🔥 FIX: Lowered to 3 to catch short typos
+                            "min_word_length": 3,
                             "max_edits": 2,
-                            "prefix_length": 1
+                            "prefix_length": 0  # 🔥 FIX: Prefix length 0 allows changing the first letter if needed
                         }
                     }
                 }
@@ -1091,13 +1090,15 @@ async def execute_search(request: SearchRequest) -> dict:
                     f"| cat={list(product_cat_words)[:2]}"
                 )
                 
-            # 🔥 NEW DYNAMIC INTENT GUARD: Penalize for every missing query word
-            # Perfectly pushes 'Women' down when 'Men' is searched, 100% dynamically without hardcoded lists!
+            # 🔥 NEW DYNAMIC INTENT GUARD: Ruthless Penalty
+            # If a product is missing a key intent word (like 'men' or 'shirt'),
+            # it receives a massive penalty to push it below the -10,000 banishment line.
             missing_intent_words = query_intent_words - product_all_words
             if missing_intent_words and combined_score > 0:
-                penalty = len(missing_intent_words) * 20000.0
+                # 🔥 We subtract 2,000,000 to completely wipe out any Tier 1 Exact Match (+1,000,000) score!
+                penalty = len(missing_intent_words) * 2000000.0
                 combined_score -= penalty
-                logger.info(f"🔻 DYNAMIC PENALTY: -{penalty} for missing intent words: {missing_intent_words}")
+                logger.info(f"🔻 RUTHLESS PENALTY: -{penalty} for missing intent words: {missing_intent_words}")
             
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
