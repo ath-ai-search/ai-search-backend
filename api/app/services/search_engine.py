@@ -782,14 +782,68 @@ async def execute_search(request: SearchRequest) -> dict:
         def _get_product_all_words_text(r):
             return (r.get("name", "") + " " + " ".join([str(c) for c in r.get("category", [])])).lower()
             
+        # 🔥 STRICT FILTER for source_for_categories:
+        # Only include products where ALL query words match AND product has no
+        # "accessory-looking" categories. This prevents accessories from
+        # contaminating top_brands and dominant_category_words.
         valid_noun_products = []
         if query_intent_words:
+            # Pre-compute query product noun (rough version, before the formal one below)
+            query_words_for_noun = [
+                ''.join(c for c in w if c.isalnum()).lower()
+                for w in (query_text or "").lower().split()
+            ]
+            rough_noun_candidates = [
+                w for w in query_words_for_noun
+                if len(w) >= 4 and not w.isdigit()
+            ]
+            rough_noun = max(rough_noun_candidates, key=len) if rough_noun_candidates else None
+            
             for r in results:
                 text = _get_product_all_words_text(r)
                 words = set(_re.findall(r'\b[a-z0-9]+\b', text))
-                # Product must contain at least half of the query intent words to be a reliable source
-                if len(_words_intersect(query_intent_words, words)) >= max(1, len(query_intent_words) // 2):
-                    valid_noun_products.append(r)
+                matched = _words_intersect(query_intent_words, words)
+                
+                # STRICT: require FULL match (all query words) to be a "main product source"
+                if len(matched) < len(query_intent_words):
+                    continue
+                
+                # ALSO: exclude products with category clearly indicating accessory
+                # E.g. "Cell Phone Accessories", "Cases, Holsters & Sleeves"
+                # These contain words that signal the product is FOR something else
+                r_cat_words = set()
+                for cat in r.get("category", []):
+                    if cat:
+                        r_cat_words.update([
+                            w for w in _re.findall(r'\b[a-z]+\b', str(cat).lower())
+                            if len(w) >= 3
+                        ])
+                
+                # If category has the word "accessories" or "accessory" → skip
+                # (this is the strongest signal a product is an accessory)
+                if "accessories" in r_cat_words or "accessory" in r_cat_words:
+                    continue
+                
+                # If category has "case" / "cases" / "holster" / "sleeve" → skip
+                # These are universal accessory category markers
+                accessory_markers = {"cases", "case", "holsters", "holster", 
+                                     "sleeves", "sleeve", "covers", "cover"}
+                if r_cat_words & accessory_markers:
+                    continue
+                
+                # If category clearly doesn't match product noun, skip
+                # E.g. for "iphone" search, products in cat=Cycling/Wristlets are accessories
+                if rough_noun and r_cat_words:
+                    # Check if any cat word relates to product noun
+                    noun_in_cat = any(_words_match(rough_noun, cw) for cw in r_cat_words)
+                    # If cat exists but doesn't contain noun, this product isn't a main reference
+                    # UNLESS cat is something generic like "amazon" (already stripped)
+                    # We use this rule: if cat exists AND has ≥2 meaningful words AND no noun match → skip
+                    meaningful_cat = {w for w in r_cat_words if len(w) >= 4}
+                    if not noun_in_cat and len(meaningful_cat) >= 2:
+                        continue
+                
+                valid_noun_products.append(r)
                     
         # 🔥 DOMINANT CATEGORY — From products with EMPTY or PRIMARY category
         # 
