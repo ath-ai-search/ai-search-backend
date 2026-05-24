@@ -773,13 +773,46 @@ async def execute_search(request: SearchRequest) -> dict:
             "men", "women", "kids", "boys", "girls", "unisex",  # gender, handled separately
         }
         
-        # ---- 1. Find DOMINANT category words from TOP 3 results ONLY ----
-        # 🔥 TOP 3 is more reliable than top 10. Top 3 = strongest matches.
-        # Using top 10 lets accessories at positions 6-10 pollute the signal.
-        # Example: "iphone 14 plus midnight" top 3 = iPhones (cat=Amazon, filtered)
-        # → dominant_category_words = only query words → accessory headphones get banished.
+        # 🎯 QUERY PRODUCT NOUN: The core "type" the user is searching for
+        # We extract this FIRST so we can use it to prevent Category Poisoning!
+        query_product_noun = None
+        for word in (query_text or "").lower().split():
+            word_clean = ''.join(c for c in word if c.isalnum()).lower()
+            if len(word_clean) >= 4 and word_clean not in CATEGORY_STOPWORDS:
+                query_product_noun = word_clean
+                break
+                
+        if query_product_noun:
+            logger.info(f"🎯 Query product noun: '{query_product_noun}'")
+
+        # ---- 1. Find DOMINANT category words from VALID TOP RESULTS ----
+        # 🔥 FIX: Prevent "Category Poisoning". If OpenSearch returns random "for men" 
+        # products at the top, they will poison the category guard.
+        # We MUST extract categories ONLY from products that actually contain the product noun!
+        
+        def _get_product_all_words_text(r):
+            return (r.get("name", "") + " " + " ".join([str(c) for c in r.get("category", [])])).lower()
+            
+        valid_noun_products = []
+        if query_product_noun:
+            for r in results:
+                text = _get_product_all_words_text(r)
+                words = set(_re.findall(r'\b[a-z0-9]+\b', text))
+                if any(_words_match(query_product_noun, w) for w in words):
+                    valid_noun_products.append(r)
+                    
+        # If we have products with the actual noun, use them! Otherwise fallback to best intent match.
+        if valid_noun_products:
+            source_for_categories = valid_noun_products[:3]
+        else:
+            source_for_categories = sorted(
+                results, 
+                key=lambda x: len(query_intent_words & set(_re.findall(r'\b[a-z0-9]+\b', _get_product_all_words_text(x)))), 
+                reverse=True
+            )[:3]
+
         top_results_categories = []
-        for r in results[:3]:  # 🔥 TOP 3 ONLY for clean signal
+        for r in source_for_categories:  # 🔥 Protected Source!
             for cat in r.get("category", []):
                 if cat:
                     cat_clean = str(cat).strip().lower()
@@ -797,26 +830,11 @@ async def execute_search(request: SearchRequest) -> dict:
         # 🔥 Word must appear in ≥2 of top 3 to be considered dominant
         dominant_category_words = set()
         for word, count in category_word_counts.most_common():
-            if count >= 2:  # appears in at least 2 of top 3
+            if count >= 2:  
                 dominant_category_words.add(word)
         
         # 🎯 ESSENTIAL BRAND DETECTION (100% dynamic, from OpenSearch global aggregation)
-        # 
-        # Why GLOBAL aggregation (not top 10 results):
-        # For short queries like "iphone", OpenSearch ranks SHORT product names higher.
-        # OtterBox case names are short ("Otterbox Defender for iPhone 14") so they
-        # dominate top 10. Apple iPhone names are longer ("Apple iPhone 14 Plus, 256GB,
-        # Midnight - Unlocked Renewed") so they rank lower despite being the main product.
-        #
-        # SOLUTION: Use OpenSearch's global_brands aggregation which counts brands
-        # across ALL matching products (not just top 10). 
-        # 
-        # Example for "iphone" query:
-        # - Top 10 results: 8 OtterBox + 2 Apple (skewed by ranking)
-        # - Global aggregation: 50 Apple, 25 OtterBox, 15 others (full picture)
-        # - Apple = 55% of matches → APPLE is essential brand ✓
         essential_brand = None
-        
         global_brands_buckets = response.get("aggregations", {}).get("global_brands", {}).get("buckets", [])
         
         if global_brands_buckets and len(global_brands_buckets) >= 1:
@@ -827,44 +845,9 @@ async def execute_search(request: SearchRequest) -> dict:
             
             if total_matching > 0 and top_brand_name and len(top_brand_name) >= 3:
                 top_brand_ratio = top_brand_count / total_matching
-                
-                # 🔥 If top brand has 40%+ of ALL matches, it's the essential brand
-                # 40% threshold:
-                #   - "iphone" → Apple = 50%+ → essential (good!)
-                #   - "running shoes" → Nike = 25-30% → not essential (good, multi-brand)
-                #   - "dresses" → top brand = 5% → not essential (good, varied)
                 if top_brand_ratio >= 0.4:
                     essential_brand = top_brand_name
-                    logger.info(
-                        f"🏷️ Essential brand detected: '{essential_brand}' "
-                        f"({top_brand_count}/{total_matching} = {top_brand_ratio:.0%} of all matches)"
-                    )
-                else:
-                    top_3_brands = [(b.get("key"), b.get("doc_count")) for b in global_brands_buckets[:3]]
-                    logger.info(
-                        f"🏷️ No dominant brand (top {top_brand_ratio:.0%} < 40%): {top_3_brands}"
-                    )
-        
-        # 🎯 QUERY PRODUCT NOUN: The core "type" the user is searching for
-        # First ≥4-char meaningful word in query becomes the product noun.
-        # 
-        # Examples:
-        #   "iphone 11 white"          → "iphone"
-        #   "samsung galaxy s24"       → "samsung"  (then "galaxy" as fallback)
-        #   "macbook pro 16"           → "macbook"
-        #   "running shoes"            → "running"
-        #
-        # TIER 3 (accessories) requires this word in product name — prevents
-        # Cuisinart "11 white" cookware from being classified as iPhone accessory.
-        query_product_noun = None
-        for word in (query_text or "").lower().split():
-            word_clean = ''.join(c for c in word if c.isalnum()).lower()
-            if len(word_clean) >= 4 and word_clean not in CATEGORY_STOPWORDS:
-                query_product_noun = word_clean
-                break
-        
-        if query_product_noun:
-            logger.info(f"🎯 Query product noun: '{query_product_noun}'")
+                    logger.info(f"🏷️ Essential brand detected: '{essential_brand}'")
         
         # 🎯 OPERATIVE BRAND: Use essential_brand or derive from exact matches
         # 
