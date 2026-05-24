@@ -773,46 +773,29 @@ async def execute_search(request: SearchRequest) -> dict:
             "men", "women", "kids", "boys", "girls", "unisex",  # gender, handled separately
         }
         
-        # 🎯 QUERY PRODUCT NOUN: The core "type" the user is searching for
-        # We extract this FIRST so we can use it to prevent Category Poisoning!
-        query_product_noun = None
-        for word in (query_text or "").lower().split():
-            word_clean = ''.join(c for c in word if c.isalnum()).lower()
-            if len(word_clean) >= 4 and word_clean not in CATEGORY_STOPWORDS:
-                query_product_noun = word_clean
-                break
-                
-        if query_product_noun:
-            logger.info(f"🎯 Query product noun: '{query_product_noun}'")
-
-        # ---- 1. Find DOMINANT category words from VALID TOP RESULTS ----
-        # 🔥 FIX: Prevent "Category Poisoning". If OpenSearch returns random "for men" 
-        # products at the top, they will poison the category guard.
-        # We MUST extract categories ONLY from products that actually contain the product noun!
+        # =====================================================================
+        # 🚀 NEW FATAL RERANKING ENGINE (Pure Math & Set Theory)
+        # =====================================================================
         
+        # ---- 1. Find DOMINANT category words from VALID TOP RESULTS ----
+        # This prevents "Category Poisoning" by strictly analyzing the strongest matches
         def _get_product_all_words_text(r):
             return (r.get("name", "") + " " + " ".join([str(c) for c in r.get("category", [])])).lower()
             
         valid_noun_products = []
-        if query_product_noun:
+        if query_intent_words:
             for r in results:
                 text = _get_product_all_words_text(r)
                 words = set(_re.findall(r'\b[a-z0-9]+\b', text))
-                if any(_words_match(query_product_noun, w) for w in words):
+                # Product must contain at least half of the query intent words to be a reliable source
+                if len(_words_intersect(query_intent_words, words)) >= max(1, len(query_intent_words) // 2):
                     valid_noun_products.append(r)
                     
-        # If we have products with the actual noun, use them! Otherwise fallback to best intent match.
-        if valid_noun_products:
-            source_for_categories = valid_noun_products[:3]
-        else:
-            source_for_categories = sorted(
-                results, 
-                key=lambda x: len(query_intent_words & set(_re.findall(r'\b[a-z0-9]+\b', _get_product_all_words_text(x)))), 
-                reverse=True
-            )[:3]
+        # Fallback to general sorting if strict matching fails
+        source_for_categories = valid_noun_products[:5] if valid_noun_products else results[:3]
 
         top_results_categories = []
-        for r in source_for_categories:  # 🔥 Protected Source!
+        for r in source_for_categories: 
             for cat in r.get("category", []):
                 if cat:
                     cat_clean = str(cat).strip().lower()
@@ -820,275 +803,94 @@ async def execute_search(request: SearchRequest) -> dict:
                         cat_words = _re.findall(r'\b[a-z]+\b', cat_clean)
                         meaningful_words = [
                             w for w in cat_words 
-                            if w not in CATEGORY_STOPWORDS and len(w) >= 4
+                            if w not in CATEGORY_STOPWORDS and len(w) >= 3
                         ]
                         top_results_categories.extend(meaningful_words)
         
-        # Count word frequency
         category_word_counts = Counter(top_results_categories)
-        
-        # 🔥 Word must appear in ≥2 of top 3 to be considered dominant
         dominant_category_words = set()
         for word, count in category_word_counts.most_common():
             if count >= 2:  
                 dominant_category_words.add(word)
-        
-        # 🎯 ESSENTIAL BRAND DETECTION (100% dynamic, from OpenSearch global aggregation)
-        essential_brand = None
-        global_brands_buckets = response.get("aggregations", {}).get("global_brands", {}).get("buckets", [])
-        
-        if global_brands_buckets and len(global_brands_buckets) >= 1:
-            total_matching = sum(b.get("doc_count", 0) for b in global_brands_buckets)
-            top_brand_bucket = global_brands_buckets[0]
-            top_brand_name = str(top_brand_bucket.get("key", "")).lower().strip()
-            top_brand_count = top_brand_bucket.get("doc_count", 0)
-            
-            if total_matching > 0 and top_brand_name and len(top_brand_name) >= 3:
-                top_brand_ratio = top_brand_count / total_matching
-                if top_brand_ratio >= 0.4:
-                    essential_brand = top_brand_name
-                    logger.info(f"🏷️ Essential brand detected: '{essential_brand}'")
-        
-        # 🎯 OPERATIVE BRAND: Use essential_brand or derive from exact matches
-        # 
-        # If global aggregation didn't find a dominant brand (e.g. Apple < 40% for
-        # "iphone 11 white" because catalog has many cases), look at products that
-        # exactly match all query words — their brands tell us the user's intent.
-        #
-        # Example: "iphone 11 white" exact matches → all Apple iPhones → operative_brand = "apple"
-        # Example: "running shoes" exact matches → Nike, Adidas, ASICS (mixed) → no operative_brand
-        operative_brand = essential_brand
-        if not operative_brand and query_intent_words and len(query_intent_words) >= 2:
-            exact_match_brand_candidates = []
-            for r in results[:50]:
-                name = (r.get("name") or "").lower()
-                name_words_set = set(_re.findall(r'\b[a-z0-9]+\b', name))
-                matched = query_intent_words & name_words_set
-                if len(matched) == len(query_intent_words):
-                    # Exact match — extract brand signal from first 2 words of name
-                    first_tokens = name.split()[:2]
-                    for tok in first_tokens:
-                        tok_clean = ''.join(c for c in tok if c.isalnum()).lower()
-                        if len(tok_clean) >= 3 and tok_clean not in {"the", "for", "new", "with", "from", "amazon", "generic", "your", "all"}:
-                            exact_match_brand_candidates.append(tok_clean)
-                            break
-            
-            if exact_match_brand_candidates:
-                brand_counts_em = Counter(exact_match_brand_candidates)
-                most_common_em, count_em = brand_counts_em.most_common(1)[0]
-                total_em = len(exact_match_brand_candidates)
-                # Use only if ONE brand dominates exact matches (≥50%)
-                if count_em / total_em >= 0.5:
-                    operative_brand = most_common_em
-                    logger.info(
-                        f"🎯 Operative brand from exact matches: '{operative_brand}' "
-                        f"({count_em}/{total_em})"
-                    )
-                else:
-                    logger.info(
-                        f"🎯 Multiple brands in exact matches — no brand filter: "
-                        f"{brand_counts_em.most_common(3)}"
-                    )
-        
-        # 🔥 STRONGER: Always add query intent words FIRST — they're the most reliable signal
-        # User TYPED these words — they know what they want.
-        # "formal red dresses for men" → dresses, formal, red, men become required
-        dominant_category_words.update(query_intent_words)
-        
-        # 🔥 Check if any query word also appears as a real category (extra signal)
-        query_words = _re.findall(r'\b[a-z]+\b', (query_text or "").lower())
-        for word in query_words:
-            if len(word) >= 4 and word not in CATEGORY_STOPWORDS:
-                appears_in_any_category = any(
-                    word in " ".join([str(c).lower() for c in r.get("category", [])])
-                    for r in results
-                )
-                if appears_in_any_category:
-                    dominant_category_words.add(word)
-        
-        if dominant_category_words:
-            logger.info(f"🎯 Dynamic category intent (combined): {sorted(list(dominant_category_words))[:10]}")
-        
-        # ---- 2. Score each product based on category + name alignment ----
+
+        # ---- 2. Score each product based on Pure Intent & Set Theory ----
+        # This is the 100% dynamic, fatal reranking engine. No hardcoded tiers.
         for r in results:
             raw_anchor = r.pop("_raw_score_anchor", 0)
             trending = trending_scores.get(r["id"], 0)
-            # 🔥 Trending boost REMOVED from main scoring — was causing exact matches to rank lower
-            # Trending only displayed in the result, not used for ranking
-            combined_score = raw_anchor
             
-            # Get product CATEGORY words
             product_cat_words = set()
             for cat in r.get("category", []):
                 if cat:
-                    cat_words = _re.findall(r'\b[a-z]+\b', str(cat).lower())
-                    meaningful = [w for w in cat_words if w not in CATEGORY_STOPWORDS and len(w) >= 4]
-                    product_cat_words.update(meaningful)
-            
-            # 🔥 Get product NAME words — INCLUDES MODEL NUMBERS  
-            # Captures alphanumeric tokens like "iphone", "14", "plus", "starlight", "s24"
+                    product_cat_words.update([w for w in _re.findall(r'\b[a-z]+\b', str(cat).lower()) if len(w) >= 3])
+                    
             product_name_words = set()
             name_clean = r.get("name", "").lower()
             name_words = _re.findall(r'\b[a-z0-9]+\b', name_clean)
-            BASIC_STOPWORDS = {"and", "the", "for", "with", "all", "color", "size", "by", "of", "in"}
+            BASIC_STOPWORDS = {"and", "the", "for", "with", "all", "color", "size", "by", "of", "in", "pack", "pcs"}
             for w in name_words:
-                # 🔥 FIX: Use basic stopwords so vital intent words (like men/women) are preserved dynamically!
                 if len(w) >= 2 and w not in BASIC_STOPWORDS:
                     product_name_words.add(w)
-            
-            # Combine for full product signal
-            product_all_words = product_cat_words | product_name_words
-            
-            # 🔥 SMART ALIGNMENT CHECK with GUARANTEED EXACT-MATCH PRIORITY
-            # If product name contains ALL user query words → force to top of results.
-            
-            query_match_count = len(query_intent_words & product_name_words)
-            query_match_ratio = query_match_count / len(query_intent_words) if query_intent_words else 0
-            
-            # Debug log removed — was for troubleshooting Starlight tokenization
-            
-            # ═══════════════════════════════════════════════════════════════════
-            # 🎯 TIERED RANKING (100% DYNAMIC) — v2 STRICT
-            #
-            # TIER 1 (1,000,000+):  EXACT MATCH — all query words in product name
-            # TIER 2 (500,000+):    RELATED — has operative_brand + product_noun OR ratio≥0.4
-            # TIER 3 (100,000+):    ACCESSORY — different category but mentions product_noun
-            # TIER 4 (+1k-5k):      Generic match (no brand context)
-            # BANISH (-100,000):    UNRELATED — wrong brand AND no product_noun
-            # ═══════════════════════════════════════════════════════════════════
-            
-            # 🔥 Plural-aware overlaps (dress ↔ dresses, shoe ↔ shoes)
-            category_overlap = _words_intersect(dominant_category_words, product_cat_words) if dominant_category_words else set()
-            name_overlap = _words_intersect(dominant_category_words, product_name_words) if dominant_category_words else set()
-            
+                    
             product_brand_str = (r.get("brand") or "").lower()
-            product_name_lower = (r.get("name") or "").lower()
+            product_all_words = product_cat_words | product_name_words | {product_brand_str}
             
-            # 🎯 BRAND MATCH: Check if operative_brand appears in BRAND field OR
-            # in the first 3 tokens of product name (more reliable than brand field
-            # alone, since some products have brand="AMAZON" instead of actual brand).
-            #
-            # Default FALSE (was True — that was the bug!). A product passes the brand
-            # check only if it explicitly has the operative brand.
-            has_operative_brand = False
-            if operative_brand:
-                first_3_tokens = [w.strip(',.').lower() for w in product_name_lower.split()[:3]]
-                has_operative_brand = (
-                    operative_brand in product_brand_str or
-                    operative_brand in first_3_tokens or
-                    any(operative_brand in tok for tok in first_3_tokens if len(tok) >= 3)
-                )
+            # 🔥 INTENT MATCHING 
+            matched_intent_words = _words_intersect(query_intent_words, product_all_words)
+            match_count = len(matched_intent_words)
+            query_word_count = len(query_intent_words)
+            match_ratio = match_count / query_word_count if query_word_count > 0 else 0
             
-            # 🎯 PRODUCT NOUN MATCH: Does the product name contain the query's core noun?
-            # Without this, Cuisinart "11 White" cookware would be classified as iPhone accessory
-            # just because "11" and "white" match. We require "iphone" to be in name for it to
-            # count as iPhone-related.
-            has_product_noun = False
-            if query_product_noun:
-                # Check exact AND plural-aware (handles dress↔dresses)
-                for nw in product_name_words:
-                    if _words_match(query_product_noun, nw):
-                        has_product_noun = True
-                        break
+            # 🔥 ACCESSORY DEMOTION
+            # Prevent bike mounts and chargers from hijacking Tier 1
+            is_accessory_product = bool({"case", "cover", "mount", "charger", "stand", "holder", "cable", "protector"} & product_name_words)
+            wants_accessory = bool({"case", "cover", "mount", "charger", "stand", "holder", "cable", "protector"} & query_intent_words)
             
-            # 🎯 ACCESSORY: Product in different category that mentions the product noun
-            # E.g. iPhone case has cat=Cases, name="Otterbox Case for iPhone" → accessory
-            is_accessory = (
-                len(product_cat_words) > 0 and       # has real category
-                len(category_overlap) == 0 and       # different from search target
-                has_product_noun                     # but mentions the product noun
-            )
+            if is_accessory_product and not wants_accessory:
+                # Demote exact match so it drops below Tier 1
+                if match_ratio >= 1.0:
+                    match_ratio = 0.99
             
-            # ═══════════════════════════════════════════════════════════════════
-            # 🥇 TIER 1: EXACT MATCH (all query words in name)
-            # ═══════════════════════════════════════════════════════════════════
-            # 🔥 FIX: Added "and not is_accessory". This prevents phone cases 
-            # from stealing Tier 1 just because they list multiple phone models!
-            if query_match_ratio >= 1.0 and (len(query_intent_words) >= 2 or has_product_noun) and not is_accessory:
+            combined_score = raw_anchor
+            
+            # 🥇 TIER 1: EXACT MATCH
+            if match_ratio >= 1.0:
                 combined_score = 1_000_000.0 + raw_anchor
-                logger.info(
-                    f"🥇 TIER 1 EXACT: '{r.get('name','')[:40]}' "
-                    f"| all matched: {sorted(query_intent_words)[:5]}"
-                )
-            
-            # ═══════════════════════════════════════════════════════════════════
-            # 🥈 TIER 2: SAME-BRAND RELATED PRODUCT
-            # Requires operative_brand to exist AND product to have it
-            # AND (has product_noun OR ratio ≥ 0.4)
-            # ═══════════════════════════════════════════════════════════════════
-            elif operative_brand and has_operative_brand and (has_product_noun or query_match_ratio >= 0.4):
-                combined_score = 500_000.0 + (query_match_ratio * 10000.0) + raw_anchor
-                logger.info(
-                    f"🥈 TIER 2 RELATED: '{r.get('name','')[:40]}' "
-                    f"| brand='{operative_brand}' | ratio={query_match_ratio:.2f}"
-                )
-            
-            # ═══════════════════════════════════════════════════════════════════
-            # 🥉 TIER 3: COMPATIBLE ACCESSORY (different category, has product_noun)
-            # E.g. iPhone case for "iphone 11 white" — at BOTTOM but still visible
-            # ═══════════════════════════════════════════════════════════════════
-            elif is_accessory:
-                combined_score = 100_000.0 + (len(name_overlap) * 1000.0)
-                logger.info(
-                    f"🥉 TIER 3 ACCESSORY: '{r.get('name','')[:40]}' "
-                    f"| cat={list(product_cat_words)[:2]}"
-                )
-            
-            # ═══════════════════════════════════════════════════════════════════
-            # TIER 4a: NO BRAND CONTEXT — strong name match
-            # For generic searches like "dress" with no single brand
-            # ═══════════════════════════════════════════════════════════════════
-            elif not operative_brand and len(name_overlap) >= 2:
-                combined_score += 1000.0 + (query_match_ratio * 5000.0)
-            
-            # ═══════════════════════════════════════════════════════════════════
-            # TIER 4b: CATEGORY MATCH — strong category overlap
-            # ═══════════════════════════════════════════════════════════════════
-            elif len(category_overlap) >= 2:
-                combined_score += 500.0 + (query_match_ratio * 2000.0)
-            
-            # ═══════════════════════════════════════════════════════════════════
-            # TIER 5: HAS PRODUCT NOUN (weak but on-topic)
-            # ═══════════════════════════════════════════════════════════════════
-            elif has_product_noun:
-                combined_score += 500.0
-            
-            # ═══════════════════════════════════════════════════════════════════
-            # 🔻 BANISH: WRONG BRAND + NO PRODUCT NOUN = unrelated junk
-            # E.g. Nike sneaker "size 11 white" for "iphone 11 white" search
-            # E.g. Cuisinart "11-Cup White" for "iphone 11 white" search
-            # ═══════════════════════════════════════════════════════════════════
-            elif operative_brand and not has_operative_brand and not has_product_noun:
-                combined_score -= 100000.0
-                logger.info(
-                    f"🔻 BANISH UNRELATED: '{r.get('name','')[:40]}' "
-                    f"| no '{operative_brand}' brand | no '{query_product_noun}' word"
-                )
-            
-            # ═══════════════════════════════════════════════════════════════════
-            # 🔻 BANISH: OFF-TOPIC (no overlap, no product noun, has unrelated cat)
-            # ═══════════════════════════════════════════════════════════════════
-            elif not category_overlap and not has_product_noun and product_cat_words:
-                combined_score -= 100000.0
-                logger.info(
-                    f"🔻 BANISH OFF-TOPIC: '{r.get('name','')[:40]}' "
-                    f"| cat={list(product_cat_words)[:2]}"
-                )
                 
-            # 🔥 SMART GENDER GUARD (Expanded): Explicitly banish cross-gender results dynamically!
-            # Now includes ladies, girls, boys, female, and male tags using set math.
+            # 🥈 TIER 2: HIGH MATCH (Missed max 1 word)
+            elif query_word_count >= 3 and match_count >= query_word_count - 1:
+                combined_score = 500_000.0 + (match_ratio * 10000.0) + raw_anchor
+                
+            # 🥉 TIER 3: PARTIAL MATCH (Matched at least half)
+            elif match_ratio >= 0.5 or query_word_count == 0:
+                combined_score = 100_000.0 + (match_ratio * 5000.0) + raw_anchor
+                
+            # 🔻 BANISH TIER: Below 50% match
+            else:
+                combined_score = -1000000.0
+                
+            # 🔥 SMART GENDER GUARD
+            # Completely fatal to mismatched genders
             is_mens_search = bool({"men", "mens", "male", "boys"} & query_intent_words)
             is_womens_search = bool({"women", "womens", "female", "girls", "ladies"} & query_intent_words)
             
             if is_mens_search and not is_womens_search:
                 if bool({"women", "womens", "female", "girls", "ladies"} & product_all_words):
-                    if not bool({"men", "mens", "male", "boys", "unisex"} & product_all_words):
-                        combined_score -= 100000.0
+                    if not bool({"unisex", "couples", "matching"} & product_all_words):
+                        combined_score = -1000000.0 
                         
             elif is_womens_search and not is_mens_search:
                 if bool({"men", "mens", "male", "boys"} & product_all_words):
-                    if not bool({"women", "womens", "female", "girls", "ladies", "unisex"} & product_all_words):
-                        combined_score -= 100000.0
+                    if not bool({"unisex", "couples", "matching"} & product_all_words):
+                        combined_score = -1000000.0
+                        
+            # 🔥 CATEGORY ALIGNMENT PENALTY
+            # If the product's categories have ZERO overlap with the dominant categories 
+            # and it is NOT an exact match, banish it (Kills the Enlargement Oil for "dress" searches)
+            if dominant_category_words and combined_score > 0:
+                cat_overlap = _words_intersect(dominant_category_words, product_cat_words)
+                if not cat_overlap and match_ratio < 1.0:
+                    combined_score = -1000000.0
 
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
