@@ -1090,16 +1090,21 @@ async def execute_search(request: SearchRequest) -> dict:
                     f"| cat={list(product_cat_words)[:2]}"
                 )
                 
-            # 🔥 NEW DYNAMIC INTENT GUARD: Ruthless Penalty
-            # If a product is missing a key intent word (like 'men' or 'shirt'),
-            # it receives a massive penalty to push it below the -10,000 banishment line.
-            missing_intent_words = query_intent_words - product_all_words
-            if missing_intent_words and combined_score > 0:
-                # 🔥 We subtract 2,000,000 to completely wipe out any Tier 1 Exact Match (+1,000,000) score!
-                penalty = len(missing_intent_words) * 2000000.0
-                combined_score -= penalty
-                logger.info(f"🔻 RUTHLESS PENALTY: -{penalty} for missing intent words: {missing_intent_words}")
+            # 🔥 SMART GENDER GUARD: Explicitly banish cross-gender results dynamically!
+            # If a user searches for "men", banish anything categorized strictly as "women"
+            is_mens_search = "men" in query_intent_words or "mens" in query_intent_words
+            is_womens_search = "women" in query_intent_words or "womens" in query_intent_words
             
+            if is_mens_search and not is_womens_search:
+                if "women" in product_all_words or "womens" in product_all_words or "girls" in product_all_words:
+                    if "men" not in product_all_words and "mens" not in product_all_words and "unisex" not in product_all_words:
+                        combined_score -= 100000.0
+                        
+            elif is_womens_search and not is_mens_search:
+                if "men" in product_all_words or "mens" in product_all_words or "boys" in product_all_words:
+                    if "women" not in product_all_words and "womens" not in product_all_words and "unisex" not in product_all_words:
+                        combined_score -= 100000.0
+
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)  
         
