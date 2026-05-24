@@ -871,6 +871,7 @@ async def execute_search(request: SearchRequest) -> dict:
 
         top_results_categories = []
         for r in source_for_categories: 
+            # Pull words from CATEGORIES
             for cat in r.get("category", []):
                 if cat:
                     cat_clean = str(cat).strip().lower()
@@ -881,6 +882,19 @@ async def execute_search(request: SearchRequest) -> dict:
                             if w not in CATEGORY_STOPWORDS and len(w) >= 3
                         ]
                         top_results_categories.extend(meaningful_words)
+            
+            # 🔥 ALSO pull words from NAMES (when categories are empty like cat=Amazon)
+            # This builds dominant words from "Apple iPhone 12 Pro" → {apple, iphone, pro}
+            # so we know "iphone" is dominant even when no products have iphone in cat.
+            # We exclude digits (model numbers) to avoid them becoming "dominant".
+            name_clean = (r.get("name") or "").lower()
+            name_words = _re.findall(r'\b[a-z]+\b', name_clean)  # [a-z] only excludes digits
+            name_meaningful = [
+                w for w in name_words
+                if len(w) >= 4 
+                and w not in CATEGORY_STOPWORDS
+            ]
+            top_results_categories.extend(name_meaningful)
         
         category_word_counts = Counter(top_results_categories)
         dominant_category_words = set()
