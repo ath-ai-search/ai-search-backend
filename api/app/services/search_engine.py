@@ -1208,9 +1208,14 @@ async def execute_search(request: SearchRequest) -> dict:
             
             # 🔻 BANISH: Below 50% match
             else:
-                combined_score = -1000000.0
+                # 🔥 FIX: Let AI Conversational queries bypass the strict keyword slaughter!
+                # If it's a long sentence, we trust the OpenAI vector score to rank them.
+                if is_standard_query:
+                    combined_score = -1000000.0
+                else:
+                    combined_score = 10_000.0 + raw_anchor  # AI Tier: Survives based on semantic relevance!
             
-            # 🔥 SMART GENDER GUARD
+            # 🔥 SMART GENDER GUARD (Remains fatal to protect cross-gender contamination)
             is_mens_search = bool({"men", "mens", "male", "boys"} & query_intent_words)
             is_womens_search = bool({"women", "womens", "female", "girls", "ladies"} & query_intent_words)
             
@@ -1223,11 +1228,15 @@ async def execute_search(request: SearchRequest) -> dict:
                     if not bool({"unisex", "couples", "matching"} & product_all_words):
                         combined_score = -1000000.0
             
-            # 🔥 CATEGORY ALIGNMENT PENALTY (only for products with REAL categories)
+            # 🔥 CATEGORY ALIGNMENT PENALTY 
             if dominant_category_words and combined_score > 0 and product_cat_words:
                 cat_overlap = _words_intersect(dominant_category_words, product_cat_words)
                 if not cat_overlap and match_ratio < 1.0:
-                    combined_score = -1000000.0
+                    # 🔥 FIX: Relax category penalty for conversational queries to ensure a diverse grid
+                    if is_standard_query:
+                        combined_score = -1000000.0
+                    else:
+                        combined_score -= 5000.0  # Semantic queries just demote slightly, they don't kill
             
             r["combined_score"] = combined_score
             r["trending_score"] = round(trending, 1)
