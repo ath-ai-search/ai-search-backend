@@ -987,7 +987,11 @@ async def execute_search(request: SearchRequest) -> dict:
             logger.info(f"🎯 No product noun found (all words are attributes/stopwords)")
         
         query_word_count = len(query_intent_words)
-        is_short_query = query_word_count <= 3
+        
+        # 🔥 FIX: Expanded the protection window to 5 words!
+        # Standard commerce queries ("apple iphone 11 white color") MUST contain 
+        # the core product noun ("iphone") or they are instantly banished.
+        is_standard_query = query_word_count <= 5
         
         # ---- Score each product ----
         for r in results:
@@ -1025,7 +1029,7 @@ async def execute_search(request: SearchRequest) -> dict:
                 )
             
             missing_product_noun = (
-                is_short_query 
+                is_standard_query 
                 and query_product_noun is not None 
                 and not has_product_noun
             )
