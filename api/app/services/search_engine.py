@@ -791,32 +791,14 @@ async def execute_search(request: SearchRequest) -> dict:
                 if len(_words_intersect(query_intent_words, words)) >= max(1, len(query_intent_words) // 2):
                     valid_noun_products.append(r)
                     
-        # 🔥 PRICE-AWARE DOMINANT SELECTION (100% dynamic)
+        # 🔥 DYNAMIC DOMINANT CATEGORY (revert to score-based + accessory filter)
         # 
-        # When valid_noun_products contains BOTH main products AND accessories
-        # (e.g. "iphone" query → both $700 iPhones AND $30 cases), accessories often
-        # OUTRANK main products in OpenSearch (shorter names match tighter).
-        # 
-        # SOLUTION: Sort valid_noun_products by PRICE descending. The most expensive
-        # products are usually the MAIN product (iPhones $700+ beat cases $30).
-        # Use top 5 by price for dominant_category_words.
+        # Use top valid_noun_products from OpenSearch ranking, but EXCLUDE products
+        # whose category looks accessory-ish (when query is for main product).
         #
-        # For uniform-price queries (running shoes $50-200), this doesn't distort
-        # — they're all in the same price range.
-        if valid_noun_products:
-            # Sort by price descending — main products bubble to top
-            sorted_by_price = sorted(
-                [r for r in valid_noun_products if r.get("price", 0) > 0],
-                key=lambda x: x.get("price", 0),
-                reverse=True
-            )
-            # Use top 5 by price (if priced); fall back to original order
-            if len(sorted_by_price) >= 3:
-                source_for_categories = sorted_by_price[:5]
-            else:
-                source_for_categories = valid_noun_products[:5]
-        else:
-            source_for_categories = results[:3]
+        # No price sorting (causes Gaming PCs to outrank iPhones for "iphone 11 white"
+        # because Windows 11 PCs cost $1000+ while iPhone 11 costs $300).
+        source_for_categories = valid_noun_products[:5] if valid_noun_products else results[:3]
 
         top_results_categories = []
         for r in source_for_categories: 
@@ -919,8 +901,6 @@ async def execute_search(request: SearchRequest) -> dict:
                 combined_score = 500_000.0 + (match_ratio * 10000.0) + raw_anchor
             
             # 🎯 TIER 1-ACCESSORY: Exact match BUT it's an accessory — sit BELOW main products
-            # E.g. "OtterBox iPhone Case" with 100% match on "iphone" → ranks below real iPhones
-            # User wants accessories at bottom, not banished
             elif match_ratio >= 1.0 and is_accessory:
                 combined_score = 200_000.0 + raw_anchor
                 
@@ -951,10 +931,17 @@ async def execute_search(request: SearchRequest) -> dict:
                     if not bool({"unisex", "couples", "matching"} & product_all_words):
                         combined_score = -1000000.0
                         
-            # 🔥 CATEGORY ALIGNMENT PENALTY
+            # 🔥 CATEGORY ALIGNMENT PENALTY (with protection for empty categories)
             # If the product's categories have ZERO overlap with the dominant categories 
-            # and it is NOT an exact match, banish it (Kills the Enlargement Oil for "dress" searches)
-            if dominant_category_words and combined_score > 0:
+            # and it is NOT an exact match, banish it.
+            #
+            # CRITICAL FIX: Don't banish products with EMPTY product_cat_words.
+            # Apple iPhones often have cat=Amazon which gets filtered → empty cat_words.
+            # If we banish empty-cat products, we banish all iPhones!
+            #
+            # Also: this penalty only fires when product has REAL category that DIFFERS.
+            # Empty cat = "uncategorized" = don't punish.
+            if dominant_category_words and combined_score > 0 and product_cat_words:
                 cat_overlap = _words_intersect(dominant_category_words, product_cat_words)
                 if not cat_overlap and match_ratio < 1.0:
                     combined_score = -1000000.0
