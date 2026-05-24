@@ -791,8 +791,32 @@ async def execute_search(request: SearchRequest) -> dict:
                 if len(_words_intersect(query_intent_words, words)) >= max(1, len(query_intent_words) // 2):
                     valid_noun_products.append(r)
                     
-        # Fallback to general sorting if strict matching fails
-        source_for_categories = valid_noun_products[:5] if valid_noun_products else results[:3]
+        # 🔥 PRICE-AWARE DOMINANT SELECTION (100% dynamic)
+        # 
+        # When valid_noun_products contains BOTH main products AND accessories
+        # (e.g. "iphone" query → both $700 iPhones AND $30 cases), accessories often
+        # OUTRANK main products in OpenSearch (shorter names match tighter).
+        # 
+        # SOLUTION: Sort valid_noun_products by PRICE descending. The most expensive
+        # products are usually the MAIN product (iPhones $700+ beat cases $30).
+        # Use top 5 by price for dominant_category_words.
+        #
+        # For uniform-price queries (running shoes $50-200), this doesn't distort
+        # — they're all in the same price range.
+        if valid_noun_products:
+            # Sort by price descending — main products bubble to top
+            sorted_by_price = sorted(
+                [r for r in valid_noun_products if r.get("price", 0) > 0],
+                key=lambda x: x.get("price", 0),
+                reverse=True
+            )
+            # Use top 5 by price (if priced); fall back to original order
+            if len(sorted_by_price) >= 3:
+                source_for_categories = sorted_by_price[:5]
+            else:
+                source_for_categories = valid_noun_products[:5]
+        else:
+            source_for_categories = results[:3]
 
         top_results_categories = []
         for r in source_for_categories: 
