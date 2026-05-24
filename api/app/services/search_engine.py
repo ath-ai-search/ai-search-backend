@@ -841,6 +841,37 @@ async def execute_search(request: SearchRequest) -> dict:
             if count >= 2:  
                 dominant_category_words.add(word)
 
+                # 🔥 DYNAMIC ATTRIBUTE WORDS (100% from catalog aggregations)
+        # 
+        # Extract attribute/color/size words from YOUR catalog's aggregations.
+        # These are words that describe products (colors, sizes) — NOT product nouns.
+        # 
+        # By using your OWN catalog data, this auto-adapts:
+        #   - Adds new colors when you add new products with new colors
+        #   - Works for any language (Spanish "rojo", French "rouge", etc.)
+        #   - No maintenance — pulls from your live catalog
+        dynamic_attribute_words = set()
+        
+        # Pull colors from global_colors aggregation
+        global_colors_buckets = response.get("aggregations", {}).get("global_colors", {}).get("buckets", [])
+        for bucket in global_colors_buckets:
+            color_val = str(bucket.get("key", "")).lower().strip()
+            # Split multi-word colors like "rose gold" into ["rose", "gold"]
+            for word in _re.findall(r'\b[a-z]+\b', color_val):
+                if len(word) >= 4:
+                    dynamic_attribute_words.add(word)
+        
+        # Pull sizes from global_sizes aggregation
+        global_sizes_buckets = response.get("aggregations", {}).get("global_sizes", {}).get("buckets", [])
+        for bucket in global_sizes_buckets:
+            size_val = str(bucket.get("key", "")).lower().strip()
+            for word in _re.findall(r'\b[a-z]+\b', size_val):
+                if len(word) >= 4:
+                    dynamic_attribute_words.add(word)
+        
+        if dynamic_attribute_words:
+            logger.info(f"🎨 Dynamic attributes from catalog: {sorted(list(dynamic_attribute_words))[:15]}")
+        
         # ---- 2. Score each product based on Pure Intent & Set Theory ----
         # This is the 100% dynamic, fatal reranking engine. No hardcoded tiers.
         for r in results:
@@ -950,21 +981,45 @@ async def execute_search(request: SearchRequest) -> dict:
             
             has_wrong_model = bool(missing_numbers)
             
-            # 🔥 PRODUCT NOUN CHECK
-            # The FIRST meaningful (≥4 char) word in query is the "product noun".
-            # Examples: "iphone 12 pro" → iphone, "macbook pro 16" → macbook
-            # Multi-word queries MUST have this noun in the product name.
+            # 🔥 PRODUCT NOUN CHECK (100% DYNAMIC from catalog aggregations)
+            # 
+            # The "product noun" is the CORE word identifying what user wants.
+            # We dynamically detect attributes (colors, sizes, etc.) from YOUR OWN
+            # OpenSearch aggregations — not a hardcoded list.
             #
-            # This prevents:
-            # - "Wrenbury Pro 12 Cup" (cookware) appearing for "iphone 12 pro"
-            # - "Nike Metcon 7" (shoes) appearing for "iphone 12 pro"
-            # - "BCBGeneration Wristlet" appearing for "iphone"
+            # Sources of dynamic attribute detection:
+            #   1. global_colors aggregation → all color values in catalog (white, midnight, etc.)
+            #   2. global_sizes aggregation → all size values
+            #   3. Common short words (≤4 chars) and numbers
+            #
+            # Strategy: 
+            #   - Skip words that are catalog colors/sizes (dynamic, not hardcoded)
+            #   - Pick the LONGEST remaining word as the product noun
+            #
+            # Examples on YOUR catalog:
+            #   "white iphone 12"     → white is in global_colors → skip → noun = "iphone"
+            #   "wireless headphones" → wireless rare in colors → noun = "headphones" (longer)
+            #   "iphone 14 plus midnight" → midnight in global_colors → skip → noun = "iphone"
+            #   "macbook pro 16"      → noun = "macbook" (longest non-attribute)
+            
             query_product_noun = None
-            for word in (query_text or "").lower().split():
-                word_clean = ''.join(c for c in word if c.isalnum()).lower()
-                if len(word_clean) >= 4 and word_clean not in CATEGORY_STOPWORDS:
-                    query_product_noun = word_clean
-                    break
+            query_words_list = [
+                ''.join(c for c in w if c.isalnum()).lower()
+                for w in (query_text or "").lower().split()
+            ]
+            
+            # Pick LONGEST non-attribute word (longest = most specific product identifier)
+            candidates = [
+                w for w in query_words_list
+                if len(w) >= 4
+                and w not in CATEGORY_STOPWORDS
+                and w not in dynamic_attribute_words   # 🔥 dynamic from catalog
+                and not w.isdigit()
+            ]
+            
+            if candidates:
+                # Use the LONGEST candidate (most specific product identifier)
+                query_product_noun = max(candidates, key=len)
             
             has_product_noun = True  # default if no noun in query
             if query_product_noun:
@@ -972,12 +1027,20 @@ async def execute_search(request: SearchRequest) -> dict:
                     _words_match(query_product_noun, nw) for nw in product_name_words
                 )
             
-            # 🔥 MISSING PRODUCT NOUN = NOT RELATED
-            # If query has a product noun ("iphone") and product doesn't have it,
-            # it's NOT what the user is looking for. Examples:
-            #   - "iphone 12 pro" + product "Wrenbury Pro 12 Cup" → no "iphone" → BANISH
-            #   - "macbook" + product "Laptop Privacy Screen" → no "macbook" → BANISH (unless accessory mode)
-            missing_product_noun = query_product_noun is not None and not has_product_noun
+            # 🔥 MISSING PRODUCT NOUN = NOT RELATED (but only for short, specific queries)
+            # 
+            # For 1-3 word queries (typical product search like "iphone 12 pro"):
+            #   - Product MUST have the noun ("iphone")
+            #
+            # For 4+ word queries (conversational like "something for rainy day"):
+            #   - Don't apply this rule — KNN semantic search handles it
+            #   - Avoids banishing all results for natural-language queries
+            is_short_query = query_word_count <= 3
+            missing_product_noun = (
+                is_short_query 
+                and query_product_noun is not None 
+                and not has_product_noun
+            )
             
             # 🔻 BANISH FIRST: missing product noun = unrelated product
             # E.g. "Wrenbury Pro 12 Cup Muffin Pan" lacks "iphone" → not related to iPhone search
