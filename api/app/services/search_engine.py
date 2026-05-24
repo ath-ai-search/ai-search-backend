@@ -939,15 +939,13 @@ async def execute_search(request: SearchRequest) -> dict:
             missing_numbers = query_numbers - product_numbers
             has_wrong_model = bool(missing_numbers)
             
-            # 🔥 ACCESSORY DETECTION (TWO STRATEGIES — fully dynamic)
+            # 🔥 ACCESSORY DETECTION (THREE STRATEGIES — fully dynamic)
             #
-            # Strategy 1: Different category than dominant (the normal case)
-            # 
-            # Strategy 2: Product has DETAILED category words while main products 
-            #             (in source_for_categories) have SIMPLE/EMPTY categories.
-            #             Example: For "iphone" search, Apple iPhones have cat=Amazon
-            #             (filtered to empty), but OtterBox cases have cat=Cases,
-            #             Holsters & Sleeves (3 detailed words). Cases = accessory!
+            # Strategy 1: Different category than dominant (normal case)
+            # Strategy 2: Detailed category when main products have empty cats
+            # Strategy 3: Product has CATEGORY but doesn't include the product_noun word
+            #             E.g. "iphone" search → BCBGeneration Wristlet (cat=Handbags)
+            #             Handbags doesn't relate to iphone → accessory
             is_accessory = False
             if product_cat_words:
                 # Strategy 1: doesn't overlap with dominant
@@ -971,11 +969,46 @@ async def execute_search(request: SearchRequest) -> dict:
                         if not top_cat_words:
                             empty_cat_count += 1
                     
-                    # If majority of top products have empty cats (iPhones, MacBooks etc.)
-                    # AND this product has DETAILED category (≥2 words) → accessory
+                    # If MAJORITY of top products have empty cats (iPhones, MacBooks etc.)
+                    # AND this product has REAL category (≥1 word now, was ≥2) → accessory
+                    # Lowered from 2 to 1 to catch single-word categories like "Handbags"
                     if (empty_cat_count >= len(source_for_categories) * 0.5 
-                        and len(product_cat_words) >= 2):
+                        and len(product_cat_words) >= 1):
                         is_accessory = True
+                
+                # Strategy 3: Product's category doesn't contain the product_noun
+                # E.g. "iphone" → BCBGeneration Wristlet has cat={"handbags"}, no "iphone" / "phone" mention
+                # The product's category should at least be RELATED to what user searched.
+                if not is_accessory and query_product_noun:
+                    # Check if product_noun (or its plural) is in product_cat_words
+                    noun_in_cat = any(_words_match(query_product_noun, cw) for cw in product_cat_words)
+                    # Also check related words: phone-related cats for iphone, etc.
+                    # Use OpenSearch's data: if category doesn't relate to query AT ALL → accessory
+                    if not noun_in_cat:
+                        # Strict check: product noun must appear in product's category for it to be "main product"
+                        # If NOT → it's something else (accessory, unrelated, etc.)
+                        # BUT skip this rule if no top products have categories (otherwise iPhones banished)
+                        any_top_has_cat = any(
+                            any(
+                                w for cat in top_r.get("category", [])
+                                for w in _re.findall(r'\b[a-z]+\b', str(cat).lower())
+                                if len(w) >= 3 and w not in CATEGORY_STOPWORDS
+                            )
+                            for top_r in source_for_categories
+                        )
+                        if any_top_has_cat:
+                            # Check: do ANY top products have product_noun in their category?
+                            top_with_noun_in_cat = sum(
+                                1 for top_r in source_for_categories
+                                if any(
+                                    _words_match(query_product_noun, w)
+                                    for cat in top_r.get("category", [])
+                                    for w in _re.findall(r'\b[a-z]+\b', str(cat).lower())
+                                )
+                            )
+                            # If most top products have product_noun in cat, but THIS one doesn't → accessory
+                            if top_with_noun_in_cat >= len(source_for_categories) * 0.4:
+                                is_accessory = True
             
             # 🎯 DETECT IF USER WANTS ACCESSORY (e.g. searched "iphone case")
             # When user types accessory-type word AND it matches the dominant category,
