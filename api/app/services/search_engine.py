@@ -857,16 +857,19 @@ async def execute_search(request: SearchRequest) -> dict:
                 if r_cat_words & dynamic_accessory_markers:
                     continue
                 
-                # If category clearly doesn't match product noun, skip
-                # E.g. for "iphone" search, products in cat=Cycling/Wristlets are accessories
+                # If product's category exists but doesn't contain the product noun,
+                # this is NOT a main product reference (it's an accessory in a 
+                # specialty category like 'Cycling', 'Wristlets', 'Tools').
+                # 
+                # We need at least ONE meaningful (≥4 char) cat word that doesn't
+                # match the product noun → skip. This catches Topeak (cat=Cycling),
+                # BCBGeneration (cat=Wristlets), Dewalt (cat=Tools), etc.
                 if rough_noun and r_cat_words:
-                    # Check if any cat word relates to product noun
                     noun_in_cat = any(_words_match(rough_noun, cw) for cw in r_cat_words)
-                    # If cat exists but doesn't contain noun, this product isn't a main reference
-                    # UNLESS cat is something generic like "amazon" (already stripped)
-                    # We use this rule: if cat exists AND has ≥2 meaningful words AND no noun match → skip
                     meaningful_cat = {w for w in r_cat_words if len(w) >= 4}
-                    if not noun_in_cat and len(meaningful_cat) >= 2:
+                    # STRICT: if there's ANY meaningful cat word AND none match noun → skip
+                    # (was ≥2 before, now ≥1 to catch single-word accessory categories)
+                    if not noun_in_cat and len(meaningful_cat) >= 1:
                         continue
                 
                 valid_noun_products.append(r)
