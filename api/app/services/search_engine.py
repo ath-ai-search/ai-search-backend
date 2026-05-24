@@ -888,32 +888,45 @@ async def execute_search(request: SearchRequest) -> dict:
             #   OtterBox case → product_cat_words = {cases} → overlap exists → NOT accessory
             #   → cases stay at TIER 1 ✓
             
+            # 🔥 ACCESSORY DETECTION — 100% DYNAMIC (no hardcoded lists)
+            # 
+            # An "accessory" is a product whose category DIFFERS from the dominant
+            # category of valid matchers. It's compatible with the search (has the
+            # query word) but it's NOT the main product.
+            #
+            # Strategy: KEEP accessories in results but RANK THEM BELOW main products.
+            # User can scroll past iPhones to find cases/chargers.
             is_accessory_product = False
             if dominant_category_words and product_cat_words:
                 cat_overlap_for_accessory = _words_intersect(dominant_category_words, product_cat_words)
-                # Product has a category, but it DOESN'T overlap with dominant categories
-                # AND we have meaningful dominant words to compare against
                 meaningful_dominant = {w for w in dominant_category_words if len(w) >= 4}
                 if not cat_overlap_for_accessory and meaningful_dominant:
                     is_accessory_product = True
             
-            if is_accessory_product:
-                # 🔥 STRONGER demotion: drop ratio significantly so accessories land BELOW main products
-                # Even an "exact match" accessory should rank below partial-match main products
-                if match_ratio >= 1.0:
-                    match_ratio = 0.4   # Drops to TIER 3 partial (was 0.99 → still T1)
-                else:
-                    match_ratio = match_ratio * 0.5   # Halve partial match scores
+            # Tag the product (used in tier scoring below) — DON'T modify match_ratio
+            # The tier scoring will use this flag to demote accessories to a lower band
+            r["_is_accessory"] = is_accessory_product
             
             combined_score = raw_anchor
+            is_accessory = r.pop("_is_accessory", False)
             
-            # 🥇 TIER 1: EXACT MATCH
-            if match_ratio >= 1.0:
+            # 🥇 TIER 1: EXACT MATCH — main product (not accessory)
+            if match_ratio >= 1.0 and not is_accessory:
                 combined_score = 1_000_000.0 + raw_anchor
                 
-            # 🥈 TIER 2: HIGH MATCH (Missed max 1 word)
-            elif query_word_count >= 3 and match_count >= query_word_count - 1:
+            # 🥈 TIER 2: HIGH MATCH (Missed max 1 word) — main product
+            elif query_word_count >= 3 and match_count >= query_word_count - 1 and not is_accessory:
                 combined_score = 500_000.0 + (match_ratio * 10000.0) + raw_anchor
+            
+            # 🎯 TIER 1-ACCESSORY: Exact match BUT it's an accessory — sit BELOW main products
+            # E.g. "OtterBox iPhone Case" with 100% match on "iphone" → ranks below real iPhones
+            # User wants accessories at bottom, not banished
+            elif match_ratio >= 1.0 and is_accessory:
+                combined_score = 200_000.0 + raw_anchor
+                
+            # 🎯 TIER 2-ACCESSORY: High match but accessory
+            elif query_word_count >= 3 and match_count >= query_word_count - 1 and is_accessory:
+                combined_score = 150_000.0 + (match_ratio * 5000.0) + raw_anchor
                 
             # 🥉 TIER 3: PARTIAL MATCH (Matched at least half)
             elif match_ratio >= 0.5 or query_word_count == 0:
