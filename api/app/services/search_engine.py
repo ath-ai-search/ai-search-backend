@@ -937,12 +937,30 @@ async def execute_search(request: SearchRequest) -> dict:
             combined_score = raw_anchor
             is_accessory = r.pop("_is_accessory", False)
             
-            # 🥇 TIER 1: EXACT MATCH — main product (not accessory)
-            if match_ratio >= 1.0 and not is_accessory:
+            # 🔥 MODEL NUMBER EXACT-MATCH CHECK
+            # If query has numeric words (like "12", "14", "s24") AND product is missing
+            # any of them, it's a DIFFERENT model — heavy penalty.
+            # 
+            # Example: query "iphone 12 pro" — product "iPhone 13 Pro" has 13, not 12
+            #   → Missing model number 12 → SEVERE penalty (drops 13 below 12)
+            query_numbers = {w for w in query_intent_words if w.isdigit() or any(c.isdigit() for c in w)}
+            product_numbers = {w for w in product_name_words if w.isdigit() or any(c.isdigit() for c in w)}
+            
+            missing_numbers = set()
+            for qn in query_numbers:
+                # Check if this number/model exists in product (exact)
+                if not any(qn == pn for pn in product_numbers):
+                    missing_numbers.add(qn)
+            
+            has_wrong_model = bool(missing_numbers)
+            
+            # 🥇 TIER 1: EXACT MATCH — main product (not accessory, no wrong model)
+            if match_ratio >= 1.0 and not is_accessory and not has_wrong_model:
                 combined_score = 1_000_000.0 + raw_anchor
                 
-            # 🥈 TIER 2: HIGH MATCH (Missed max 1 word) — main product
-            elif query_word_count >= 3 and match_count >= query_word_count - 1 and not is_accessory:
+            # 🥈 TIER 2: HIGH MATCH (Missed max 1 NON-NUMERIC word) — main product
+            # Wrong model number → falls through to lower tier
+            elif query_word_count >= 3 and match_count >= query_word_count - 1 and not is_accessory and not has_wrong_model:
                 combined_score = 500_000.0 + (match_ratio * 10000.0) + raw_anchor
             
             # 🎯 TIER 1-ACCESSORY: Exact match BUT it's an accessory — sit BELOW main products
