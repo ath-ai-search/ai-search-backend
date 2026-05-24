@@ -841,15 +841,45 @@ async def execute_search(request: SearchRequest) -> dict:
             query_word_count = len(query_intent_words)
             match_ratio = match_count / query_word_count if query_word_count > 0 else 0
             
-            # 🔥 ACCESSORY DEMOTION
-            # Prevent bike mounts and chargers from hijacking Tier 1
-            is_accessory_product = bool({"case", "cover", "mount", "charger", "stand", "holder", "cable", "protector"} & product_name_words)
-            wants_accessory = bool({"case", "cover", "mount", "charger", "stand", "holder", "cable", "protector"} & query_intent_words)
+            # 🔥 ACCESSORY DEMOTION — 100% DYNAMIC (no hardcoded lists)
+            # 
+            # An "accessory" is a product whose CATEGORY differs from the DOMINANT
+            # category of top-matching products. It only matches the query because
+            # it mentions a query word as a compatibility hint (e.g. "iPhone Case"
+            # mentions "iphone" but is a CASE, not an iPhone).
+            #
+            # Detection signal: product_cat_words have NO overlap with the dominant
+            # categories from valid_noun_products (top matchers we identified earlier).
+            #
+            # Example: "iphone" search
+            #   valid_noun_products = Apple iPhones (cat=Amazon → empty after filter)
+            #   → dominant_category_words extracted from these = {iphone} (query intent)
+            #   OtterBox case → product_cat_words = {cases, holsters, sleeves}
+            #   → ZERO overlap with dominant → IS accessory → DEMOTE
+            #   Apple iPhone → product_cat_words = {} (empty) → NOT considered accessory
+            #
+            # Example: "iphone case" search  
+            #   valid_noun_products = cases (cat=Cases)
+            #   → dominant_category_words includes {cases}
+            #   OtterBox case → product_cat_words = {cases} → overlap exists → NOT accessory
+            #   → cases stay at TIER 1 ✓
             
-            if is_accessory_product and not wants_accessory:
-                # Demote exact match so it drops below Tier 1
+            is_accessory_product = False
+            if dominant_category_words and product_cat_words:
+                cat_overlap_for_accessory = _words_intersect(dominant_category_words, product_cat_words)
+                # Product has a category, but it DOESN'T overlap with dominant categories
+                # AND we have meaningful dominant words to compare against
+                meaningful_dominant = {w for w in dominant_category_words if len(w) >= 4}
+                if not cat_overlap_for_accessory and meaningful_dominant:
+                    is_accessory_product = True
+            
+            if is_accessory_product:
+                # 🔥 STRONGER demotion: drop ratio significantly so accessories land BELOW main products
+                # Even an "exact match" accessory should rank below partial-match main products
                 if match_ratio >= 1.0:
-                    match_ratio = 0.99
+                    match_ratio = 0.4   # Drops to TIER 3 partial (was 0.99 → still T1)
+                else:
+                    match_ratio = match_ratio * 0.5   # Halve partial match scores
             
             combined_score = raw_anchor
             
