@@ -1019,7 +1019,9 @@ async def execute_search(request: SearchRequest) -> dict:
             # ═══════════════════════════════════════════════════════════════════
             # 🥇 TIER 1: EXACT MATCH (all query words in name)
             # ═══════════════════════════════════════════════════════════════════
-            if query_match_ratio >= 1.0 and (len(query_intent_words) >= 2 or has_product_noun):
+            # 🔥 FIX: Added "and not is_accessory". This prevents phone cases 
+            # from stealing Tier 1 just because they list multiple phone models!
+            if query_match_ratio >= 1.0 and (len(query_intent_words) >= 2 or has_product_noun) and not is_accessory:
                 combined_score = 1_000_000.0 + raw_anchor
                 logger.info(
                     f"🥇 TIER 1 EXACT: '{r.get('name','')[:40]}' "
@@ -1090,19 +1092,19 @@ async def execute_search(request: SearchRequest) -> dict:
                     f"| cat={list(product_cat_words)[:2]}"
                 )
                 
-            # 🔥 SMART GENDER GUARD: Explicitly banish cross-gender results dynamically!
-            # If a user searches for "men", banish anything categorized strictly as "women"
-            is_mens_search = "men" in query_intent_words or "mens" in query_intent_words
-            is_womens_search = "women" in query_intent_words or "womens" in query_intent_words
+            # 🔥 SMART GENDER GUARD (Expanded): Explicitly banish cross-gender results dynamically!
+            # Now includes ladies, girls, boys, female, and male tags using set math.
+            is_mens_search = bool({"men", "mens", "male", "boys"} & query_intent_words)
+            is_womens_search = bool({"women", "womens", "female", "girls", "ladies"} & query_intent_words)
             
             if is_mens_search and not is_womens_search:
-                if "women" in product_all_words or "womens" in product_all_words or "girls" in product_all_words:
-                    if "men" not in product_all_words and "mens" not in product_all_words and "unisex" not in product_all_words:
+                if bool({"women", "womens", "female", "girls", "ladies"} & product_all_words):
+                    if not bool({"men", "mens", "male", "boys", "unisex"} & product_all_words):
                         combined_score -= 100000.0
                         
             elif is_womens_search and not is_mens_search:
-                if "men" in product_all_words or "mens" in product_all_words or "boys" in product_all_words:
-                    if "women" not in product_all_words and "womens" not in product_all_words and "unisex" not in product_all_words:
+                if bool({"men", "mens", "male", "boys"} & product_all_words):
+                    if not bool({"women", "womens", "female", "girls", "ladies", "unisex"} & product_all_words):
                         combined_score -= 100000.0
 
             r["combined_score"] = combined_score

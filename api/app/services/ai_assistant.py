@@ -141,8 +141,15 @@ async def process_ai_assistant(
         # STEP 4: BUILD NEW SEARCH REQUEST
         # =====================================================================
         # AI tells us the new query (or keeps old one if just filtering)
+        raw_new_query = parsed_intent.get("search_query", current_state.query)
+        
+        # 🔥 AI CLEANUP: Intercept conversational junk like "Compare iPhone 11 to iPhone 12"
+        if isinstance(raw_new_query, str):
+            if "compare " in raw_new_query.lower() and " to " in raw_new_query.lower():
+                raw_new_query = raw_new_query.lower().split(" to ")[0].replace("compare ", "").strip()
+        
         updated_request = SearchRequest(
-            query=parsed_intent.get("search_query", current_state.query),
+            query=raw_new_query,
             page=1,                 # Always start at page 1 for new refinement
             page_size=10,           # AI results show 10 at a time (compact view)
             sort="best_matches"     # Reset sort to default
@@ -191,10 +198,12 @@ async def process_ai_assistant(
         
         # ---------------------- COLOR ----------------------
         if extracted_filters.get("color"):
+            # 🔥 AI CLEANUP: Block the AI from extracting conversational text as a color
+            JUNK_COLORS = {"different colors", "different", "colors", "various", "any", "some", "options"}
             colors = [
                 str(c).lower() 
                 for c in extracted_filters["color"] 
-                if str(c).lower() not in AI_BAD_WORDS
+                if str(c).lower() not in AI_BAD_WORDS and str(c).lower() not in JUNK_COLORS
             ]
             # Merge with existing colors (if any) using set to remove dupes
             new_filters_obj.color = list(set(new_filters_obj.color + colors))
