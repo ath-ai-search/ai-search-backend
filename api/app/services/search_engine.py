@@ -819,17 +819,10 @@ async def execute_search(request: SearchRequest) -> dict:
                             if len(w) >= 3
                         ])
                 
-                # If category has the word "accessories" or "accessory" → skip
-                # (this is the strongest signal a product is an accessory)
-                if "accessories" in r_cat_words or "accessory" in r_cat_words:
-                    continue
-                
-                # If category has "case" / "cases" / "holster" / "sleeve" → skip
-                # These are universal accessory category markers
-                accessory_markers = {"cases", "case", "holsters", "holster", 
-                                     "sleeves", "sleeve", "covers", "cover"}
-                if r_cat_words & accessory_markers:
-                    continue
+                # NOTE: Accessory marker filtering happens later in Strategy 3
+                # using dynamic_accessory_markers learned from your catalog.
+                # We don't filter here because dynamic_accessory_markers
+                # isn't computed yet at this point in the code.
                 
                 # If category clearly doesn't match product noun, skip
                 # E.g. for "iphone" search, products in cat=Cycling/Wristlets are accessories
@@ -894,6 +887,11 @@ async def execute_search(request: SearchRequest) -> dict:
         for word, count in category_word_counts.most_common():
             if count >= 2:  
                 dominant_category_words.add(word)
+        
+        # 🔍 DEBUG: log what's being used for reference
+        logger.info(f"🔍 valid_noun_products: {len(valid_noun_products)}, "
+                    f"source_for_categories: {[r.get('name','')[:30] for r in source_for_categories[:3]]}")
+        logger.info(f"🔍 dominant_category_words: {sorted(dominant_category_words)[:10]}")
 
         # Extract attribute/color/size words from YOUR catalog's aggregations.
         # These are words that describe products (colors, sizes) — NOT product nouns.
@@ -921,6 +919,41 @@ async def execute_search(request: SearchRequest) -> dict:
         
         if dynamic_attribute_words:
             logger.info(f"🎨 Dynamic attributes: {sorted(list(dynamic_attribute_words))[:15]}")
+
+            # 🔥 DYNAMIC ACCESSORY MARKERS (100% from catalog aggregations)
+        # 
+        # Key insight: Words appearing across MANY different category buckets
+        # are accessory/connector words (like "accessories", "case", "cover").
+        # Words appearing in only 1-2 buckets are product nouns (like "iphone", "dress").
+        # 
+        # This is purely derived from YOUR catalog — no hardcoded list,
+        # works for any language, automatically updates when catalog changes.
+        dynamic_accessory_markers = set()
+        global_cat_buckets = response.get("aggregations", {}).get("global_categories", {}).get("buckets", [])
+        
+        # Count how many different category buckets each word appears in
+        word_to_categories = {}
+        for bucket in global_cat_buckets:
+            cat_name = str(bucket.get("key", "")).lower().strip()
+            # Extract individual words from this category
+            cat_words = set(_re.findall(r'\b[a-z]+\b', cat_name))
+            # Only meaningful words (≥4 chars, not stopwords)
+            cat_words = {w for w in cat_words if len(w) >= 4 and w not in CATEGORY_STOPWORDS}
+            
+            for word in cat_words:
+                if word not in word_to_categories:
+                    word_to_categories[word] = set()
+                word_to_categories[word].add(cat_name)
+        
+        # Words appearing in 3+ DIFFERENT category buckets = accessory markers
+        # (These words are too generic to be product nouns — they're connectors)
+        ACCESSORY_MARKER_THRESHOLD = 3
+        for word, cat_set in word_to_categories.items():
+            if len(cat_set) >= ACCESSORY_MARKER_THRESHOLD:
+                dynamic_accessory_markers.add(word)
+        
+        if dynamic_accessory_markers:
+            logger.info(f"🏷️  Dynamic accessory markers (from catalog): {sorted(list(dynamic_accessory_markers))[:20]}")
         
         # 🎯 DETECT QUERY PRODUCT NOUN (once, before the loop)
         query_product_noun = None
@@ -1082,6 +1115,28 @@ async def execute_search(request: SearchRequest) -> dict:
                         is_accessory = True
                 
                 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                # STRATEGY 3: DYNAMIC accessory marker detection
+                # Uses markers learned from YOUR catalog (no hardcoded list).
+                # If product cat has accessory markers AND user didn't ask for accessory
+                # → it's an accessory
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                if (not is_accessory 
+                    and not shares_top_brand 
+                    and not noun_in_product_cat 
+                    and dynamic_accessory_markers):
+                    
+                    # Does user's query contain any accessory marker?
+                    # E.g. "iphone case" → query has "case" → user wants accessory
+                    query_has_accessory_marker = bool(
+                        set(query_words_list) & dynamic_accessory_markers
+                    )
+                    
+                    # Product has accessory markers in cat AND user didn't ask for accessory
+                    if (product_cat_words & dynamic_accessory_markers 
+                        and not query_has_accessory_marker):
+                        is_accessory = True
+                
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 # 🔓 FINAL OVERRIDE: undo is_accessory if safety signals say it's a main product
                 # This protects Apple iPhones (cat=['iphone']) and same-brand products
                 # from being incorrectly demoted by Strategy 1.
@@ -1122,12 +1177,6 @@ async def execute_search(request: SearchRequest) -> dict:
             # 🎯 ACCESSORY high-match (compatibility only)
             elif query_word_count >= 3 and match_count >= query_word_count - 1 and is_accessory:
                 combined_score = 30_000.0 + (match_ratio * 1000.0) + raw_anchor
-            
-            # 🎯 WRONG MODEL: Has product noun but wrong number (e.g. iPhone 14 case for "iphone 12 pro")
-            # Demote BELOW main products but keep visible as similar items
-            elif match_ratio >= 0.5 and has_wrong_model:
-                combined_score = 40_000.0 + (match_ratio * 1000.0) + raw_anchor
-                logger.info(f"🔢 WRONG-MODEL DEMOTED: '{r.get('name','')[:40]}' missing numbers {missing_numbers}")
             
             # 🎯 WRONG MODEL: Has product noun but wrong number (e.g. iPhone 14 case for "iphone 12 pro")
             # Demote BELOW main products but keep visible as similar items
