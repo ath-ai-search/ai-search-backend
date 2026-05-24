@@ -964,9 +964,36 @@ async def execute_search(request: SearchRequest) -> dict:
                         _words_match(query_product_noun, cw) for cw in product_cat_words
                     )
                 
+                # 🔥 ALSO SAFETY: if product shares brand with TOP products, it's the same product type
+                # E.g. for "iphone" search, top 5 are Apple → other Apple products are likely iPhones too
+                shares_top_brand = False
+                if source_for_categories:
+                    top_brands = set()
+                    for top_r in source_for_categories[:5]:
+                        # Extract brand from brand field AND first word of name
+                        tb = (top_r.get("brand") or "").lower().strip()
+                        if tb and tb not in {"amazon", "generic", "none", ""}:
+                            top_brands.add(tb)
+                        # Also first word of name (Apple, Samsung, etc.)
+                        name_first = (top_r.get("name") or "").split()
+                        if name_first:
+                            fw = name_first[0].lower().strip()
+                            if len(fw) >= 3 and fw not in {"the", "new", "for", "amazon"}:
+                                top_brands.add(fw)
+                    
+                    # Check if THIS product shares one of those brands
+                    this_brand = (r.get("brand") or "").lower().strip()
+                    this_name_first = (r.get("name") or "").split()
+                    this_name_first_word = this_name_first[0].lower().strip() if this_name_first else ""
+                    
+                    if this_brand in top_brands or this_name_first_word in top_brands:
+                        shares_top_brand = True
+                
                 # Strategy 2: detailed category when dominant products have empty cat
-                # SKIP if product's own category contains the product_noun (it's a main product)
-                if not is_accessory and source_for_categories and not noun_in_product_cat:
+                # SKIP if:
+                #   - product's own category contains the product_noun (it's a main product), OR
+                #   - product shares brand with top products (same product line)
+                if not is_accessory and source_for_categories and not noun_in_product_cat and not shares_top_brand:
                     # Count how many top products have EMPTY filtered categories
                     empty_cat_count = 0
                     for top_r in source_for_categories:
