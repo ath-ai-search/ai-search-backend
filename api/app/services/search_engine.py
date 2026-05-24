@@ -939,77 +939,62 @@ async def execute_search(request: SearchRequest) -> dict:
             missing_numbers = query_numbers - product_numbers
             has_wrong_model = bool(missing_numbers)
             
-            # 🔥 ACCESSORY DETECTION (with safety checks)
+            # 🔥 ACCESSORY DETECTION (THREE STRATEGIES — fully dynamic)
             #
-            # Logic order:
-            #   1. Compute safety signals FIRST (noun_in_cat, shares_brand)
-            #   2. Run detection strategies
-            #   3. Final OVERRIDE: if safety signals are True, force is_accessory = False
-            #      (this is the safety net that prevents demoting real main products)
+            # Strategy 1: Different category than dominant (normal case)
+            # Strategy 2: Detailed category when main products have empty cats
+            # Strategy 3: Product has CATEGORY but doesn't include the product_noun word
+            #             E.g. "iphone" search → BCBGeneration Wristlet (cat=Handbags)
+            #             Handbags doesn't relate to iphone → accessory
             is_accessory = False
             if product_cat_words:
-                
-                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                # SAFETY SIGNALS (computed FIRST, used at the end)
-                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                
-                # SAFETY A: Does product's category contain product_noun?
-                # E.g. Apple iPhone with cat=['iphone'] → True → it's a main product
-                # Also substring: cat=['phones'] for "iphone" query → True (phones in iphone)
-                noun_in_product_cat = False
-                if query_product_noun:
-                    for cw in product_cat_words:
-                        if _words_match(query_product_noun, cw):
-                            noun_in_product_cat = True
-                            break
-                        # Substring relationship handles "phone" ⊂ "iphone" etc.
-                        if len(cw) >= 4 and len(query_product_noun) >= 4:
-                            if cw in query_product_noun or query_product_noun in cw:
-                                noun_in_product_cat = True
-                                break
-                
-                # SAFETY B: Does product share brand/maker with TOP products?
-                # E.g. for "iphone" search, top 5 = Apple → other Apple products are iPhones
-                shares_top_brand = False
-                if source_for_categories:
-                    top_brands = set()
-                    for top_r in source_for_categories[:5]:
-                        tb = (top_r.get("brand") or "").lower().strip()
-                        if tb and tb not in {"amazon", "generic", "none", ""}:
-                            top_brands.add(tb)
-                        name_tokens = (top_r.get("name") or "").lower().split()
-                        if name_tokens:
-                            fw = ''.join(c for c in name_tokens[0] if c.isalnum()).lower()
-                            if len(fw) >= 3 and fw not in {"the", "new", "for"}:
-                                top_brands.add(fw)
-                    
-                    this_brand = (r.get("brand") or "").lower().strip()
-                    this_name_tokens = (r.get("name") or "").lower().split()
-                    this_first_word = ""
-                    if this_name_tokens:
-                        this_first_word = ''.join(c for c in this_name_tokens[0] if c.isalnum()).lower()
-                    
-                    if this_brand in top_brands or this_first_word in top_brands:
-                        shares_top_brand = True
-                
-                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                # STRATEGY 1: Doesn't overlap with dominant categories
-                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                # Strategy 1: doesn't overlap with dominant
                 if dominant_category_words:
                     cat_overlap_acc = _words_intersect(dominant_category_words, product_cat_words)
                     meaningful_dom = {w for w in dominant_category_words if len(w) >= 4}
                     if not cat_overlap_acc and meaningful_dom:
                         is_accessory = True
                 
-                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                # STRATEGY 2: Detailed cat when top products have empty cats
-                # SKIP if noun in cat OR shares brand
-                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                if (not is_accessory 
-                    and source_for_categories 
-                    and not noun_in_product_cat 
-                    and not shares_top_brand):
+                # 🔥 SAFETY CHECK: if product's category contains the product_noun,
+                # it's almost certainly a MAIN product (e.g. Apple iPhone with cat=Iphone)
+                # → exit accessory detection early. Prevents demoting real iPhones.
+                noun_in_product_cat = False
+                if query_product_noun:
+                    noun_in_product_cat = any(
+                        _words_match(query_product_noun, cw) for cw in product_cat_words
+                    )
+                
+                # 🔥 ALSO SAFETY: if product shares brand with TOP products, it's the same product type
+                # E.g. for "iphone" search, top 5 are Apple → other Apple products are likely iPhones too
+                shares_top_brand = False
+                if source_for_categories:
+                    top_brands = set()
+                    for top_r in source_for_categories[:5]:
+                        # Extract brand from brand field AND first word of name
+                        tb = (top_r.get("brand") or "").lower().strip()
+                        if tb and tb not in {"amazon", "generic", "none", ""}:
+                            top_brands.add(tb)
+                        # Also first word of name (Apple, Samsung, etc.)
+                        name_first = (top_r.get("name") or "").split()
+                        if name_first:
+                            fw = name_first[0].lower().strip()
+                            if len(fw) >= 3 and fw not in {"the", "new", "for", "amazon"}:
+                                top_brands.add(fw)
                     
+                    # Check if THIS product shares one of those brands
+                    this_brand = (r.get("brand") or "").lower().strip()
+                    this_name_first = (r.get("name") or "").split()
+                    this_name_first_word = this_name_first[0].lower().strip() if this_name_first else ""
+                    
+                    if this_brand in top_brands or this_name_first_word in top_brands:
+                        shares_top_brand = True
+                
+                # Strategy 2: detailed category when dominant products have empty cat
+                # SKIP if:
+                #   - product's own category contains the product_noun (it's a main product), OR
+                #   - product shares brand with top products (same product line)
+                if not is_accessory and source_for_categories and not noun_in_product_cat and not shares_top_brand:
+                    # Count how many top products have EMPTY filtered categories
                     empty_cat_count = 0
                     for top_r in source_for_categories:
                         top_cat_words = set()
@@ -1021,18 +1006,15 @@ async def execute_search(request: SearchRequest) -> dict:
                         if not top_cat_words:
                             empty_cat_count += 1
                     
+                    # MAJORITY of top products have empty cats (iPhones, MacBooks etc.)
+                    # AND this product has REAL category (≥1 word) AND doesn't have product_noun
+                    # → it's an accessory or unrelated
                     if (empty_cat_count >= len(source_for_categories) * 0.5 
                         and len(product_cat_words) >= 1):
                         is_accessory = True
                 
-                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                # 🔓 FINAL OVERRIDE: undo is_accessory if safety signals say it's a main product
-                # This protects Apple iPhones (cat=['iphone']) and same-brand products
-                # from being incorrectly demoted by Strategy 1.
-                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                if is_accessory and (noun_in_product_cat or shares_top_brand):
-                    is_accessory = False
-                    logger.debug(f"🔓 UNDEMOTED (main product): '{r.get('name','')[:40]}' (noun_in_cat={noun_in_product_cat}, brand_match={shares_top_brand})")
+                # Strategy 3 REMOVED — was causing false positives.
+                # Strategy 2 with the noun_in_product_cat safety check handles all cases.
             
             # 🎯 DETECT IF USER WANTS ACCESSORY (e.g. searched "iphone case")
             # When user types accessory-type word AND it matches the dominant category,
