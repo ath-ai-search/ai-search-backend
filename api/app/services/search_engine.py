@@ -773,6 +773,37 @@ async def execute_search(request: SearchRequest) -> dict:
             "men", "women", "kids", "boys", "girls", "unisex",  # gender, handled separately
         }
         
+        # 🔥 DYNAMIC ACCESSORY MARKERS (100% from catalog aggregations)
+        # MUST be computed BEFORE valid_noun_products filter so we can use it.
+        # 
+        # Key insight: Words appearing across MANY different category buckets
+        # are accessory/connector words. The TOP universal marker is "accessories"
+        # which appears in dozens of categories (Cell Phone Accessories, Computer
+        # Accessories, Camera Accessories, etc).
+        dynamic_accessory_markers = set()
+        global_cat_buckets = response.get("aggregations", {}).get("global_categories", {}).get("buckets", [])
+        
+        # Count how many different category buckets each word appears in
+        word_to_categories = {}
+        for bucket in global_cat_buckets:
+            cat_name = str(bucket.get("key", "")).lower().strip()
+            cat_words = set(_re.findall(r'\b[a-z]+\b', cat_name))
+            cat_words = {w for w in cat_words if len(w) >= 4 and w not in CATEGORY_STOPWORDS}
+            
+            for word in cat_words:
+                if word not in word_to_categories:
+                    word_to_categories[word] = set()
+                word_to_categories[word].add(cat_name)
+        
+        # Words appearing in 3+ DIFFERENT category buckets = accessory markers
+        ACCESSORY_MARKER_THRESHOLD = 3
+        for word, cat_set in word_to_categories.items():
+            if len(cat_set) >= ACCESSORY_MARKER_THRESHOLD:
+                dynamic_accessory_markers.add(word)
+        
+        if dynamic_accessory_markers:
+            logger.info(f"🏷️  Dynamic accessory markers (from catalog): {sorted(list(dynamic_accessory_markers))[:20]}")
+        
         # =====================================================================
         # 🚀 NEW FATAL RERANKING ENGINE (Pure Math & Set Theory)
         # =====================================================================
@@ -819,10 +850,12 @@ async def execute_search(request: SearchRequest) -> dict:
                             if len(w) >= 3
                         ])
                 
-                # NOTE: Accessory marker filtering happens later in Strategy 3
-                # using dynamic_accessory_markers learned from your catalog.
-                # We don't filter here because dynamic_accessory_markers
-                # isn't computed yet at this point in the code.
+                # 🔥 DYNAMIC accessory filter: exclude products whose category
+                # contains accessory markers (learned from YOUR catalog).
+                # E.g. cat=['Accessories'] → product is an accessory, don't use it
+                # as a "main product reference" for top_brands/dominant_categories.
+                if r_cat_words & dynamic_accessory_markers:
+                    continue
                 
                 # If category clearly doesn't match product noun, skip
                 # E.g. for "iphone" search, products in cat=Cycling/Wristlets are accessories
@@ -906,15 +939,10 @@ async def execute_search(request: SearchRequest) -> dict:
         logger.info(f"🔍 valid_noun_products: {len(valid_noun_products)}, "
                     f"source_for_categories: {[r.get('name','')[:30] for r in source_for_categories[:3]]}")
         logger.info(f"🔍 dominant_category_words: {sorted(dominant_category_words)[:10]}")
-
-        # Extract attribute/color/size words from YOUR catalog's aggregations.
-        # These are words that describe products (colors, sizes) — NOT product nouns.
-        # 
-        # By using your OWN catalog data, this auto-adapts:
-        #   - Adds new colors when you add new products with new colors
-        #   - Works for any language (Spanish "rojo", French "rouge", etc.)
-        #   - No maintenance — pulls from your live catalog
-        # 🔥 DYNAMIC ATTRIBUTE WORDS (100% from catalog aggregations)
+        
+        # 🔥 DYNAMIC ATTRIBUTE WORDS (colors/sizes from catalog aggregations)
+        # Used to skip color/size words when picking the query product noun.
+        # E.g. "white iphone 12" → skip "white" (it's a color) → noun = "iphone"
         dynamic_attribute_words = set()
         
         global_colors_buckets = response.get("aggregations", {}).get("global_colors", {}).get("buckets", [])
@@ -933,41 +961,6 @@ async def execute_search(request: SearchRequest) -> dict:
         
         if dynamic_attribute_words:
             logger.info(f"🎨 Dynamic attributes: {sorted(list(dynamic_attribute_words))[:15]}")
-
-            # 🔥 DYNAMIC ACCESSORY MARKERS (100% from catalog aggregations)
-        # 
-        # Key insight: Words appearing across MANY different category buckets
-        # are accessory/connector words (like "accessories", "case", "cover").
-        # Words appearing in only 1-2 buckets are product nouns (like "iphone", "dress").
-        # 
-        # This is purely derived from YOUR catalog — no hardcoded list,
-        # works for any language, automatically updates when catalog changes.
-        dynamic_accessory_markers = set()
-        global_cat_buckets = response.get("aggregations", {}).get("global_categories", {}).get("buckets", [])
-        
-        # Count how many different category buckets each word appears in
-        word_to_categories = {}
-        for bucket in global_cat_buckets:
-            cat_name = str(bucket.get("key", "")).lower().strip()
-            # Extract individual words from this category
-            cat_words = set(_re.findall(r'\b[a-z]+\b', cat_name))
-            # Only meaningful words (≥4 chars, not stopwords)
-            cat_words = {w for w in cat_words if len(w) >= 4 and w not in CATEGORY_STOPWORDS}
-            
-            for word in cat_words:
-                if word not in word_to_categories:
-                    word_to_categories[word] = set()
-                word_to_categories[word].add(cat_name)
-        
-        # Words appearing in 3+ DIFFERENT category buckets = accessory markers
-        # (These words are too generic to be product nouns — they're connectors)
-        ACCESSORY_MARKER_THRESHOLD = 3
-        for word, cat_set in word_to_categories.items():
-            if len(cat_set) >= ACCESSORY_MARKER_THRESHOLD:
-                dynamic_accessory_markers.add(word)
-        
-        if dynamic_accessory_markers:
-            logger.info(f"🏷️  Dynamic accessory markers (from catalog): {sorted(list(dynamic_accessory_markers))[:20]}")
         
         # 🎯 DETECT QUERY PRODUCT NOUN (once, before the loop)
         query_product_noun = None
