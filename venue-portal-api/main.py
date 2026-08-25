@@ -46,6 +46,7 @@ OS_INDEX = os.getenv("OPENSEARCH_INDEX", "products")
 PORTAL_PASSWORD = os.getenv("PORTAL_PASSWORD", "")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 INDEX_TARGET = int(os.getenv("INDEX_TARGET", "260470"))
+INDEX_ELAPSED_SEC = int(os.getenv("INDEX_ELAPSED_SEC", "0")) or None
 SECRET = (os.getenv("PORTAL_SECRET") or "venue-portal-dev-secret").encode()
 CLIENT = {"client_id": "venue", "name": "Venue Marketplace"}
 
@@ -816,7 +817,7 @@ def stats(client_id: str = "default"):
     return {"indexed": n, "source_total": max(INDEX_TARGET, n), "failed": 0,
             "progress_pct": round(min(100.0, n * 100.0 / max(1, INDEX_TARGET)), 1),
             "success_rate": 100.0, "speed_per_min": speed,
-            "avg_embed_ms": None, "elapsed_sec": None,
+            "avg_embed_ms": None, "elapsed_sec": INDEX_ELAPSED_SEC,
             "rate_per_1m": EMBED_PRICE_PER_M,
             "ai": {"model": "text-embedding-3-large",
                    "calls": est["ingest_calls"] + est["search_calls"],
