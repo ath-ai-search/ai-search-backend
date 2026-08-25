@@ -817,9 +817,16 @@ def stats(client_id: str = "default"):
             "progress_pct": round(min(100.0, n * 100.0 / max(1, INDEX_TARGET)), 1),
             "success_rate": 100.0, "speed_per_min": speed,
             "avg_embed_ms": None, "elapsed_sec": None,
-            "ai": {"model": "text-embedding-3-large", "calls": est["ingest_calls"],
-                   "cost": est["ingest_cost"]},
-            "ai_cost": est["ingest_cost"], "timeline": []}
+            "rate_per_1m": EMBED_PRICE_PER_M,
+            "ai": {"model": "text-embedding-3-large",
+                   "calls": est["ingest_calls"] + est["search_calls"],
+                   "total_calls": est["ingest_calls"] + est["search_calls"],
+                   "cost": est["total_cost"], "total_cost": est["total_cost"],
+                   "ingest_cost": est["ingest_cost"], "ingest_calls": est["ingest_calls"],
+                   "ingest_avg_ms": 0, "ingest_tokens": est["ingest_tokens"],
+                   "search_cost": est["search_cost"], "search_calls": est["search_calls"],
+                   "search_avg_ms": 0, "search_tokens": est["search_tokens"]},
+            "ai_cost": est["total_cost"], "timeline": []}
 
 
 @app.get("/stats/search-analytics")
@@ -853,13 +860,19 @@ def billing_summary(client_id: str = "default"):
     month = datetime.now(timezone.utc).strftime("%Y-%m")
     daily = [{"date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
               "cost": est["total_cost"]}]
-    return {"this_month": month, "current": est,
+    cur = dict(est)
+    cur["days"] = 1
+    return {"this_month": month, "current": cur,
             "months": [{"month": month, "total_cost": est["total_cost"]}],
             "days": daily, "recent_days": daily, "runs": [],
             "all_time_cost": est["total_cost"],
-            "total_cost_of_ownership": {"cloud": VM_MONTH_COST,
-                                        "ai": est["total_cost"],
-                                        "total": round(VM_MONTH_COST + est["total_cost"], 2)}}
+            "total_cost_of_ownership": {
+                "cloud": VM_MONTH_COST, "ai": est["total_cost"],
+                "total": round(VM_MONTH_COST + est["total_cost"], 2),
+                "items": [
+                    {"name": "Azure VM (D4as v6 + disk)", "cost": VM_MONTH_COST},
+                    {"name": "OpenAI usage (estimate)", "cost": est["total_cost"]},
+                ]}}
 
 
 @app.get("/billing/month")
@@ -875,7 +888,7 @@ def billing_month(month: str = "", client_id: str = "default"):
 def fields_ep(client_id: str = "default"):
     f = index_fields()
     return {"client_id": "venue", "fields": f, "field_count": len(f),
-            "id_field": "id", "registered_at": None}
+            "registered": bool(f), "id_field": "id", "registered_at": None}
 
 
 @app.get("/products")
@@ -916,12 +929,24 @@ def opensearch_info(client_id: str = "default"):
         h = client.cluster.health()
         st = client.indices.stats(index=OS_INDEX)
         total = st.get("_all", {}).get("primaries", {})
+        cats = {}
+        for fld in ("categories.keyword", "categories", "category_names.keyword",
+                    "brand.keyword", "brand"):
+            try:
+                agg = client.search(index=OS_INDEX, body={
+                    "size": 0, "aggs": {"c": {"terms": {"field": fld, "size": 60}}}})
+                buckets = agg["aggregations"]["c"]["buckets"]
+                if buckets:
+                    cats = {b["key"]: b["doc_count"] for b in buckets}
+                    break
+            except Exception:
+                continue
         return {"status": h.get("status"), "nodes": h.get("number_of_nodes"),
                 "active_shards": h.get("active_shards"),
                 "index": OS_INDEX,
                 "docs": total.get("docs", {}).get("count", 0),
                 "size_bytes": total.get("store", {}).get("size_in_bytes", 0),
-                "categories": None}
+                "categories": cats}
     except Exception as e:
         return {"status": "down", "error": str(e)[:100]}
 
@@ -960,25 +985,66 @@ def _nginx_counts():
 @app.get("/api-info")
 def api_info():
     c = _nginx_counts()
-    eps = [{"method": m, "path": p, "what": w, "total": c.get(p, 0)}
-           for m, p, w in _VENUE_APIS]
-    return {"ok": True, "endpoints": eps,
-            "total_requests": sum(e["total"] for e in eps)}
+    eps = {f"{m} {p}": c.get(p, 0) for m, p, w in _VENUE_APIS}
+    return {"ok": True, "endpoints": eps, "total_requests": sum(eps.values())}
+
+
+_API_TAGS = {"/search": "search", "/search/autocomplete": "search",
+             "/search/ai-assistant": "assistant", "/search/ai-welcome": "assistant",
+             "/similar-products": "discover", "/ai-similar-products": "discover",
+             "/trending": "discover", "/popularcat": "discover",
+             "/recommendations": "personal", "/pick-up": "personal",
+             "/continueshop": "personal", "/recommendation-grids": "personal",
+             "/track": "tracking"}
 
 
 @app.get("/shop-api-info")
 def shop_api_info():
-    return api_info()
+    c = _nginx_counts()
+    return {"ok": True,
+            "endpoints": [{"m": m, "method": m, "path": p, "desc": w,
+                           "tag": _API_TAGS.get(p, "search"),
+                           "count": c.get(p, 0)}
+                          for m, p, w in _VENUE_APIS]}
+
+
+def _probe_services():
+    out = []
+    try:
+        out.append({"name": "OpenSearch", "up": bool(osc().ping())})
+    except Exception:
+        out.append({"name": "OpenSearch", "up": False})
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8000/docs", timeout=3) as r:
+            out.append({"name": "Search API", "up": r.status in (200, 307)})
+    except Exception:
+        out.append({"name": "Search API", "up": False})
+    out.append({"name": "Postgres", "up": bool(q("SELECT 1"))})
+    try:
+        c = socket.create_connection(("127.0.0.1", 6379), timeout=2)
+        c.close()
+        out.append({"name": "Redis", "up": True})
+    except Exception:
+        out.append({"name": "Redis", "up": False})
+    out.append({"name": "Portal API", "up": True})
+    return out
 
 
 @app.get("/azure/info")
 def azure_info():
     v = vitals()
+    mem = v.get("memory") or {}
+    disk = v.get("disk") or {}
+    machine = {"cpu_percent": v.get("cpu_percent"),
+               "memory": {**mem, "percent": mem.get("pct")},
+               "disk": {**disk, "percent": disk.get("pct")}}
     return {"cloud": "azure", "source": "vm",
             "vm_size": "Standard D4as v6 (4 vCPU / 16 GB)",
             "region": "East US 2",
             "cpu_percent": v.get("cpu_percent"),
             "memory": v.get("memory"), "disk": v.get("disk"),
+            "machine": machine,
+            "services": _probe_services(),
             "est_month_cost": VM_MONTH_COST,
             "instances": [{"name": "VenueDemo", "state": "running",
                            "type": "D4as_v6", "ip": "145.132.104.57"}],

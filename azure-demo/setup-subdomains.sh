@@ -32,6 +32,15 @@ else
   echo "!! admin dashboard dist missing — push/pull it first"; exit 1
 fi
 
+echo "=== retire the OLD /portal/ page (redirect to the new portal) ==="
+cat > "$PORTAL/dist/index.html" <<'HTML'
+<!doctype html><meta charset="utf-8">
+<meta http-equiv="refresh" content="0; url=https://portal.venuemarketplace.xyz/">
+<title>Moved</title>
+<p>The portal moved to <a href="https://portal.venuemarketplace.xyz/">portal.venuemarketplace.xyz</a></p>
+HTML
+find "$PORTAL/dist" -mindepth 1 ! -name index.html -delete 2>/dev/null || true
+
 echo "=== admin web shield (basic auth on top of everything) ==="
 if [ ! -f /etc/nginx/.htpasswd-venue-admin ]; then
   ADMIN_WEB_PW=$(openssl rand -base64 12 | tr -dc 'A-Za-z0-9' | cut -c1-12)
