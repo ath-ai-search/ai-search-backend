@@ -173,13 +173,13 @@ fetch("${SHOP}/track", {
                     a.m === 'GET' ? 'text-mint' : 'text-teal'}`}>{a.m}</td>
                   <td className="pr-3"><code className="text-[11px] text-foam opacity-80
                     whitespace-nowrap">{a.url}</code></td>
-                  <td className="text-xs text-mist pr-3 whitespace-nowrap">{a.what}</td>
+                  <td className="text-xs text-mist pr-3 min-w-[140px]">{a.what}</td>
                   <td className="text-right whitespace-nowrap">
                     <button onClick={() => copy(a.url, a.id)}
-                            className="text-xs text-mint hover:underline mr-3">
+                            className="text-xs text-mint hover:underline px-3 py-2 mr-1">
                       {copied === a.id ? '✓' : 'copy'}</button>
                     <button onClick={() => setOpenApi(openApi === a.id ? '' : a.id)}
-                            className={`text-xs font-mono px-2 py-0.5 rounded border transition ${
+                            className={`text-xs font-mono px-3 py-2 rounded border transition ${
                               openApi === a.id
                                 ? 'bg-mint text-white border-mint'
                                 : 'text-teal border-mint/30 hover:bg-mint/10'}`}>
@@ -188,7 +188,7 @@ fetch("${SHOP}/track", {
                 {openApi === a.id && (
                   <tr>
                     <td colSpan={4} className="pb-3 pt-1">
-                      <div className="relative">
+                      <div className="sticky left-0 max-w-[calc(100vw-4rem)] md:max-w-none">
                         <pre className="text-[11px] leading-relaxed bg-[#14102b]
                              text-[#c9b8ff] rounded-xl p-4 overflow-x-auto">{a.code}</pre>
                         <button onClick={() => copy(a.code, a.id + 'c')}

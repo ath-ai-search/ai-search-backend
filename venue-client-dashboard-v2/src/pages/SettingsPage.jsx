@@ -44,7 +44,7 @@ export default function SettingsPage() {
               <div className="flex justify-between"><span className="text-mist">Company</span>
                 <span className="font-semibold">{me.name}</span></div>
               <div className="flex justify-between"><span className="text-mist">Client ID</span>
-                <code className="text-mint text-xs">{me.client_id}</code></div>
+                <code className="text-mint text-xs break-all text-right">{me.client_id}</code></div>
               <div className="flex justify-between"><span className="text-mist">Account status</span>
                 <Badge tone="mint">● Active</Badge></div>
               <div className="flex justify-between"><span className="text-mist">Member since</span>
@@ -62,7 +62,7 @@ export default function SettingsPage() {
                 <span className="flex items-center gap-2">
                   <code className="text-xs text-mint">{String(me.site_token || '').slice(0, 4)}••••</code>
                   <button onClick={() => navigator.clipboard?.writeText(me.site_token || '')}
-                          className="text-[11px] px-2 py-0.5 rounded-lg bg-mint/15 border
+                          className="text-[11px] px-3 py-1.5 min-h-[36px] rounded-lg bg-mint/15 border
                                      border-mint/30 text-mint hover:bg-mint/25 transition">
                     copy</button>
                 </span>
@@ -110,8 +110,8 @@ export default function SettingsPage() {
                               border-mint/25 flex items-center justify-center text-4xl">
                 🛍️
               </div>
-              <div>
-                <div className="text-4xl font-extrabold text-mint tabular leading-none">
+              <div className="min-w-0">
+                <div className="text-3xl sm:text-4xl font-extrabold text-mint tabular leading-none break-words">
                   {(me?.products || 0).toLocaleString()}</div>
                 <div className="text-sm text-mist mt-2">
                   products live in your AI search</div>

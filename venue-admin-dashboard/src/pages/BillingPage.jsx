@@ -132,7 +132,7 @@ export default function BillingPage({ billing, selClient }) {
                 <span className="ml-3 text-xs text-slate-400">indexing {fmtMoney(monthDetail.ingest_cost)} · search {fmtMoney(monthDetail.search_cost)} · total <b className="text-emerald-400">{fmtMoney(monthDetail.total_cost)}</b></span>
               </div>
               <a href={`${API}/billing/pdf?month=${monthDetail.month}`}
-                 className="text-xs rounded-lg bg-indigo-500/20 text-indigo-300 px-3 py-1.5 hover:bg-indigo-500/30 transition">📄 Download this month's PDF bill</a>
+                 className="inline-flex items-center min-h-[40px] text-xs rounded-lg bg-indigo-500/20 text-indigo-300 px-3 py-1.5 hover:bg-indigo-500/30 transition">📄 Download this month's PDF bill</a>
             </div>
             <div className="h-56">
               <ResponsiveContainer width="100%" height="100%">
@@ -196,7 +196,7 @@ export default function BillingPage({ billing, selClient }) {
                   <td className="text-right text-slate-400">{m.ingest_calls + m.search_calls}</td>
                   <td className="text-right pr-2">
                     <a href={`${API}/billing/pdf?month=${m.month}`}
-                       className="inline-block text-xs rounded-lg bg-indigo-500/20 text-indigo-300 px-3 py-1.5 hover:bg-indigo-500/30 transition">
+                       className="inline-flex items-center min-h-[40px] text-xs rounded-lg bg-indigo-500/20 text-indigo-300 px-3 py-1.5 hover:bg-indigo-500/30 transition">
                       📄 Download PDF
                     </a>
                   </td>

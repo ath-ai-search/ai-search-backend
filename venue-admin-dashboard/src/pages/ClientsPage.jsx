@@ -112,7 +112,7 @@ export default function ClientsPage() {
             {secret.site_token && (
               <div>
                 <div className="text-xs uppercase tracking-wider text-slate-400 mb-1">Site token (for the widget)</div>
-                <div className="font-mono text-emerald-300 select-all">{secret.site_token}</div>
+                <div className="font-mono text-emerald-300 select-all break-all">{secret.site_token}</div>
               </div>
             )}
             <div className="md:col-span-2">
@@ -122,10 +122,10 @@ export default function ClientsPage() {
               </div>
             </div>
           </div>
-          <div className="flex items-center justify-between mt-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 mt-3">
             <div className="text-xs text-amber-400">⚠️ Copy the key into the client's integration document + the private credentials sheet NOW.</div>
             <button onClick={() => setSecret(null)}
-                    className="text-xs rounded-lg bg-white/10 px-3 py-1.5 hover:bg-white/20 transition">I saved it — hide</button>
+                    className="text-xs rounded-lg bg-white/10 px-3 py-1.5 hover:bg-white/20 transition whitespace-nowrap shrink-0">I saved it — hide</button>
           </div>
         </Panel>
       )}
@@ -197,17 +197,17 @@ export default function ClientsPage() {
                     <td className="text-right pr-3 tabular text-amber-300">{r.runs_cost != null ? fmtMoney(r.runs_cost) : '—'}</td>
                     <td className="text-right whitespace-nowrap">
                       <button onClick={() => onRotate(c.client_id)} title="new key"
-                              className="text-xs rounded bg-white/5 px-2 py-1 hover:bg-white/15 transition mr-1">🔑</button>
+                              className="text-xs rounded bg-white/5 px-2.5 py-2 hover:bg-white/15 transition mr-2">🔑</button>
                       <button onClick={() => onPortalPw(c.client_id)} title="set client-portal password"
-                              className="text-xs rounded bg-white/5 px-2 py-1 hover:bg-white/15 transition mr-1">🛡️</button>
+                              className="text-xs rounded bg-white/5 px-2.5 py-2 hover:bg-white/15 transition mr-2">🛡️</button>
                       {c.client_id !== 'default' && (
                         <>
                           <button onClick={() => onPause(c)} title={c.status === 'active' ? 'pause' : 'resume'}
-                                  className="text-xs rounded bg-white/5 px-2 py-1 hover:bg-white/15 transition mr-1">
+                                  className="text-xs rounded bg-white/5 px-2.5 py-2 hover:bg-white/15 transition mr-2">
                             {c.status === 'active' ? '⏸️' : '▶️'}
                           </button>
                           <button onClick={() => onDelete(c.client_id)} title="remove"
-                                  className="text-xs rounded bg-rose-500/10 text-rose-300 px-2 py-1 hover:bg-rose-500/25 transition">🗑️</button>
+                                  className="text-xs rounded bg-rose-500/10 text-rose-300 px-2.5 py-2 hover:bg-rose-500/25 transition">🗑️</button>
                         </>
                       )}
                     </td>

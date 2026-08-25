@@ -96,8 +96,8 @@ export default function FieldsPage({ selClient }) {
           </div>
 
           <Panel title="🤖 Added by US automatically">
-            <div className="flex items-center gap-3 text-sm">
-              <span className="font-mono text-xs bg-violet-500/15 border border-violet-500/30 text-violet-300 rounded-full px-3 py-1.5">embedding · knn_vector · 3072 numbers</span>
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              <span className="font-mono text-xs bg-violet-500/15 border border-violet-500/30 text-violet-300 rounded-full px-3 py-1.5 whitespace-nowrap">embedding · knn_vector · 3072 numbers</span>
               <span className="text-slate-400">the AI "meaning" — the client never sends this, our API creates it for every product</span>
             </div>
           </Panel>

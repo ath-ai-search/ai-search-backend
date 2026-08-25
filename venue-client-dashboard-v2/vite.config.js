@@ -10,6 +10,6 @@ export default defineConfig(({ command }) => ({
   server: {
     port: 5176,
     // dev-only: forward API calls to the live server (no CORS needed)
-    proxy: { '/client-api': { target: 'https://portal.bcloudai.com', changeOrigin: true } },
+    proxy: { '/client-api': { target: 'https://portal.venuemarketplace.xyz', changeOrigin: true } },
   },
 }))

@@ -111,7 +111,7 @@ export function Stat({ label, value, sub, accent = 'text-white' }) {
 export function Panel({ title, children, className = '', right }) {
   return (
     <Card className={`p-4 ${className}`}>
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap mb-3">
         <div className="text-sm text-slate-300 flex items-center gap-2">
           <span className="w-1.5 h-1.5 rounded-full bg-blue-400/80 shrink-0" />
           {title}
@@ -155,8 +155,8 @@ export function ProductModal({ p, onClose }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" onClick={onClose}>
       <div className="bg-slate-900 border border-white/15 rounded-2xl max-w-2xl w-full max-h-[85vh] overflow-y-auto shadow-2xl"
            onClick={e => e.stopPropagation()}>
-        <div className="flex gap-4 p-5 border-b border-white/10">
-          <img src={p.image_url} alt="" className="w-28 h-28 rounded-xl object-cover bg-white/5 shrink-0"
+        <div className="flex gap-4 p-4 sm:p-5 border-b border-white/10">
+          <img src={p.image_url} alt="" className="w-20 h-20 sm:w-28 sm:h-28 rounded-xl object-cover bg-white/5 shrink-0"
                onError={e => { e.currentTarget.style.opacity = 0.15 }} />
           <div className="flex-1 min-w-0">
             <div className="text-lg font-bold truncate">{p.name}</div>
@@ -166,7 +166,7 @@ export function ProductModal({ p, onClose }) {
               🤖 AI embedding: {p.embedding_dims || 3072} numbers
             </div>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-white text-xl leading-none">✕</button>
+          <button onClick={onClose} className="text-slate-400 hover:text-white text-xl leading-none p-2 -m-2 min-w-[40px] min-h-[40px]">✕</button>
         </div>
         <div className="p-5">
           <div className="text-sm font-semibold text-emerald-400 mb-2">✅ Filled fields ({Object.keys(fields).length})</div>
@@ -174,7 +174,7 @@ export function ProductModal({ p, onClose }) {
             {Object.entries(fields).map(([k, v]) => (
               <div key={k} className="flex justify-between gap-3 border-b border-white/5 py-1.5">
                 <span className="text-slate-500">{k}</span>
-                <span className="text-slate-200 text-right truncate max-w-[62%]" title={String(v)}>{fmtVal(v)}</span>
+                <span className="text-slate-200 text-right break-all max-w-[62%]" title={String(v)}>{fmtVal(v)}</span>
               </div>
             ))}
           </div>

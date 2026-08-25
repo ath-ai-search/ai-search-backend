@@ -456,6 +456,10 @@ def overview(authorization: Optional[str] = Header(None)):
 def analytics(source: str = "all", size: int = 30, days: int = 0,
               authorization: Optional[str] = Header(None)):
     check(authorization)
+    return _analytics_data(source, size, days)
+
+
+def _analytics_data(source: str = "all", size: int = 30, days: int = 0):
     win, src = _ev_filters(days, source)
 
     def _total(w):
@@ -493,7 +497,7 @@ def analytics(source: str = "all", size: int = 30, days: int = 0,
                     "took_ms": round(float(ms)) if ms else None,
                     "ms": round(float(ms)) if ms else None,
                     "at": str(at), "source": s or "search", "cached": False,
-                    "cost": per_search_cost}
+                    "tokens": TOKENS_PER_SEARCH, "cost": per_search_cost}
                    for query, pos, ms, s, at in recent],
         "daily": [{"date": r["date"], "count": r["count"]}
                   for r in daily_series(days or 14, src)],
@@ -979,27 +983,8 @@ def stats(client_id: str = "default"):
 
 @app.get("/stats/search-analytics")
 def search_analytics(size: int = 30, source: str = "all", client_id: str = "default"):
-    return analytics_admin(source, size)
-
-
-def analytics_admin(source, size):
-    if source == "assistant":
-        return {"total": 0, "today": 0, "zero_results": 0, "avg_ms": None,
-                "ai_calls": 0, "cost": 0, "top": [], "recent": [], "daily": []}
-    total = q(f"SELECT COUNT(*) FROM events WHERE {_searches_where()}")
-    recent = q(f"""SELECT query, created_at FROM events WHERE {_searches_where()}
-                   ORDER BY created_at DESC LIMIT %s""", (min(int(size), 100),))
-    daily = q(f"""SELECT created_at::date::text, COUNT(*) FROM events
-                  WHERE {_searches_where()} GROUP BY 1 ORDER BY 1""")
-    est = est_costs()
-    return {"total": total[0][0] if total else 0, "today": searches_today(),
-            "zero_results": 0, "avg_ms": None, "ai_calls": 0,
-            "cost": est["search_cost"], "top": top_queries(min(int(size), 50)),
-            "recent": [{"query": query, "avg_found": None, "found": None,
-                        "ms": None, "took_ms": None, "cached": False,
-                        "source": "search", "at": str(at)}
-                       for query, at in recent],
-            "daily": [{"date": d, "count": n} for d, n in daily]}
+    # same brain as the client portal's Analytics page — one truth
+    return _analytics_data(source, size, 0)
 
 
 @app.get("/billing/summary")
@@ -1007,12 +992,22 @@ def billing_summary(client_id: str = "default"):
     est = est_costs()
     month = datetime.now(timezone.utc).strftime("%Y-%m")
     daily = [{"date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-              "cost": est["total_cost"]}]
+              "cost": est["total_cost"], "ingest_cost": est["ingest_cost"],
+              "search_cost": est["search_cost"]}]
     cur = dict(est)
     cur["days"] = 1
+    n = products_count()
+    run = {"finished_at": INDEX_FINISHED_AT, "indexed": n,
+           "failed": 0, "elapsed_sec": INDEX_ELAPSED_SEC or 0,
+           "tokens": est["ingest_tokens"], "cost": est["ingest_cost"]}
     return {"this_month": month, "current": cur,
-            "months": [{"month": month, "total_cost": est["total_cost"]}],
-            "days": daily, "recent_days": daily, "runs": [],
+            "months": [{"month": month, "total_cost": est["total_cost"],
+                        "ingest_cost": est["ingest_cost"],
+                        "search_cost": est["search_cost"],
+                        "ingest_calls": est["ingest_calls"],
+                        "search_calls": est["search_calls"]}],
+            "days": daily, "recent_days": daily,
+            "runs": [run] if n else [],
             "all_time_cost": est["total_cost"],
             "total_cost_of_ownership": {
                 "cloud": VM_MONTH_COST, "ai": est["total_cost"],
@@ -1026,10 +1021,15 @@ def billing_summary(client_id: str = "default"):
 @app.get("/billing/month")
 def billing_month(month: str = "", client_id: str = "default"):
     est = est_costs()
+    n = products_count()
+    run = {"finished_at": INDEX_FINISHED_AT, "indexed": n,
+           "failed": 0, "elapsed_sec": INDEX_ELAPSED_SEC or 0,
+           "tokens": est["ingest_tokens"], "cost": est["ingest_cost"]}
     return {"month": month or datetime.now(timezone.utc).strftime("%Y-%m"),
             "days": [{"date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                      "cost": est["total_cost"]}],
-            "runs": [], "total_cost": est["total_cost"]}
+                      "cost": est["total_cost"], "ingest_cost": est["ingest_cost"],
+                      "search_cost": est["search_cost"]}],
+            "runs": [run] if n else [], "total_cost": est["total_cost"]}
 
 
 @app.get("/fields")

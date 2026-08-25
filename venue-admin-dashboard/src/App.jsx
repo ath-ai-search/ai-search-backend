@@ -130,13 +130,13 @@ export default function App() {
       {/* SIDEBAR */}
       <aside className="w-56 shrink-0 border-r border-white/10 bg-black/20 p-4 hidden md:flex flex-col gap-1 sticky top-0 h-screen">
         <div className="mb-5">
-          {/* the official bCloud logo — dark wordmark, so it sits on a soft white chip */}
+          {/* the official bCloud logo — same as the client portal; dark
+              wordmark, so it sits on a soft white chip */}
           <img src={logoPng} alt="bCloud AI"
-               style={{ height: 42, width: 42 * (310 / 184), background: '#ffffff',
+               style={{ height: 44, width: 44 * (310 / 184), background: '#ffffff',
                         borderRadius: 10, padding: '3px 8px', display: 'block',
                         marginBottom: 8 }} />
-          <div className="text-lg font-bold">⚡ AI Search</div>
-          <div className="text-xs font-semibold text-cyan-400">🎪 VENUE Console</div>
+          <div className="text-sm font-bold text-cyan-400">🎪 VENUE Console</div>
           <div className="mt-1 inline-block rounded-full bg-cyan-500/15 border border-cyan-500/30 px-2 py-0.5 text-[10px] text-cyan-300">
             admin.venuemarketplace.xyz
           </div>
@@ -171,11 +171,23 @@ export default function App() {
 
       {/* CONTENT */}
       <main className="flex-1 min-w-0 p-3 sm:p-5 md:p-8">
+        {/* mobile brand — the sidebar is hidden on phones */}
+        <div className="md:hidden flex items-center gap-2 mb-2">
+          <img src={logoPng} alt="bCloud AI"
+               style={{ height: 30, width: 30 * (310 / 184), background: '#ffffff',
+                        borderRadius: 8, padding: '2px 6px', display: 'block' }} />
+          <span className="text-xs font-bold text-cyan-400">🎪 VENUE Console</span>
+          {/* 🚪 sign out — the sidebar (with its sign-out button) is hidden on phones */}
+          <button onClick={signOut}
+                  className="ml-auto text-[11px] px-2.5 py-1.5 rounded-lg bg-red-500/10 border
+                             border-red-500/30 text-red-300 hover:bg-red-500/20 transition whitespace-nowrap">
+            🚪 Sign out</button>
+        </div>
         {/* mobile nav */}
-        <div className="md:hidden flex gap-2 overflow-x-auto mb-4 pb-2 -mx-3 px-3 sticky top-0 z-20 bg-slate-950/90 backdrop-blur py-2">
+        <div className="md:hidden flex gap-2 overflow-x-auto mb-4 pb-2 -mx-3 px-3 sm:-mx-5 sm:px-5 sticky top-0 z-20 bg-slate-950/90 backdrop-blur py-2">
           {NAV.map(n => (
             <button key={n.id} onClick={() => setPage(n.id)}
-                    className={`px-3 py-1.5 rounded-lg text-xs whitespace-nowrap ${
+                    className={`px-3 py-2.5 rounded-lg text-sm whitespace-nowrap ${
                       page === n.id ? 'bg-cyan-500/20 text-cyan-300' : 'bg-white/5 text-slate-300'}`}>
               {n.icon} {n.label}
             </button>

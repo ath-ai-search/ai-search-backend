@@ -1,4 +1,5 @@
 // OpenSearch page — cluster + index details, with bar + pie charts
+import { useEffect, useState } from 'react'
 import {
   BarChart, Bar, PieChart, Pie, Cell, ResponsiveContainer,
   XAxis, YAxis, Tooltip, CartesianGrid, Legend,
@@ -6,6 +7,16 @@ import {
 import { Stat, PageTitle, Panel, TT, DONUT, fmtBytes } from '../ui.jsx'
 
 export default function OpenSearchPage({ stats, osInfo }) {
+  // 📱 recharts props can't react to CSS breakpoints — track "phone width" here
+  // so the pie legend can stack below the chart instead of overlapping it
+  const [narrow, setNarrow] = useState(() => window.matchMedia('(max-width: 639px)').matches)
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 639px)')
+    const onChange = (e) => setNarrow(e.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+
   const s = stats || {}
   const o = osInfo || {}
   // 🐞 BUG FIX: read categories from OpenSearch itself (o.categories) —
@@ -30,7 +41,7 @@ export default function OpenSearchPage({ stats, osInfo }) {
     ? [...bigSlices, { name: `Other (${restCount} categories)`, value: restTotal }]
     : bigSlices
 
-  const shortName = (n) => (n.length > 22 ? n.slice(0, 21) + '…' : n)
+  const shortName = (n, max = 22) => (n.length > max ? n.slice(0, max - 1) + '…' : n)
 
   const statusColor = o.status === 'green' ? 'text-emerald-400'
     : o.status === 'yellow' ? 'text-amber-400' : 'text-red-400'
@@ -56,8 +67,8 @@ export default function OpenSearchPage({ stats, osInfo }) {
             <BarChart data={barData} layout="vertical" margin={{ top: 2, right: 26, left: 4, bottom: 2 }}>
               <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" horizontal={false} />
               <XAxis type="number" stroke="#64748b" tick={{ fontSize: 10 }} allowDecimals={false} />
-              <YAxis type="category" dataKey="name" width={128} stroke="#64748b"
-                     tick={{ fontSize: 10 }} tickFormatter={shortName} interval={0} />
+              <YAxis type="category" dataKey="name" width={narrow ? 96 : 128} stroke="#64748b"
+                     tick={{ fontSize: 10 }} tickFormatter={(n) => shortName(n, narrow ? 14 : 22)} interval={0} />
               <Tooltip {...TT} />
               <Bar isAnimationActive={false} dataKey="value" name="Products" radius={[0, 4, 4, 0]} barSize={13}>
                 {barData.map((_, i) => <Cell key={i} fill={DONUT[i % DONUT.length]} />)}
@@ -73,13 +84,17 @@ export default function OpenSearchPage({ stats, osInfo }) {
           </div>
           <ResponsiveContainer width="100%" height="88%">
             <PieChart margin={{ top: 0, right: 4, bottom: 0, left: 4 }}>
-              <Pie isAnimationActive={false} data={pieData} dataKey="value" nameKey="name" cx="34%" cy="50%"
-                   innerRadius={40} outerRadius={72} paddingAngle={2} stroke="none">
+              <Pie isAnimationActive={false} data={pieData} dataKey="value" nameKey="name"
+                   cx={narrow ? '50%' : '34%'} cy="50%"
+                   innerRadius={narrow ? 32 : 40} outerRadius={narrow ? 55 : 72} paddingAngle={2} stroke="none">
                 {pieData.map((_, i) => <Cell key={i} fill={DONUT[i % DONUT.length]} />)}
               </Pie>
               <Tooltip {...TT} />
-              <Legend layout="vertical" align="right" verticalAlign="middle"
-                      wrapperStyle={{ fontSize: 10, lineHeight: '15px', maxWidth: '52%' }}
+              {/* phones: legend under the chart (a right-hand legend overlaps the slices) */}
+              <Legend layout={narrow ? 'horizontal' : 'vertical'}
+                      align={narrow ? 'center' : 'right'}
+                      verticalAlign={narrow ? 'bottom' : 'middle'}
+                      wrapperStyle={narrow ? { fontSize: 10 } : { fontSize: 10, lineHeight: '15px', maxWidth: '52%' }}
                       formatter={(v) => shortName(String(v))} />
             </PieChart>
           </ResponsiveContainer>

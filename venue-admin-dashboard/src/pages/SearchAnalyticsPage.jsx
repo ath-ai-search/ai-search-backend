@@ -47,13 +47,15 @@ function SearchRadar({ recent, color, dim }) {
       const w = canvas.clientWidth, h = canvas.clientHeight
       if (canvas.width !== w * 2) { canvas.width = w * 2; canvas.height = h * 2; ctx.scale(2, 2) }
       ctx.clearRect(0, 0, w, h)
-      const cx = w / 2, cy = h / 2, R = Math.min(w, h) / 2 - 18
+      // fill the WHOLE panel: wide ellipses, not a small circle in the middle
+      const cx = w / 2, cy = h / 2
+      const Rx = w / 2 - 40, Ry = h / 2 - 16
       const DIM = stateRef.current.dim
       t += 0.008
 
       for (let i = 1; i <= 3; i++) {
         ctx.beginPath()
-        ctx.ellipse(cx, cy, (R * i) / 3, (R * i) / 3 * 0.45, 0, 0, Math.PI * 2)
+        ctx.ellipse(cx, cy, (Rx * i) / 3, (Ry * i) / 3, 0, 0, Math.PI * 2)
         ctx.strokeStyle = DIM + '0.14)'
         ctx.stroke()
       }
@@ -63,7 +65,7 @@ function SearchRadar({ recent, color, dim }) {
         grad.addColorStop(0.12, DIM + '0)')
         grad.addColorStop(1, DIM + '0)')
         ctx.beginPath()
-        ctx.ellipse(cx, cy, R, R * 0.45, 0, 0, Math.PI * 2)
+        ctx.ellipse(cx, cy, Rx, Ry, 0, 0, Math.PI * 2)
         ctx.fillStyle = grad
         ctx.fill()
       }
@@ -77,9 +79,8 @@ function SearchRadar({ recent, color, dim }) {
       stateRef.current.recent.slice(0, 18).forEach((s, i) => {
         const ring = 1 + (i % 3)
         const ang = t * (0.5 + ring * 0.22) + (i * 2.399)
-        const rx = (R * ring) / 3, ry = rx * 0.45
-        const x = cx + Math.cos(ang) * rx
-        const y = cy + Math.sin(ang) * ry
+        const x = cx + Math.cos(ang) * (Rx * ring) / 3
+        const y = cy + Math.sin(ang) * (Ry * ring) / 3
         const depth = (Math.sin(ang) + 1) / 2
         const size = Math.min(6, 2 + Math.log1p(s.total || 0)) * (0.6 + depth * 0.7)
         ctx.beginPath(); ctx.arc(x, y, size, 0, Math.PI * 2)
@@ -90,7 +91,11 @@ function SearchRadar({ recent, color, dim }) {
         if (depth > 0.75 && s.query) {
           ctx.font = '10px system-ui'
           ctx.fillStyle = `rgba(199,216,255,${(depth - 0.75) * 3.2})`
-          ctx.fillText(String(s.query).slice(0, 16), x + size + 3, y + 3)
+          // labels flip to the left near the right edge so they never clip
+          const label = String(s.query).slice(0, 16)
+          ctx.textAlign = x > w - 110 ? 'right' : 'left'
+          ctx.fillText(label, x > w - 110 ? x - size - 3 : x + size + 3, y + 3)
+          ctx.textAlign = 'left'
         }
       })
       raf = requestAnimationFrame(draw)
@@ -188,7 +193,7 @@ export default function SearchAnalyticsPage({ selClient, selClientObj }) {
       <div className="text-xs text-slate-500 mb-4">{T.icon} {T.desc}</div>
 
       {/* ---------- headline numbers ---------- */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-4">
+      <div className="grid grid-cols-1 xs:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-4">
         <Stat label={tab === 'assistant' ? 'AI conversations' : 'Total searches'}
               value={d == null ? '…' : d.total} sub="all time, this client only"
               accent="text-cyan-400" />
@@ -279,7 +284,7 @@ export default function SearchAnalyticsPage({ selClient, selClientObj }) {
         <Panel className="lg:col-span-3 card-in" title={`🕐 Recent ${nouns}`}
                right={
                  <button onClick={downloadExcel} disabled={busyCsv || !recent.length}
-                         className="text-xs px-3 py-1.5 rounded-lg bg-emerald-600/30 border border-emerald-400/40 text-emerald-200 hover:bg-emerald-500/40 transition disabled:opacity-40 font-semibold">
+                         className="text-xs px-3 py-1.5 rounded-lg bg-emerald-600/30 border border-emerald-400/40 text-emerald-200 hover:bg-emerald-500/40 transition disabled:opacity-40 font-semibold whitespace-nowrap shrink-0">
                    {busyCsv ? 'building…' : '⬇️ Download Excel (CSV)'}
                  </button>}>
           {recent.length ? (

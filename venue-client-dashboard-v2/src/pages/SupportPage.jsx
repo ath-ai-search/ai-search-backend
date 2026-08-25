@@ -82,7 +82,8 @@ export default function SupportPage() {
                title={open ? <span className="truncate">💬 {open.subject}</span> : '💬 Pick a ticket'}
                right={open && open.status !== 'resolved' &&
                  <button onClick={markResolved}
-                         className="text-xs text-mint hover:underline">✓ mark resolved</button>}>
+                         className="text-xs px-3 py-2 rounded-lg bg-mint/15 border border-mint/30
+                                    text-mint hover:bg-mint/25 transition">✓ mark resolved</button>}>
           {open ? (
             <div className="flex flex-col h-[420px]">
               <div className="flex-1 overflow-y-auto space-y-2 pr-1">

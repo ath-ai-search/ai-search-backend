@@ -58,7 +58,7 @@ export default function BluAssistant({ client, onSpotlight }) {
             <div className="relative bg-white border border-mint/40 rounded-full p-2
                             shadow-[0_12px_30px_-8px_rgba(109,74,255,0.45)]
                             group-hover:-translate-y-1 transition">
-              <BluBot size={68} follow={false} />
+              <BluBot size={window.innerWidth < 768 ? 44 : 68} follow={false} />
             </div>
             <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-mint
                              border-2 border-white pulse-dot" />
@@ -84,7 +84,8 @@ export default function BluAssistant({ client, onSpotlight }) {
                 </div>
               </div>
               <button onClick={() => setOpen(false)}
-                      className="text-mist hover:text-foam transition text-xl px-1.5">✕</button>
+                      className="text-mist hover:text-foam transition text-xl p-2 min-w-[40px]
+                                 min-h-[40px] flex items-center justify-center">✕</button>
             </div>
 
             {/* messages */}

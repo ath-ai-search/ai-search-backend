@@ -27,7 +27,7 @@ export default function AiPage({ stats }) {
         <Panel title="🍩 Cost split — indexing vs search" className="h-60 md:h-72">
           <ResponsiveContainer width="100%" height="86%">
             <PieChart>
-              <Pie isAnimationActive={false} data={costSplit} dataKey="value" nameKey="name" innerRadius={45} outerRadius={85} paddingAngle={3} stroke="none">
+              <Pie isAnimationActive={false} data={costSplit} dataKey="value" nameKey="name" innerRadius="55%" outerRadius="90%" paddingAngle={3} stroke="none">
                 <Cell fill="#38bdf8" /><Cell fill="#a78bfa" />
               </Pie>
               <Tooltip {...TT} formatter={(v) => fmtMoney(v)} />

@@ -69,7 +69,11 @@ function Radar({ recent, dim }) {
           const ink = document.documentElement.classList.contains('dark')
             ? '217,213,238' : '32,29,51'
           ctx.fillStyle = `rgba(${ink},${(depth - 0.75) * 3.2})`
-          ctx.fillText(String(s.query).slice(0, 16), x + size + 3, y + 3)
+          // labels flip to the left near the right edge so they never clip
+          ctx.textAlign = x > w - 110 ? 'right' : 'left'
+          ctx.fillText(String(s.query).slice(0, 16),
+                       x > w - 110 ? x - size - 3 : x + size + 3, y + 3)
+          ctx.textAlign = 'left'
         }
       })
       raf = requestAnimationFrame(draw)

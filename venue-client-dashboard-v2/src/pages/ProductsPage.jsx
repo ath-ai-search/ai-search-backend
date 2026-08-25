@@ -64,7 +64,7 @@ export default function ProductsPage() {
         <div className="flex gap-2 flex-wrap mb-4">
           {d.categories.slice(0, 12).map(c => (
             <button key={c.value} onClick={() => pickCat(c.value)}
-                    className={`text-xs px-3 py-1.5 rounded-full border transition ${
+                    className={`text-xs px-3 py-2.5 md:py-1.5 rounded-full border transition ${
                       category === c.value
                         ? 'bg-mint/25 border-mint/50 text-foam'
                         : 'bg-white/5 border-white/10 text-mist hover:bg-white/10'}`}>
@@ -108,11 +108,11 @@ export default function ProductsPage() {
       {pages > 1 && (
         <div className="flex items-center justify-center gap-3 mt-5 text-sm">
           <button disabled={page <= 1} onClick={() => go(page - 1)}
-                  className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10
+                  className="px-3 py-2.5 md:py-1.5 rounded-lg bg-white/5 border border-white/10
                              disabled:opacity-30 hover:bg-white/10 transition">← prev</button>
           <span className="text-mist text-xs">page {page} of {pages}</span>
           <button disabled={page >= pages} onClick={() => go(page + 1)}
-                  className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10
+                  className="px-3 py-2.5 md:py-1.5 rounded-lg bg-white/5 border border-white/10
                              disabled:opacity-30 hover:bg-white/10 transition">next →</button>
         </div>
       )}

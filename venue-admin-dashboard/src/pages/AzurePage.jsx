@@ -100,7 +100,7 @@ export default function AzurePage() {
               <div className="text-sm space-y-1">
                 {['docs', 'shop/docs', 'health'].map(path => (
                   <div key={path}>
-                    <a className="text-cyan-300 hover:underline" target="_blank" rel="noreferrer"
+                    <a className="text-cyan-300 hover:underline break-all" target="_blank" rel="noreferrer"
                        href={`https://${d.https.domain}/${path}`}>
                       https://{d.https.domain}/{path}
                     </a>
@@ -212,22 +212,24 @@ export default function AzurePage() {
           )}
 
           <div className="text-xs uppercase tracking-wider text-slate-500 mb-2">Disks</div>
-          <table className="w-full text-sm min-w-[22rem]">
-            <tbody>
-              {(d?.volumes || []).map(v => (
-                <tr key={v.id} className="border-b border-white/5">
-                  <td className="py-1.5 text-slate-300">{v.name}</td>
-                  <td className="py-1.5 text-slate-500 text-xs">{v.type} · {v.device || ''}</td>
-                  <td className="py-1.5 text-right text-cyan-300">{v.size_gb} GB</td>
-                  <td className="py-1.5 text-right text-xs">
-                    {v.encrypted ? <span className="text-emerald-400">🔒 encrypted</span>
-                                 : <span className="text-amber-400">not encrypted</span>}
-                  </td>
-                </tr>
-              ))}
-              {!d?.volumes?.length && <tr><td className="text-slate-500 text-sm py-2">loading…</td></tr>}
-            </tbody>
-          </table>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[22rem]">
+              <tbody>
+                {(d?.volumes || []).map(v => (
+                  <tr key={v.id} className="border-b border-white/5">
+                    <td className="py-1.5 text-slate-300">{v.name}</td>
+                    <td className="py-1.5 text-slate-500 text-xs">{v.type} · {v.device || ''}</td>
+                    <td className="py-1.5 text-right text-cyan-300">{v.size_gb} GB</td>
+                    <td className="py-1.5 text-right text-xs">
+                      {v.encrypted ? <span className="text-emerald-400">🔒 encrypted</span>
+                                   : <span className="text-amber-400">not encrypted</span>}
+                    </td>
+                  </tr>
+                ))}
+                {!d?.volumes?.length && <tr><td className="text-slate-500 text-sm py-2">loading…</td></tr>}
+              </tbody>
+            </table>
+          </div>
         </Panel>
 
         {/* ---------- how it is protected ---------- */}
@@ -269,17 +271,20 @@ export default function AzurePage() {
       </div>
 
       {/* ---------- cost split ---------- */}
-      <Panel title="💵 What each Azure service costs" className="h-[26rem] md:h-96">
+      <Panel title="💵 What each Azure service costs" className="h-auto lg:h-96">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 h-full">
-          <ResponsiveContainer width="100%" height="90%">
-            <PieChart>
-              <Pie isAnimationActive={false} data={costPie} dataKey="value" nameKey="name" innerRadius={55} outerRadius={95} paddingAngle={3}>
-                {costPie.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-              </Pie>
-              <Tooltip {...TT} />
-              <Legend wrapperStyle={{ fontSize: 11 }} />
-            </PieChart>
-          </ResponsiveContainer>
+          {/* explicit height below lg — a %-height chart needs a determinate parent */}
+          <div className="h-64 lg:h-full">
+            <ResponsiveContainer width="100%" height="90%">
+              <PieChart>
+                <Pie isAnimationActive={false} data={costPie} dataKey="value" nameKey="name" innerRadius={55} outerRadius={95} paddingAngle={3}>
+                  {costPie.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                </Pie>
+                <Tooltip {...TT} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
 
           <div className="overflow-auto">
             <table className="w-full text-sm min-w-[22rem]">

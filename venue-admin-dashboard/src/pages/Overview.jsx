@@ -28,14 +28,14 @@ export default function Overview({ stats, osInfo, fields, goTo }) {
           </div>
         </Card>
 
-        <div className="lg:col-span-2 grid grid-cols-2 gap-4">
+        <div className="lg:col-span-2 grid grid-cols-1 xs:grid-cols-2 gap-4">
           <Stat label="Indexed" value={`${s.indexed || 0} / ${s.source_total || 0}`} sub={`${s.progress_pct || 0}% complete`} accent="text-cyan-400" />
           <Stat label="Total AI Cost" value={fmtMoney(s.ai?.total_cost)} sub={`${s.ai?.total_calls || 0} AI calls`} accent="text-emerald-400" />
           <Stat label="Speed" value={`${s.speed_per_min || 0}/min`} sub={`avg ${s.avg_embed_ms || 0} ms each`} />
           <Stat label="Indexing Time" value={fmtTime(s.elapsed_sec)} sub={`success ${s.success_rate ?? 100}% · ${s.failed || 0} failed`} accent="text-violet-400" />
-          <div className="col-span-2">
+          <div className="xs:col-span-2">
             <Card className="p-4">
-              <div className="flex justify-between items-center gap-2 text-xs text-slate-400 mb-2">
+              <div className="flex flex-wrap justify-between items-center gap-2 text-xs text-slate-400 mb-2">
                 <span>Progress</span>
                 {/* live numbers straight from the database — same sources as the OpenSearch / Fields pages */}
                 <span className="flex items-center gap-2">

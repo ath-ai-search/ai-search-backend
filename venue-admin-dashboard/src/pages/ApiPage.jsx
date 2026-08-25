@@ -44,13 +44,16 @@ function MethodChip({ m }) {
   )
 }
 
+// keep the endpoint-name gutter narrow so the bars stay readable on phones
+const shortPath = (n) => (String(n).length > 14 ? String(n).slice(0, 13) + '…' : n)
+
 function TrafficChart({ data }) {
   return (
     <ResponsiveContainer width="100%" height="86%">
-      <BarChart data={data} layout="vertical" margin={{ top: 5, right: 24, left: 60, bottom: 0 }}>
+      <BarChart data={data} layout="vertical" margin={{ top: 5, right: 24, left: 0, bottom: 0 }}>
         <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
         <XAxis type="number" stroke="#64748b" tick={{ fontSize: 11 }} allowDecimals={false} />
-        <YAxis type="category" dataKey="name" stroke="#64748b" tick={{ fontSize: 10 }} width={130} />
+        <YAxis type="category" dataKey="name" stroke="#64748b" tick={{ fontSize: 10 }} width={90} tickFormatter={shortPath} />
         <Tooltip {...TT} />
         <Bar isAnimationActive={false} dataKey="value" name="requests" radius={[0, 4, 4, 0]}>
           {data.map((_, i) => <Cell key={i} fill={DONUT[i % DONUT.length]} />)}
@@ -125,7 +128,7 @@ export default function ApiPage({ apiInfo }) {
       </div>
 
       {/* ---------- THE SWITCHER ---------- */}
-      <div className="flex gap-2 mb-5 card-in">
+      <div className="flex flex-wrap gap-2 mb-5 card-in">
         <TabBtn id="ingest">🏢 Ingestion API <span className="text-slate-500 font-normal">/docs</span></TabBtn>
         <TabBtn id="shop">🛍️ Shop / Search API <span className="text-slate-500 font-normal">/shop/docs</span></TabBtn>
       </div>
@@ -136,7 +139,7 @@ export default function ApiPage({ apiInfo }) {
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
             <Stat label="Total requests" value={a.total_requests || 0} sub="since the API started" accent="text-cyan-400" />
             <Stat label="Active endpoints" value={eps.length} sub="unique routes hit" accent="text-violet-400" />
-            <Stat label="Given to client" value="/ingest/*" sub="the 3 ingest endpoints" accent="text-emerald-400" />
+            <Stat label="Given to client" value={<span className="text-lg break-all">/ingest/*</span>} sub="the 3 ingest endpoints" accent="text-emerald-400" />
           </div>
 
           <Panel title="📊 Requests per endpoint (live)" className="h-60 md:h-72 mb-4">

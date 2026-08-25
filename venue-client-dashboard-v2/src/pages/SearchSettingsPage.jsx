@@ -81,7 +81,8 @@ export default function SearchSettingsPage() {
                                 bg-white/[0.03] border border-white/5">
                   <span><b>{pa}</b> <span className="text-mist">=</span> <b>{pb}</b></span>
                   <button onClick={() => remove(pa, pb)}
-                          className="text-xs text-coral hover:underline">✕ remove</button>
+                          className="text-xs text-coral hover:underline px-2 py-2 -my-1
+                                     rounded-lg">✕ remove</button>
                 </div>
               ))}
             </div>
