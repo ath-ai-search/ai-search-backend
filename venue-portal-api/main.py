@@ -1099,7 +1099,8 @@ async def ai_assistant_proxy(request: Request):
     if code == 200:
         try:
             data = json.loads(body or b"{}")
-            msg = data.get("message") or data.get("query") or data.get("q")
+            msg = (data.get("chat_message") or data.get("message")
+                   or data.get("query") or data.get("q"))
         except Exception:
             msg = None
         _log_search(msg, took_ms=round((time.time() - t0) * 1000),
