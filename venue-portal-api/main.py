@@ -60,6 +60,8 @@ EMBED_PRICE_PER_M = 0.13
 TOKENS_PER_PRODUCT = 120
 TOKENS_PER_SEARCH = 20
 VM_MONTH_COST = 62.0   # D4as_v6 + disk, ballpark
+# what the client PAYS for the service — a real price, not a token estimate
+PLAN_FEE_MONTHLY = float(os.getenv("PLAN_FEE_MONTHLY", "99"))
 
 app = FastAPI(title="Venue Portal API", docs_url=None, redoc_url=None)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
@@ -656,14 +658,19 @@ def billing(authorization: Optional[str] = Header(None)):
     daily = [{"date": yday_s, "cost": 0.0, "ingest_cost": 0.0, "search_cost": 0.0},
              {"date": today_s, "cost": est["total_cost"],
               "ingest_cost": est["ingest_cost"], "search_cost": est["search_cost"]}]
-    return {"this_month": month, "current": est,
-            "months": [{"month": month, "total_cost": est["total_cost"],
+    cur = dict(est)
+    cur["plan_fee"] = PLAN_FEE_MONTHLY
+    cur["total_cost"] = round(est["total_cost"] + PLAN_FEE_MONTHLY, 3)
+    return {"this_month": month, "current": cur,
+            "months": [{"month": month, "total_cost": cur["total_cost"],
                         "ingest_cost": est["ingest_cost"],
-                        "search_cost": est["search_cost"]}],
+                        "search_cost": est["search_cost"],
+                        "plan_fee": PLAN_FEE_MONTHLY}],
             "days": daily, "recent_days": daily,
             "runs": [run] if n else [],
-            "all_time_cost": est["total_cost"],
-            "note": "estimated from public model prices — the venue backend has no built-in meter"}
+            "all_time_cost": cur["total_cost"],
+            "note": "Marketplace plan $%d/month + AI usage (usage estimated from public model prices)"
+                    % int(PLAN_FEE_MONTHLY)}
 
 
 @app.get("/client-api/sync")
