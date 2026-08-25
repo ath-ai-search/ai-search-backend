@@ -1,0 +1,33 @@
+Subject: URGENT - venueDemo VM 20.219.141.225 not reachable (client demo tomorrow)
+
+Hi Meha Ma'am,
+
+The venueDemo VM (20.219.141.225) is not reachable from our side right now.
+
+What we tested (24-Aug, 21:10 IST):
+  - TCP 22  : no response
+  - TCP 80  : no response
+  - TCP 443 : no response
+  - ping    : "Destination host unreachable" (no route)
+
+The "no route" reply usually means the VM is stopped/deallocated rather than
+just firewalled, so could you please check first:
+
+  1. Is the VM in RUNNING state? (it may be stopped/deallocated)
+  2. NSG inbound rules - we need exactly these three:
+       - 22   : from our office/laptop IP
+       - 80   : from ANY source  (required for the Let's Encrypt certificate)
+       - 443  : from ANY source
+  3. Is the public IP 20.219.141.225 STATIC? (a dynamic IP changes on
+     restart and would break the DNS record we are about to point at it)
+  4. Disk size on the VM (we need room for ~330k products + Docker images)
+
+Why this is time-critical: we have a client demo TOMORROW. After the VM is
+up we still need a product indexing run that takes 3-5 hours and cannot be
+resumed if interrupted, so we must start it TONIGHT.
+
+Could you please check as soon as possible, or share access so we can start
+the VM ourselves?
+
+Thank you,
+Shubham Kumar Yadav

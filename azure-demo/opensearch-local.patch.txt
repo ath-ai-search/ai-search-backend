@@ -1,0 +1,43 @@
+THE ONE REQUIRED PATCH — OpenSearch "local mode"
+=================================================
+Why: the code creates its OpenSearch client with AWS signature auth against
+AWS OpenSearch Serverless (port 443, SSL, boto3 credentials). That can only
+ever connect to AWS. On the Azure VM, OpenSearch runs locally in Docker on
+http://localhost:9200 — so without this branch, NOTHING can talk to the
+index. No env value can work around it; this is the minimum possible change.
+Everything else in the repo stays byte-identical.
+
+Waiting for approval before touching the repo. Two files:
+
+--- 1) api/app/config.py — inside get_opensearch_client(), at the TOP ---
+
+def get_opensearch_client():
+    # 🆕 AZURE/LOCAL MODE: plain local OpenSearch (Docker), no AWS auth
+    if os.getenv("OPENSEARCH_LOCAL", "").lower() == "true":
+        raw = os.getenv("OPENSEARCH_HOST", "localhost:9200")
+        host, _, port = raw.replace("http://", "").replace("https://", "").partition(":")
+        return OpenSearch(
+            hosts=[{"host": host, "port": int(port or 9200)}],
+            use_ssl=False, verify_certs=False,
+        )
+    # ---- everything below unchanged (AWS mode) ----
+    region = os.getenv("OPENSEARCH_REGION", "us-west-2")
+    ...
+
+--- 2) scripts/pipeline.py — same branch where ITS client is built (~line 665) ---
+
+        from opensearchpy import OpenSearch, helpers, RequestsHttpConnection, AWSV4SignerAuth
+        # 🆕 AZURE/LOCAL MODE
+        if os.getenv("OPENSEARCH_LOCAL", "").lower() == "true":
+            raw = os.getenv("OPENSEARCH_HOST", "localhost:9200")
+            host, _, port = raw.replace("http://", "").replace("https://", "").partition(":")
+            self.client = OpenSearch(hosts=[{"host": host, "port": int(port or 9200)}],
+                                     use_ssl=False, verify_certs=False)
+        else:
+            # ---- unchanged AWS path ----
+            credentials = boto3.Session().get_credentials()
+            auth = AWSV4SignerAuth(credentials, region, 'aoss')
+            self.client = OpenSearch(...)
+
+With OPENSEARCH_LOCAL unset, behaviour is EXACTLY as before (AWS path) —
+so this is zero-risk for any future move back to AWS.

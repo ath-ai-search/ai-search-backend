@@ -1,0 +1,193 @@
+// =====================================================================
+// 🚪 SIGN-IN — blu greets you: glowing eyes follow the mouse, typewriter
+// welcome. He closes his eyes while you type the password 🙈 and shakes
+// his head sadly on a wrong one. Venue Marketplace edition.
+// =====================================================================
+import { useEffect, useRef, useState } from 'react'
+import { login, setSession } from '../api.js'
+import { Starfield } from '../three3d.jsx'
+import BluBot from '../blu.jsx'
+
+const GREETINGS = [
+  "Hi! I'm blu 👋",
+  'Welcome to Venue Marketplace!',
+  'I watch your AI search 24/7',
+  'Sign in — your data is waiting',
+]
+
+function SpeechBubble({ mood }) {
+  const [text, setText] = useState('')
+  const [idx, setIdx] = useState(0)
+
+  useEffect(() => {
+    if (mood !== 'happy') return   // moods speak instantly, no typing
+    let i = 0, t
+    const full = GREETINGS[idx]
+    const tick = () => {
+      i += 1
+      setText(full.slice(0, i))
+      t = i < full.length
+        ? setTimeout(tick, 45)
+        : setTimeout(() => setIdx(x => (x + 1) % GREETINGS.length), 2300)
+    }
+    t = setTimeout(tick, 300)
+    return () => clearTimeout(t)
+  }, [idx, mood])
+
+  const line = mood === 'shy' ? "I won't look — promise! 🙈"
+             : mood === 'sad' ? "Hmm, that didn't match… try again!"
+             : text
+  return (
+    <div className="relative bg-white border border-mint/30 rounded-2xl px-4 py-2
+                    text-sm text-foam shadow-[0_8px_24px_-10px_rgba(109,74,255,0.35)]
+                    min-h-[38px] min-w-[190px] text-center">
+      {line}{mood === 'happy' && <span className="blu-caret text-mint">▍</span>}
+      <div className="absolute left-1/2 -bottom-1.5 -translate-x-1/2 w-3 h-3 bg-white
+                      border-b border-r border-mint/30 rotate-45" />
+    </div>
+  )
+}
+
+// 🖱 Cursor Blu — he rides the pointer with a soft lag, legs stepping
+// while you move; a glowing dot marks the exact click point.
+function CursorBlu({ mood }) {
+  const [p, setP] = useState({ x: -300, y: -300 })
+  const [moving, setMoving] = useState(false)
+  const [dir, setDir] = useState(1)
+  const raw = useRef({ x: -300, y: -300 })
+  const shown = useRef({ x: -300, y: -300 })
+  const stopT = useRef(null)
+
+  useEffect(() => {
+    const onMove = (e) => {
+      if (e.clientX > raw.current.x + 2) setDir(1)
+      else if (e.clientX < raw.current.x - 2) setDir(-1)
+      raw.current = { x: e.clientX, y: e.clientY }
+      setMoving(true)
+      clearTimeout(stopT.current)
+      stopT.current = setTimeout(() => setMoving(false), 220)
+    }
+    window.addEventListener('mousemove', onMove)
+    let raf
+    const tick = () => {
+      shown.current.x += (raw.current.x - shown.current.x) * 0.25
+      shown.current.y += (raw.current.y - shown.current.y) * 0.25
+      setP({ x: shown.current.x, y: shown.current.y })
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => { window.removeEventListener('mousemove', onMove)
+                   cancelAnimationFrame(raf); clearTimeout(stopT.current) }
+  }, [])
+
+  return (
+    <div className="blu-cursor-layer fixed inset-0 z-50 pointer-events-none hidden motion-safe:block">
+      {/* the exact click point */}
+      <div className="absolute w-2 h-2 rounded-full bg-mint
+                      shadow-[0_0_10px_3px_rgba(109,74,255,0.55)]"
+           style={{ left: p.x - 4, top: p.y - 4 }} />
+      {/* Blu rides just below-right of it */}
+      <div className="absolute" style={{ left: p.x + 10, top: p.y + 12 }}>
+        <div style={{ transform: `scaleX(${dir})` }}
+             className="transition-transform duration-200">
+          <div className={moving ? 'blu-waddle' : ''}>
+            <BluBot size={60} follow={false} legs walking={moving} mood={mood} />
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default function LoginPage({ onSignedIn }) {
+  const [clientId, setClientId] = useState('venue')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [mood, setMood] = useState('happy')
+  const [shake, setShake] = useState(false)
+
+  const submit = async (e) => {
+    e.preventDefault()
+    if (!clientId.trim() || !password) {
+      setErr('Please fill in both fields'); return
+    }
+    setBusy(true); setErr('')
+    try {
+      const r = await login(clientId.trim(), password)
+      setSession(r.token, r.client)
+      onSignedIn(r.client)
+    } catch (ex) {
+      setErr(String(ex.message || 'Sign-in failed'))
+      setMood('sad'); setShake(true)
+      setTimeout(() => setShake(false), 600)
+      setTimeout(() => setMood('happy'), 2600)
+    }
+    setBusy(false)
+  }
+
+  return (
+    <div className="min-h-screen relative flex items-center justify-center p-4 overflow-hidden cursor-none-all">
+      <Starfield />
+      {/* 🟣 brand — top-left corner of the page */}
+      <div className="absolute top-5 left-6 z-10 select-none">
+        <div className="text-xl font-extrabold">
+          <span className="text-mint">Venue</span> Marketplace</div>
+        <div className="text-[10px] text-mist mt-1 tracking-[0.25em]">AI SEARCH PORTAL</div>
+      </div>
+      <div className="relative w-full max-w-md card-in">
+        <div className="flex flex-col items-center mb-5 select-none">
+          <SpeechBubble mood={mood} />
+          <div className="mt-3">
+            <BluBot mood={mood} shake={shake} size={150} />
+          </div>
+        </div>
+
+        <form onSubmit={submit}
+              className="bg-tide/80 backdrop-blur border border-white/10 rounded-card p-8
+                         shadow-[0_20px_60px_-20px_rgba(109,74,255,0.30)]">
+          <label className="block text-[11px] uppercase tracking-wider text-mist mb-1">
+            Client ID</label>
+          <input id="login-client" value={clientId}
+                 onChange={e => { setClientId(e.target.value); setErr('') }}
+                 autoComplete="username" placeholder="venue"
+                 className="w-full rounded-xl bg-black/25 border border-white/15 px-4 py-3
+                            text-base outline-none focus:border-mint/60 transition mb-5" />
+          <label className="block text-[11px] uppercase tracking-wider text-mist mb-1">
+            Portal password</label>
+          <input id="login-pass" type="password" value={password}
+                 onChange={e => { setPassword(e.target.value); setErr('') }}
+                 onFocus={() => setMood('shy')}
+                 onBlur={() => setMood(m => (m === 'shy' ? 'happy' : m))}
+                 autoFocus autoComplete="current-password" placeholder="••••••••••"
+                 className="w-full rounded-xl bg-black/25 border border-white/15 px-4 py-3
+                            text-base outline-none focus:border-mint/60 transition" />
+          {err && (
+            <div className="mt-3 text-xs text-coral bg-coral/10 border border-coral/30
+                            rounded-lg px-3 py-2">⚠️ {err}</div>
+          )}
+          <button disabled={busy}
+                  className="mt-5 w-full rounded-xl bg-mint hover:bg-teal text-white
+                             font-extrabold py-3 text-base transition disabled:opacity-50">
+            {busy ? 'Signing in…' : 'Enter your dashboard →'}
+          </button>
+          <div className="text-[11px] text-mist text-center mt-4">
+            Access is for the Venue Marketplace team only.
+          </div>
+        </form>
+
+        {/* what waits inside */}
+        <div className="flex justify-center gap-2 mt-5 flex-wrap">
+          {['🔎 330k products', '🛰️ Live activity', '🔥 Trending', '🤖 blu assistant']
+            .map(f => (
+            <span key={f} className="text-[11px] px-3 py-1.5 rounded-full bg-white/60
+                  border border-mint/25 text-teal font-semibold backdrop-blur">{f}</span>
+          ))}
+        </div>
+      </div>
+
+      {/* 🖱 Blu IS the cursor — he goes where YOU go */}
+      <CursorBlu mood={mood} />
+    </div>
+  )
+}

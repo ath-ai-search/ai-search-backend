@@ -1,0 +1,30 @@
+Subject: One more Azure VM needed — Venue Marketplace AI search (client demo tomorrow, urgent)
+
+Good Afternoon Meha Ma'am,
+
+I need one more Virtual Machine on Azure (same as the last one, bigger size) with the below configuration. We will install all software ourselves — only the VM is needed from your side. This one is urgent: the Venue Marketplace client demo is tomorrow.
+
+1. VM Specification
+- OS: Ubuntu 24.04 LTS (Linux — please not Windows Server)
+- Size: 4 vCPU / 32 GB RAM (e.g. Standard_E4s_v5 or Standard_D8s_v5) — this store has ~3,30,000 products and their AI search index lives in RAM
+- Disk: 256 GB Standard SSD — the product index needs the space
+- Region: Central India (or nearest available)
+- Public IP: Static (must never change — our domain will point to it)
+
+2. Network Rules (Inbound / Outbound)
+
+Inbound — only these three ports:
+- Port 80 (HTTP) — open to Internet — for HTTPS certificate setup + redirect
+- Port 443 (HTTPS) — open to Internet — all API traffic
+- Port 22 (SSH) — open to our IP only — deployment access
+
+Please do not open any other ports — our internal services run on localhost by design and must stay unreachable from outside.
+Outbound: allow all (the server needs OpenAI API, BigCommerce API, GitHub, Ubuntu updates, Docker Hub, and Let's Encrypt).
+
+3. Handover
+1. SSH access (key or username/password)
+2. The static public IP address
+
+Please let me know if you need any clarification.
+Thank you,
+Shubham Kumar Yadav
