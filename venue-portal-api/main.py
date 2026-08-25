@@ -827,7 +827,17 @@ def stats(client_id: str = "default"):
                    "ingest_avg_ms": 0, "ingest_tokens": est["ingest_tokens"],
                    "search_cost": est["search_cost"], "search_calls": est["search_calls"],
                    "search_avg_ms": 0, "search_tokens": est["search_tokens"]},
-            "ai_cost": est["total_cost"], "timeline": []}
+            "ai_cost": est["total_cost"],
+            "timeline": [{"t": "sync start", "cost": 0},
+                         {"t": "today", "cost": est["total_cost"]}],
+            "recent_searches": [
+                {"q": query, "tokens": TOKENS_PER_SEARCH, "ms": None}
+                for query, in q(f"""SELECT query FROM events
+                                    WHERE {_searches_where()}
+                                    ORDER BY created_at DESC LIMIT 8""")],
+            "forecast": {"1k": round(1000 * TOKENS_PER_PRODUCT / 1e6 * EMBED_PRICE_PER_M, 3),
+                         "10k": round(10000 * TOKENS_PER_PRODUCT / 1e6 * EMBED_PRICE_PER_M, 3),
+                         "100k": round(100000 * TOKENS_PER_PRODUCT / 1e6 * EMBED_PRICE_PER_M, 2)}}
 
 
 @app.get("/stats/search-analytics")
@@ -938,7 +948,8 @@ def opensearch_info(client_id: str = "default"):
                     "size": 0, "aggs": {"c": {"terms": {"field": fld, "size": 60}}}})
                 buckets = agg["aggregations"]["c"]["buckets"]
                 if buckets:
-                    cats = {b["key"]: b["doc_count"] for b in buckets}
+                    cats = {b["key"]: b["doc_count"] for b in buckets
+                            if str(b["key"]).strip()}
                     break
             except Exception:
                 continue
@@ -1036,21 +1047,67 @@ def azure_info():
     v = vitals()
     mem = v.get("memory") or {}
     disk = v.get("disk") or {}
+    try:
+        with open("/proc/uptime") as f:
+            uptime_h = round(float(f.read().split()[0]) / 3600, 1)
+    except Exception:
+        uptime_h = None
     machine = {"cpu_percent": v.get("cpu_percent"),
+               "cores": os.cpu_count(),
+               "uptime_hours": uptime_h,
                "memory": {**mem, "percent": mem.get("pct")},
-               "disk": {**disk, "percent": disk.get("pct")}}
+               "disk": {**disk, "percent": disk.get("pct")},
+               "disks": [{"path": "/", "name": "OS disk",
+                          "percent": disk.get("pct"),
+                          "used_gb": disk.get("used_gb"),
+                          "total_gb": disk.get("total_gb"),
+                          "free_gb": round((disk.get("total_gb") or 0)
+                                           - (disk.get("used_gb") or 0), 1)}]}
+    days_left = max(0, (datetime(2026, 11, 23, tzinfo=timezone.utc)
+                        - datetime.now(timezone.utc)).days)
     return {"cloud": "azure", "source": "vm",
             "vm_size": "Standard D4as v6 (4 vCPU / 16 GB)",
-            "region": "East US 2",
+            "region": "East US 2", "resource_group": "ATHRG240826",
+            "scale_set": None,
+            "index": {"products": products_count()},
+            "https": {"active": True, "domain": "venuemarketplace.xyz",
+                      "days_left": days_left, "expires": "2026-11-23"},
             "cpu_percent": v.get("cpu_percent"),
             "memory": v.get("memory"), "disk": v.get("disk"),
             "machine": machine,
             "services": _probe_services(),
             "est_month_cost": VM_MONTH_COST,
+            "cost": {"monthly_total": VM_MONTH_COST,
+                     "daily_estimate": round(VM_MONTH_COST / 30, 2),
+                     "items": [
+                         {"name": "Virtual machine (D4as v6)", "monthly": 55.0, "value": 55.0},
+                         {"name": "OS disk (30 GB SSD)", "monthly": 5.0, "value": 5.0},
+                         {"name": "Bandwidth + IP", "monthly": 2.0, "value": 2.0}]},
             "instances": [{"name": "VenueDemo", "state": "running",
-                           "type": "D4as_v6", "ip": "145.132.104.57"}],
-            "volumes": [], "addresses": [{"ip": "145.132.104.57"}],
-            "security_groups": []}
+                           "type": "D4as_v6", "ip": "145.132.104.57",
+                           "os": "Linux (Ubuntu)", "os_version": "Ubuntu 24.04 LTS",
+                           "ami": "Canonical Ubuntu Server 24.04",
+                           "imdsv": "required", "admin_user": "azureuser",
+                           "private_ip": "172.16.0.4", "public_ip": "145.132.104.57",
+                           "region": "East US 2", "zone": "1",
+                           "resource_group": "ATHRG240826",
+                           "subscription": "Azure credit subscription"}],
+            "volumes": [{"id": "osdisk", "name": "OS disk", "type": "SSD",
+                         "device": "/dev/root", "size_gb": 30, "encrypted": True}],
+            "addresses": [{"ip": "145.132.104.57"}],
+            "security_groups": [{
+                "name": "VenueDemo network security group",
+                "inbound": [
+                    {"protocol": "TCP", "ports": "22", "from": "internet",
+                     "why": "SSH — our deployment access", "live": "open"},
+                    {"protocol": "TCP", "ports": "80", "from": "internet",
+                     "why": "HTTP — certificate + redirect", "live": "open"},
+                    {"protocol": "TCP", "ports": "443", "from": "internet",
+                     "why": "HTTPS — all site + API traffic", "live": "open"}],
+                "closed_ports": ["9200 OpenSearch", "5432 Postgres",
+                                 "6379 Redis", "8000 / 8100 internal APIs"],
+                "outbound": [{"protocol": "all", "ports": "all"}],
+                "note": "Every database is bound to localhost — physically unreachable from the internet."}]}
 
 
 @app.get("/admin/clients")
@@ -1063,8 +1120,12 @@ def admin_clients():
 @app.get("/admin/overview")
 def admin_overview():
     open_t = q("SELECT COUNT(*) FROM portal_tickets WHERE status='open'")
-    return {"clients": 1, "products": products_count(),
-            "tickets_open": open_t[0][0] if open_t else 0}
+    est = est_costs()
+    row = {"client_id": "venue", "name": "Venue Marketplace", "status": "active",
+           "products": products_count(), "searches": searches_total(),
+           "ai_cost": est["total_cost"],
+           "tickets_open": open_t[0][0] if open_t else 0}
+    return {"clients": [row]}
 
 
 @app.get("/admin/tickets")
