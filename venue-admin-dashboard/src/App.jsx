@@ -5,6 +5,7 @@
 // lights (OpenSearch / API / OpenAI) are clickable → open their pages.
 // =====================================================================
 import { useEffect, useState } from 'react'
+import logoPng from './assets/bcloud-logo.png'
 import { getStats, getHealth, getOpenSearchInfo, getApiInfo, getBilling, getFields, getClients, setApiClient } from './api.js'
 import Overview from './pages/Overview.jsx'
 import OpenSearchPage from './pages/OpenSearchPage.jsx'
@@ -129,6 +130,11 @@ export default function App() {
       {/* SIDEBAR */}
       <aside className="w-56 shrink-0 border-r border-white/10 bg-black/20 p-4 hidden md:flex flex-col gap-1 sticky top-0 h-screen">
         <div className="mb-5">
+          {/* the official bCloud logo — dark wordmark, so it sits on a soft white chip */}
+          <img src={logoPng} alt="bCloud AI"
+               style={{ height: 42, width: 42 * (310 / 184), background: '#ffffff',
+                        borderRadius: 10, padding: '3px 8px', display: 'block',
+                        marginBottom: 8 }} />
           <div className="text-lg font-bold">⚡ AI Search</div>
           <div className="text-xs font-semibold text-cyan-400">🎪 VENUE Console</div>
           <div className="mt-1 inline-block rounded-full bg-cyan-500/15 border border-cyan-500/30 px-2 py-0.5 text-[10px] text-cyan-300">

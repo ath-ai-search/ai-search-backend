@@ -6,6 +6,7 @@
 // =====================================================================
 import { Fragment, useState } from 'react'
 import { Panel, PageTitle, Badge } from '../ui.jsx'
+import { getToken } from '../api.js'
 
 const SHOP = 'https://venuemarketplace.xyz'
 
@@ -21,17 +22,18 @@ export default function WidgetPage() {
     setCopied(label); setTimeout(() => setCopied(''), 1500)
   }
 
-  // LIVE preview — the real /search on the live store
+  // LIVE preview — the real engine, through the portal so the search
+  // also lands in Analytics / Live activity as a tracked event
   const preview = async (e) => {
     e.preventDefault()
     if (!q.trim()) return
     setBusy(true)
     try {
-      const r = await fetch(`${SHOP}/search`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q.trim(), page: 1, page_size: 6 }),
+      const r = await fetch(`/client-api/search-preview?q=${encodeURIComponent(q.trim())}&k=6`, {
+        headers: { Authorization: `Bearer ${getToken()}` },
       })
-      setRes(await r.json())
+      const d = await r.json()
+      setRes({ results: d.results || [], total_results: d.total ?? 0 })
     } catch { setRes({ results: [], total_results: 0 }) }
     setBusy(false)
   }

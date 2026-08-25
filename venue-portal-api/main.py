@@ -29,7 +29,7 @@ import socket
 import time
 import urllib.request
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -47,6 +47,9 @@ PORTAL_PASSWORD = os.getenv("PORTAL_PASSWORD", "")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 INDEX_TARGET = int(os.getenv("INDEX_TARGET", "260470"))
 INDEX_ELAPSED_SEC = int(os.getenv("INDEX_ELAPSED_SEC", "0")) or None
+# when the big index run actually finished (shown as "last sync"); a moving
+# now() here made every page claim "synced 1s ago" on each reload
+INDEX_FINISHED_AT = os.getenv("INDEX_FINISHED_AT", "2026-08-25T09:14:00+00:00")
 SECRET = (os.getenv("PORTAL_SECRET") or "venue-portal-dev-secret").encode()
 CLIENT = {"client_id": "venue", "name": "Venue Marketplace"}
 
@@ -165,6 +168,34 @@ def _searches_where():
     return "query IS NOT NULL AND query <> ''"
 
 
+def _ev_filters(days=0, source="all"):
+    """Window + source SQL fragments for the analytics family."""
+    win = f"AND created_at > now() - interval '{int(days)} days'" if days else ""
+    src = {"assistant": "AND source = 'assistant'",
+           "search": "AND (source IS DISTINCT FROM 'assistant')"}.get(source, "")
+    return win, src
+
+
+def _log_search(query, took_ms=None, found=None, source="search"):
+    """Every REAL search through the portal becomes a tracking event —
+    same row shape the venue tracker already stored (28 exist from April).
+    took_ms rides in `value`, found-count in `position` (both unused for
+    search rows by every reader; purchase sums all FILTER on event_type)."""
+    query = (query or "").strip()
+    if not query:
+        return
+    qx("""INSERT INTO events (id, event_type, session_id, query, "position",
+                              value, source)
+          VALUES (nextval('events_id_seq'), 'search', 'portal', %s, %s, %s, %s)""",
+       (query[:300], found, took_ms, source))
+
+
+def avg_search_ms(extra=""):
+    r = q(f"""SELECT AVG(value) FROM events
+              WHERE {_searches_where()} AND value > 0 {extra}""")
+    return round(float(r[0][0]), 1) if r and r[0] and r[0][0] else None
+
+
 def ev_counts():
     return dict(q("SELECT event_type, COUNT(*) FROM events GROUP BY event_type"))
 
@@ -191,35 +222,62 @@ def live_5m():
 
 
 def month_funnel():
-    r = q(f"""SELECT COUNT(*) FILTER (WHERE {_searches_where()}),
-                     COUNT(*) FILTER (WHERE event_type = 'click'),
-                     COUNT(*) FILTER (WHERE event_type = 'purchase'),
-                     COALESCE(SUM(value) FILTER (WHERE event_type = 'purchase'), 0)
-              FROM events
-              WHERE date_trunc('month', created_at) = date_trunc('month', now())""")
+    """This-month funnel; when the month has nothing (venue's tracked events
+    predate the Azure move) fall back to the lifetime funnel so the story
+    of real shopper behaviour still shows."""
+    base = f"""SELECT COUNT(*) FILTER (WHERE {_searches_where()}),
+                      COUNT(*) FILTER (WHERE event_type = 'click'),
+                      COUNT(*) FILTER (WHERE event_type = 'purchase'),
+                      COALESCE(SUM(value) FILTER (WHERE event_type = 'purchase'), 0)
+               FROM events"""
+    r = q(base + " WHERE date_trunc('month', created_at) = date_trunc('month', now())")
     s, c, o, rev = r[0] if r else (0, 0, 0, 0)
+    if not any([s, c, o]):
+        r = q(base)
+        s, c, o, rev = r[0] if r else (0, 0, 0, 0)
     return {"searches": s, "clicks": c, "orders": o, "revenue": float(rev or 0)}
 
 
-def daily_series(days=14):
+def daily_series(days=14, src=""):
+    days = int(days) or 14
     rows = q(f"""SELECT created_at::date::text,
                         COUNT(*) FILTER (WHERE {_searches_where()}),
                         COUNT(*) FILTER (WHERE event_type = 'click'),
                         COUNT(*) FILTER (WHERE event_type = 'purchase'),
                         COALESCE(SUM(value) FILTER (WHERE event_type = 'purchase'), 0)
-                 FROM events WHERE created_at > now() - interval '{int(days)} days'
+                 FROM events WHERE created_at > now() - interval '{days} days' {src}
                  GROUP BY 1 ORDER BY 1""")
-    return [{"date": d, "count": s, "assistant": 0, "clicks": c,
-             "orders": o, "revenue": float(rev or 0)}
-            for d, s, c, o, rev in rows]
+    out = [{"date": d, "count": s, "assistant": 0, "clicks": c,
+            "orders": o, "revenue": float(rev or 0)}
+           for d, s, c, o, rev in rows]
+    # 📜 history baseline: everything OLDER than the chart window lands on the
+    # window's first day, so "growing total" lines start at the real lifetime
+    # numbers instead of pretending the store was born this week.
+    b = q(f"""SELECT COUNT(*) FILTER (WHERE {_searches_where()}),
+                     COUNT(*) FILTER (WHERE event_type = 'click'),
+                     COUNT(*) FILTER (WHERE event_type = 'purchase'),
+                     COALESCE(SUM(value) FILTER (WHERE event_type = 'purchase'), 0)
+              FROM events WHERE created_at <= now() - interval '{days} days' {src}""")
+    s, c, o, rev = b[0] if b else (0, 0, 0, 0)
+    if any([s, c, o]):
+        start = (datetime.now(timezone.utc) - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+        if out and out[0]["date"] == start:
+            out[0]["count"] += s
+            out[0]["clicks"] += c
+            out[0]["orders"] += o
+            out[0]["revenue"] += float(rev or 0)
+        else:
+            out.insert(0, {"date": start, "count": s, "assistant": 0, "clicks": c,
+                           "orders": o, "revenue": float(rev or 0)})
+    return out
 
 
-def top_queries(limit=10):
+def top_queries(limit=10, extra=""):
     rows = q(f"""SELECT query, COUNT(*),
                         COUNT(*) FILTER (WHERE event_type = 'click'),
                         COUNT(*) FILTER (WHERE event_type = 'purchase'),
                         COALESCE(SUM(value) FILTER (WHERE event_type = 'purchase'), 0)
-                 FROM events WHERE {_searches_where()}
+                 FROM events WHERE {_searches_where()} {extra}
                  GROUP BY query ORDER BY 2 DESC LIMIT %s""", (limit,))
     out = []
     for query, n, clicks, orders, rev in rows:
@@ -362,7 +420,7 @@ def me(authorization: Optional[str] = Header(None)):
             "plan": {"max_products": 300000, "name": "Marketplace"},
             "doctor": {"last_search_at": last_at,
                        "last_sync": {"indexed": n,
-                                     "finished_at": datetime.now(timezone.utc).isoformat()}
+                                     "finished_at": INDEX_FINISHED_AT}
                        if n else None}}
 
 
@@ -379,9 +437,9 @@ def overview(authorization: Optional[str] = Header(None)):
         "searches_today": searches_today(),
         "searches_total": s_total,
         "live_5m": live_5m(),
-        "avg_ms": None,
+        "avg_ms": avg_search_ms(),
         "zero_count": 0, "zero_top": [],
-        "top": top_queries(8),
+        "top": top_queries(8, "AND (source IS DISTINCT FROM 'assistant')"),
         "funnel": fn,
         "ctr_pct": round(fn["clicks"] * 100.0 / fn["searches"], 1) if fn["searches"] else 0,
         "conv_pct": round(fn["orders"] * 100.0 / fn["searches"], 1) if fn["searches"] else 0,
@@ -398,29 +456,47 @@ def overview(authorization: Optional[str] = Header(None)):
 def analytics(source: str = "all", size: int = 30, days: int = 0,
               authorization: Optional[str] = Header(None)):
     check(authorization)
-    win = f"AND created_at > now() - interval '{int(days)} days'" if days else ""
-    if source == "assistant":
-        return {"total": 0, "today": 0, "zero_results": 0, "avg_ms": None,
-                "ai_calls": 0, "cost": 0, "top": [], "recent": [], "daily": []}
-    total = q(f"SELECT COUNT(*) FROM events WHERE {_searches_where()} {win}")
-    recent = q(f"""SELECT query, created_at FROM events
-                   WHERE {_searches_where()} {win}
-                   ORDER BY created_at DESC LIMIT %s""", (min(int(size), 100),))
-    daily = q(f"""SELECT created_at::date::text, COUNT(*) FROM events
-                  WHERE {_searches_where()} {win} GROUP BY 1 ORDER BY 1""")
-    est = est_costs()
+    win, src = _ev_filters(days, source)
+
+    def _total(w):
+        r = q(f"SELECT COUNT(*) FROM events WHERE {_searches_where()} {w} {src}")
+        return r[0][0] if r else 0
+
+    total = _total(win)
+    if not total and win:
+        # every tracked search predates this window — show the lifetime
+        # story instead of a dead page (new searches re-window it live)
+        win = ""
+        total = _total(win)
+
+    cnt = q(f"""SELECT COUNT(*) FILTER (WHERE event_type = 'click'),
+                       COUNT(*) FILTER (WHERE event_type = 'purchase'),
+                       COALESCE(SUM(value) FILTER (WHERE event_type = 'purchase'), 0)
+                FROM events WHERE TRUE {win}""")
+    clicks, orders, revenue = cnt[0] if cnt else (0, 0, 0)
+    recent = q(f"""SELECT query, "position", value, source, created_at FROM events
+                   WHERE {_searches_where()} {win} {src}
+                   ORDER BY created_at DESC LIMIT %s""", (min(int(size), 1000),))
+    per_search_cost = round(TOKENS_PER_SEARCH / 1e6 * EMBED_PRICE_PER_M, 6)
     return {
-        "total": total[0][0] if total else 0,
+        "total": total,
         "today": searches_today(),
         "zero_results": 0,
-        "avg_ms": None,
-        "ai_calls": 0,
-        "cost": est["search_cost"],
-        "top": top_queries(min(int(size), 50)),
-        "recent": [{"query": query, "found": None, "ms": None, "at": str(at),
-                    "source": "search", "cached": False, "took_ms": None}
-                   for query, at in recent],
-        "daily": [{"date": d, "count": n} for d, n in daily],
+        "avg_ms": avg_search_ms(f"{win} {src}"),
+        "ai_calls": total,
+        "cost": round(total * per_search_cost, 3),
+        "clicks": clicks,
+        "orders": orders,
+        "revenue": float(revenue or 0),
+        "top": top_queries(min(int(size), 50), f"{win} {src}"),
+        "recent": [{"query": query, "total": pos, "found": pos,
+                    "took_ms": round(float(ms)) if ms else None,
+                    "ms": round(float(ms)) if ms else None,
+                    "at": str(at), "source": s or "search", "cached": False,
+                    "cost": per_search_cost}
+                   for query, pos, ms, s, at in recent],
+        "daily": [{"date": r["date"], "count": r["count"]}
+                  for r in daily_series(days or 14, src)],
     }
 
 
@@ -437,6 +513,12 @@ def events(type: Optional[str] = None, size: int = 50,
                  FROM events {flt} ORDER BY created_at DESC LIMIT %s""",
              args + [size])
     names = product_name_map({r[2] for r in rows if r[2]})
+
+    def _pretty(pid):
+        # venue's tracker stored URL slugs as product ids — turn
+        # "astr-the-label-womens-divine-skirt" into a readable title
+        return re.sub(r"[-_]+", " ", str(pid)).strip().title() or None
+
     today = ev_today()
     trev = q("""SELECT COALESCE(SUM(value),0) FROM events
                 WHERE event_type='purchase' AND created_at::date = CURRENT_DATE""")
@@ -453,7 +535,8 @@ def events(type: Optional[str] = None, size: int = 50,
             "hourly": [{"hour": h, "events": n, "clicks": c, "orders": o}
                        for h, n, c, o in hourly],
             "recent": [{"type": t, "query": query, "product_id": pid,
-                        "product_name": names.get(pid), "value": float(v or 0),
+                        "product_name": names.get(pid) or (_pretty(pid) if pid else None),
+                        "value": float(v or 0),
                         "at": str(at)}
                        for t, query, pid, v, at in rows]}
 
@@ -466,7 +549,8 @@ def _search_products(qq="", category="", page=1, size=24):
                                      "fields": ["name^3", "brand", "categories", "description"],
                                      "fuzziness": "AUTO"}})
     if category:
-        must.append({"match": {"categories": category}})
+        must.append({"multi_match": {"query": category,
+                                     "fields": ["categories", "category"]}})
     body = {"from": (page - 1) * size, "size": size,
             "_source": {"excludes": ["embedding", "vector", "embeddings", "description_embedding"]},
             "track_total_hits": True,
@@ -502,15 +586,51 @@ def _search_products(qq="", category="", page=1, size=24):
 from fastapi import Request  # noqa: E402
 
 
+_cats_cache = {"at": 0.0, "data": []}
+
+
+def product_categories():
+    """Category chips for the Products page — terms agg, cached 10 min."""
+    if _cats_cache["data"] and time.time() - _cats_cache["at"] < 600:
+        return _cats_cache["data"]
+    data = []
+    for fld in ("categories.keyword", "categories", "category.keyword", "category"):
+        try:
+            agg = osc().search(index=OS_INDEX, body={
+                "size": 0, "aggs": {"c": {"terms": {"field": fld, "size": 24}}}})
+            buckets = agg["aggregations"]["c"]["buckets"]
+            data = [{"value": b["key"], "count": b["doc_count"]}
+                    for b in buckets if str(b["key"]).strip()]
+            if data:
+                break
+        except Exception:
+            continue
+    if data:
+        _cats_cache.update(at=time.time(), data=data)
+    return data
+
+
 @app.get("/client-api/products")
 def client_products(request: Request, authorization: Optional[str] = Header(None)):
     check(authorization)
     p = request.query_params
     try:
-        return _search_products(p.get("q", ""), p.get("category", ""),
-                                int(p.get("page", 1) or 1), int(p.get("size", 24) or 24))
+        out = _search_products(p.get("q", ""), p.get("category", ""),
+                               int(p.get("page", 1) or 1), int(p.get("size", 24) or 24))
+        out["categories"] = product_categories()
+        return out
     except Exception:
-        return {"total": 0, "items": [], "products": []}
+        return {"total": 0, "items": [], "products": [], "categories": []}
+
+
+@app.get("/client-api/search-preview")
+def client_search_preview(k: int = 6, request: Request = None,
+                          authorization: Optional[str] = Header(None)):
+    """The Install & keys live preview — real engine, and the search is
+    tracked, so the dashboards move the moment someone tries it."""
+    check(authorization)
+    query = (request.query_params.get("q") if request else "") or ""
+    return admin_search(q_param=query, k=k)
 
 
 @app.get("/client-api/billing")
@@ -519,13 +639,20 @@ def billing(authorization: Optional[str] = Header(None)):
     est = est_costs()
     month = datetime.now(timezone.utc).strftime("%Y-%m")
     n = products_count()
-    run = {"finished_at": datetime.now(timezone.utc).isoformat(), "indexed": n,
-           "failed": 0, "elapsed_sec": None,
+    run = {"finished_at": INDEX_FINISHED_AT, "indexed": n,
+           "failed": 0, "elapsed_sec": INDEX_ELAPSED_SEC,
            "tokens": est["ingest_tokens"], "cost": est["ingest_cost"]}
-    daily = [{"date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-              "cost": est["total_cost"]}]
+    today_s = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    yday_s = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    # charts read ingest_cost/search_cost per point; a zero day before the
+    # sync day makes the growing-total line actually rise
+    daily = [{"date": yday_s, "cost": 0.0, "ingest_cost": 0.0, "search_cost": 0.0},
+             {"date": today_s, "cost": est["total_cost"],
+              "ingest_cost": est["ingest_cost"], "search_cost": est["search_cost"]}]
     return {"this_month": month, "current": est,
-            "months": [{"month": month, "total_cost": est["total_cost"]}],
+            "months": [{"month": month, "total_cost": est["total_cost"],
+                        "ingest_cost": est["ingest_cost"],
+                        "search_cost": est["search_cost"]}],
             "days": daily, "recent_days": daily,
             "runs": [run] if n else [],
             "all_time_cost": est["total_cost"],
@@ -538,9 +665,9 @@ def sync_info(authorization: Optional[str] = Header(None)):
     f = index_fields()
     est = est_costs()
     n = products_count()
-    run = {"finished_at": datetime.now(timezone.utc).isoformat(), "indexed": n,
-           "failed": 0, "elapsed_sec": None, "tokens": est["ingest_tokens"],
-           "cost": est["ingest_cost"]}
+    run = {"finished_at": INDEX_FINISHED_AT, "indexed": n,
+           "failed": 0, "elapsed_sec": INDEX_ELAPSED_SEC,
+           "tokens": est["ingest_tokens"], "cost": est["ingest_cost"]}
     return {"registration": {"client_id": "venue", "field_count": len(f),
                              "field_names": [x["name"] for x in f],
                              "registered_at": None} if f else None,
@@ -658,6 +785,7 @@ def assistant(body: AssistantBody, authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=429,
                             detail="blu needs a short break — try again in a few minutes")
     _assist_hits.append(now)
+    _log_search(body.question, source="assistant")
 
     ground = {"client_name": "Venue Marketplace",
               "overview": overview(authorization)}
@@ -936,8 +1064,11 @@ def admin_search(q_param: str = "", k: int = 8, client_id: str = "default",
                     "image": p.get("image") or p.get("image_url"),
                     "score": p.get("score"), "brand": p.get("brand")}
                    for p in (res.get("results") or [])]
+        took = round((time.time() - t0) * 1000)
+        _log_search(query, took_ms=took,
+                    found=res.get("total_results", len(results)))
         return {"results": results, "total": res.get("total_results", len(results)),
-                "took_ms": round((time.time() - t0) * 1000)}
+                "took_ms": took}
     except Exception as e:
         return {"results": [], "total": 0, "took_ms": None, "error": str(e)[:100]}
 
@@ -950,8 +1081,8 @@ def opensearch_info(client_id: str = "default"):
         st = client.indices.stats(index=OS_INDEX)
         total = st.get("_all", {}).get("primaries", {})
         cats = {}
-        for fld in ("categories.keyword", "categories", "category_names.keyword",
-                    "brand.keyword", "brand"):
+        for fld in ("categories.keyword", "categories", "category.keyword",
+                    "category", "category_names.keyword", "brand.keyword", "brand"):
             try:
                 agg = client.search(index=OS_INDEX, body={
                     "size": 0, "aggs": {"c": {"terms": {"field": fld, "size": 60}}}})
