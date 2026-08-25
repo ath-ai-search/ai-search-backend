@@ -91,6 +91,9 @@ NGINX
 ln -sf /etc/nginx/sites-available/venue-portal-sub /etc/nginx/sites-enabled/venue-portal-sub
 nginx -t && systemctl reload nginx
 
+echo "=== heal the tracking schema (idempotent, zero code changes) ==="
+bash "$REPO/azure-demo/fix-tracking-schema.sh" || echo "!! schema heal failed — run it alone and read the error"
+
 echo "=== restart portal API ==="
 systemctl restart venue-portal
 
