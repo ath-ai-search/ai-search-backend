@@ -472,20 +472,29 @@ def _search_products(qq="", category="", page=1, size=24):
             "track_total_hits": True,
             "query": {"bool": {"must": must}} if must else {"match_all": {}}}
     res = osc().search(index=OS_INDEX, body=body)
+    SKIP = {"embedding", "vector", "embeddings", "description_embedding",
+            "search_text", "variant_options", "variants", "attributes"}
     items = []
     for h in res["hits"]["hits"]:
         p = h["_source"]
         img = p.get("image") or p.get("image_url") or p.get("thumbnail")
         if not img and isinstance(p.get("images"), list) and p["images"]:
             first = p["images"][0]
-            img = first.get("url_thumbnail") or first.get("url") if isinstance(first, dict) else first
-        cats = p.get("categories") or p.get("category_names") or []
+            img = (first.get("url_thumbnail") or first.get("url") or
+                   first.get("url_standard")) if isinstance(first, dict) else first
+        cats = p.get("categories") or p.get("category") or []
         if isinstance(cats, str):
             cats = [cats]
+        filled = {k: v for k, v in p.items()
+                  if k not in SKIP and v not in (None, "", [], {})
+                  and not isinstance(v, (list, dict))}
         items.append({"id": h["_id"], "name": p.get("name") or p.get("title"),
-                      "price": p.get("price") or p.get("calculated_price"),
-                      "image": img, "brand": p.get("brand") or p.get("brand_name"),
-                      "categories": cats, "category": cats[0] if cats else None})
+                      "price": p.get("price") or p.get("sale_price"),
+                      "image": img, "image_url": img,
+                      "brand": p.get("brand") or p.get("brand_name"),
+                      "categories": cats, "category": cats[0] if cats else None,
+                      "embedding_dims": 3072, "dims": 3072,
+                      "fields": filled})
     return {"total": res["hits"]["total"]["value"], "items": items,
             "products": items}
 
@@ -1021,24 +1030,38 @@ def shop_api_info():
 
 
 def _probe_services():
+    def svc(name, up, port, kind, image, what):
+        return {"name": name, "up": up, "port": port, "kind": kind,
+                "image": image, "what": what, "desc": what, "role": what}
     out = []
     try:
-        out.append({"name": "OpenSearch", "up": bool(osc().ping())})
+        os_up = bool(osc().ping())
     except Exception:
-        out.append({"name": "OpenSearch", "up": False})
+        os_up = False
+    out.append(svc("OpenSearch", os_up, 9200, "container",
+                   "opensearchproject/opensearch:2.13",
+                   "the search database — products + AI vectors"))
     try:
         with urllib.request.urlopen("http://127.0.0.1:8000/docs", timeout=3) as r:
-            out.append({"name": "Search API", "up": r.status in (200, 307)})
+            api_up = r.status in (200, 307)
     except Exception:
-        out.append({"name": "Search API", "up": False})
-    out.append({"name": "Postgres", "up": bool(q("SELECT 1"))})
+        api_up = False
+    out.append(svc("Search API", api_up, 8000, "process",
+                   "uvicorn app.main:app",
+                   "answers every shopper search"))
+    out.append(svc("Postgres", bool(q("SELECT 1")), 5432, "container",
+                   "postgres:16-alpine",
+                   "the tracking database — shopper events"))
     try:
         c = socket.create_connection(("127.0.0.1", 6379), timeout=2)
         c.close()
-        out.append({"name": "Redis", "up": True})
+        redis_up = True
     except Exception:
-        out.append({"name": "Redis", "up": False})
-    out.append({"name": "Portal API", "up": True})
+        redis_up = False
+    out.append(svc("Redis", redis_up, 6379, "container", "redis:7-alpine",
+                   "the speed cache"))
+    out.append(svc("Portal API", True, 8100, "process", "uvicorn main:app",
+                   "feeds both dashboards"))
     return out
 
 
