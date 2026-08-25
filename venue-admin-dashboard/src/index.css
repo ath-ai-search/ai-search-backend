@@ -1,0 +1,95 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* =====================================================================
+   ☁️ AZURE EDITION THEME
+   The AWS console is cyan-on-navy. This edition is AZURE BLUE + violet,
+   so one glance at any page tells you WHICH server you are on.
+   ===================================================================== */
+html, body, #root { height: 100%; }
+body {
+  background:
+    radial-gradient(1100px 700px at 18% -10%, #182a5e 0%, transparent 60%),
+    radial-gradient(900px 600px at 105% 15%, #2a1c5e 0%, transparent 55%),
+    #090b18;
+  /* glue the glow to the SCREEN, not the page: without these two lines the
+     gradient tiles when a page is taller than the screen, leaving a hard
+     90-degree seam line where the repeated copy begins */
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+  color: #e2e8f0;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* (the animated aurora was removed: on some GPUs the moving gradient
+   rendered as an ugly hard band across the page — the static layered
+   background above gives the same depth without artifacts) */
+
+/* =====================================================================
+   ✨ MOTION + POLISH SYSTEM (all pure CSS — zero JavaScript cost)
+   ===================================================================== */
+
+/* cards float up as they appear */
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.card-in { animation: rise-in 0.45s cubic-bezier(0.2, 0.7, 0.3, 1) both; }
+
+/* 3D hover: cards gently lift and tilt toward the light */
+.tilt-3d {
+  transform-style: preserve-3d;
+  transition: transform 0.35s cubic-bezier(0.2, 0.7, 0.3, 1),
+              box-shadow 0.35s ease, border-color 0.35s ease;
+}
+.tilt-3d:hover {
+  transform: perspective(900px) rotateX(1.6deg) rotateY(-1.2deg) translateY(-3px);
+  box-shadow: 0 14px 40px -12px rgba(95, 149, 255, 0.25);
+  border-color: rgba(95, 149, 255, 0.35) !important;
+}
+
+/* live numbers never jitter in width while counting */
+.tabular, .text-2xl, .text-3xl { font-variant-numeric: tabular-nums; }
+
+/* heartbeat dot for the live poll indicator */
+@keyframes heartbeat { 0%, 100% { opacity: 1; transform: scale(1); }
+                       50% { opacity: 0.45; transform: scale(0.8); } }
+.pulse-dot { animation: heartbeat 1.6s ease-in-out infinite; }
+
+/* slim, calm scrollbars everywhere */
+* { scrollbar-width: thin; scrollbar-color: #2b3a63 transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: #2b3a63; border-radius: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* recharts: soften axis text + hide harsh focus outlines */
+.recharts-text { fill: #8fa3c8; font-size: 11px; }
+.recharts-cartesian-grid line { stroke: rgba(255, 255, 255, 0.05); }
+.recharts-wrapper:focus, .recharts-surface:focus { outline: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .card-in, .pulse-dot { animation: none; }
+  .tilt-3d, .tilt-3d:hover { transform: none; transition: none; }
+}
+
+/* ---- global accent retint: cyan (AWS) -> azure blue (this edition) ----
+   One place changes every page at once; component files stay untouched. */
+.text-cyan-200 { color: #c7d8ff; }
+.text-cyan-300 { color: #9ab8ff; }
+.text-cyan-400 { color: #5f95ff; }
+.from-cyan-400 { --tw-gradient-from: #5f95ff var(--tw-gradient-from-position);
+                 --tw-gradient-to: rgb(95 149 255 / 0);
+                 --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to); }
+.bg-cyan-500\/10 { background-color: rgb(59 111 246 / 0.10); }
+.bg-cyan-500\/15 { background-color: rgb(59 111 246 / 0.15); }
+.bg-cyan-500\/20 { background-color: rgb(59 111 246 / 0.20); }
+.bg-cyan-500\/30 { background-color: rgb(59 111 246 / 0.30); }
+.border-cyan-400\/40 { border-color: rgb(95 149 255 / 0.40); }
+.border-cyan-400\/50 { border-color: rgb(95 149 255 / 0.50); }
+.border-cyan-500\/30 { border-color: rgb(59 111 246 / 0.30); }
+/* hover variants too — otherwise buttons flash the ORIGINAL cyan on
+   hover and the text becomes unreadable against the light flash */
+.hover\:bg-cyan-500\/20:hover { background-color: rgb(59 111 246 / 0.20); }
+.hover\:bg-cyan-500\/30:hover { background-color: rgb(59 111 246 / 0.35); }
+.hover\:bg-cyan-400:hover { background-color: #5f95ff; color: #0a1a33; }
