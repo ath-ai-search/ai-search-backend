@@ -27,13 +27,14 @@ import re
 import shutil
 import socket
 import time
+import urllib.error
 import urllib.request
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -482,9 +483,11 @@ def _analytics_data(source: str = "all", size: int = 30, days: int = 0):
                    WHERE {_searches_where()} {win} {src}
                    ORDER BY created_at DESC LIMIT %s""", (min(int(size), 1000),))
     per_search_cost = round(TOKENS_PER_SEARCH / 1e6 * EMBED_PRICE_PER_M, 6)
+    today_r = q(f"""SELECT COUNT(*) FROM events WHERE {_searches_where()}
+                    AND created_at::date = CURRENT_DATE {src}""")
     return {
         "total": total,
-        "today": searches_today(),
+        "today": today_r[0][0] if today_r else 0,
         "zero_results": 0,
         "avg_ms": avg_search_ms(f"{win} {src}"),
         "ai_calls": total,
@@ -1073,6 +1076,37 @@ def admin_search(q_param: str = "", k: int = 8, client_id: str = "default",
         return {"results": [], "total": 0, "took_ms": None, "error": str(e)[:100]}
 
 
+@app.post("/search/ai-assistant")
+async def ai_assistant_proxy(request: Request):
+    """Transparent passthrough to the frozen backend's AI shopping chat —
+    the ONLY thing added is a tracking row (source='assistant'), so the
+    store's AI Assistant conversations show up in Analytics + billing.
+    On any proxy problem the error is returned as JSON; backend untouched."""
+    body = await request.body()
+    t0 = time.time()
+    try:
+        req = urllib.request.Request(
+            "http://127.0.0.1:8000/search/ai-assistant", data=body,
+            headers={"Content-Type": request.headers.get("content-type",
+                                                         "application/json")})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            raw, code = r.read(), r.status
+    except urllib.error.HTTPError as e:
+        raw, code = e.read(), e.code
+    except Exception as e:
+        return Response(content=json.dumps({"error": str(e)[:120]}),
+                        media_type="application/json", status_code=502)
+    if code == 200:
+        try:
+            data = json.loads(body or b"{}")
+            msg = data.get("message") or data.get("query") or data.get("q")
+        except Exception:
+            msg = None
+        _log_search(msg, took_ms=round((time.time() - t0) * 1000),
+                    source="assistant")
+    return Response(content=raw, media_type="application/json", status_code=code)
+
+
 @app.get("/opensearch-info")
 def opensearch_info(client_id: str = "default"):
     try:
@@ -1285,14 +1319,16 @@ def admin_overview():
 @app.get("/admin/tickets")
 def admin_tickets(status: str = "", client_id: str = ""):
     ts = _tickets()
+    open_count = sum(1 for t in ts if t["status"] == "open")
     if status:
         ts = [t for t in ts if t["status"] == status]
-    return {"tickets": ts}
+    return {"tickets": ts, "open_count": open_count}
 
 
 class AdminTicketReply(BaseModel):
     message: Optional[str] = None
     status: Optional[str] = None
+    resolve: Optional[bool] = None   # the admin console's Resolve button sends this
 
 
 @app.post("/admin/tickets/{ticket_id}/reply")
@@ -1308,9 +1344,11 @@ def admin_ticket_reply(ticket_id: int, body: AdminTicketReply):
         status = "pending"
     if body.status in ("open", "pending", "resolved"):
         status = body.status
+    if body.resolve:
+        status = "resolved"
     qx("UPDATE portal_tickets SET messages=%s, status=%s, updated_at=NOW() WHERE id=%s",
        (json.dumps(msgs), status, ticket_id))
-    return {"ok": True}
+    return {"ok": True, "status": status}
 
 
 @app.post("/admin/clients")

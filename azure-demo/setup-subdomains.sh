@@ -91,6 +91,15 @@ NGINX
 ln -sf /etc/nginx/sites-available/venue-portal-sub /etc/nginx/sites-enabled/venue-portal-sub
 nginx -t && systemctl reload nginx
 
+echo "=== route the store's AI Assistant through the tracking proxy ==="
+# exact-match location beats the API regex, so ONLY this one path moves to :8100
+# (which logs the conversation, then forwards to :8000 unchanged)
+VS=/etc/nginx/sites-available/venue
+if [ -f "$VS" ] && ! grep -q "location = /search/ai-assistant" "$VS"; then
+  sed -i '/openapi\.json/i\    location = /search/ai-assistant {\n        proxy_pass http://127.0.0.1:8100;\n        proxy_set_header Host $host;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    }' "$VS"
+  nginx -t && systemctl reload nginx
+fi
+
 echo "=== heal the tracking schema (idempotent, zero code changes) ==="
 bash "$REPO/azure-demo/fix-tracking-schema.sh" || echo "!! schema heal failed — run it alone and read the error"
 

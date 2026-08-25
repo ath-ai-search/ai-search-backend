@@ -19,7 +19,12 @@ export default function SupportPage() {
     setTickets(d.tickets || [])
     if (open) setOpen((d.tickets || []).find(t => t.id === open.id) || null)
   }).catch(() => setTickets([]))
-  useEffect(() => { load() }, [])
+  // live: support replies from the team appear without a page refresh
+  useEffect(() => {
+    load()
+    const id = setInterval(load, 8000)
+    return () => clearInterval(id)
+  }, [])
 
   const submitNew = async (e) => {
     e.preventDefault()
