@@ -49,58 +49,6 @@ function SpeechBubble({ mood }) {
   )
 }
 
-// 🖱 Cursor Blu — the mouse cursor IS Blu: he rides the pointer with a
-// soft lag, legs stepping while you move. A glowing dot marks the exact
-// click point so forms stay easy to hit.
-function CursorBlu({ mood }) {
-  const [p, setP] = useState({ x: -300, y: -300 })
-  const [moving, setMoving] = useState(false)
-  const [dir, setDir] = useState(1)
-  const raw = useRef({ x: -300, y: -300 })
-  const shown = useRef({ x: -300, y: -300 })
-  const stopT = useRef(null)
-
-  useEffect(() => {
-    const onMove = (e) => {
-      if (e.clientX > raw.current.x + 2) setDir(1)
-      else if (e.clientX < raw.current.x - 2) setDir(-1)
-      raw.current = { x: e.clientX, y: e.clientY }
-      setMoving(true)
-      clearTimeout(stopT.current)
-      stopT.current = setTimeout(() => setMoving(false), 220)
-    }
-    window.addEventListener('mousemove', onMove)
-    let raf
-    const tick = () => {
-      shown.current.x += (raw.current.x - shown.current.x) * 0.25
-      shown.current.y += (raw.current.y - shown.current.y) * 0.25
-      setP({ x: shown.current.x, y: shown.current.y })
-      raf = requestAnimationFrame(tick)
-    }
-    raf = requestAnimationFrame(tick)
-    return () => { window.removeEventListener('mousemove', onMove)
-                   cancelAnimationFrame(raf); clearTimeout(stopT.current) }
-  }, [])
-
-  return (
-    <div className="blu-cursor-layer fixed inset-0 z-50 pointer-events-none hidden motion-safe:block">
-      {/* the exact click point */}
-      <div className="absolute w-2 h-2 rounded-full bg-mint
-                      shadow-[0_0_10px_3px_rgba(109,74,255,0.55)]"
-           style={{ left: p.x - 4, top: p.y - 4 }} />
-      {/* Blu rides just below-right of it */}
-      <div className="absolute" style={{ left: p.x + 10, top: p.y + 12 }}>
-        <div style={{ transform: `scaleX(${dir})` }}
-             className="transition-transform duration-200">
-          <div className={moving ? 'blu-waddle' : ''}>
-            <BluBot size={60} follow={false} legs walking={moving} mood={mood} />
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 export default function LoginPage({ onSignedIn }) {
   const [clientId, setClientId] = useState('')
   const [password, setPassword] = useState('')
@@ -130,7 +78,7 @@ export default function LoginPage({ onSignedIn }) {
   }
 
   return (
-    <div className="min-h-screen relative flex items-center justify-center p-4 overflow-hidden cursor-none-all">
+    <div className="min-h-screen relative flex items-center justify-center p-4 overflow-hidden">
       <Starfield />
       {/* 🟣 brand — top-left corner of the page */}
       <div className="absolute top-5 left-6 z-10 select-none">
@@ -191,8 +139,6 @@ export default function LoginPage({ onSignedIn }) {
         </div>
       </div>
 
-      {/* 🖱 Blu IS the cursor — no wandering, he goes where YOU go */}
-      <CursorBlu mood={mood} />
     </div>
   )
 }
