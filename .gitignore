@@ -157,3 +157,6 @@ terraform/.terraform
 terraform/terraform.tfstate*
 .env
 # End of https://www.toptal.com/developers/gitignore/api/git,visualstudiocode,jetbrains+all,terraform
+# python bytecode cache — machine-made, never belongs in git
+__pycache__/
+*.pyc
